@@ -18,10 +18,31 @@ The checkout is a **sparse partial clone** (`blob:none`, cone = `hw/m68k`,
 are readable with `git -C <tree> show HEAD:<path>`, which is how every file
 cited below was obtained. Line numbers are those of the blob at `HEAD`.
 
-> **Open item.** The installed `qemu-system-m68k` binary has not yet been
-> version-checked against this tree. Everything below is true of 11.0.0-rc4;
-> before Phase 1 concludes, confirm the shipped binary matches, since the
-> launcher in Phase 9 will pin a QEMU version anyway.
+### Applicability to QEMU 10.2.1
+
+There is no `qemu-system-m68k` installed on the development box; the available
+package is Ubuntu's `qemu-system-misc` **10.2.1**. Every file cited here was
+therefore diffed between `v10.2.1` and `da6c4fe`. **No fact in this document
+changes.** The complete set of substantive differences is:
+
+| File | Difference | Guest-visible? |
+|---|---|---|
+| `hw/m68k/virt.c` | `hw/*.h` → `hw/core/*.h` include renames; `load_image_targphys` gained `&error_fatal`; `virt-11.0` added and `virt-10.2` demoted from "latest" | No |
+| `hw/virtio/virtio-mmio.c` | `format_transport_address` property removed (affects device-path strings in the monitor only) | No |
+| `include/hw/virtio/virtio-mmio.h` | corresponding struct field removed | No |
+| `hw/misc/virt_ctrl.c` | a `trace_virt_ctrl_write` call in the read path corrected to `trace_virt_ctrl_read` | No |
+| `goldfish_rtc.c`, `goldfish_pic.c`, `goldfish_tty.c`, `m68k_irqc.h` | include renames only — **zero** substantive changed lines | No |
+| `hw/m68k/bootinfo.h`, `bootinfo-virt.h` | byte-for-byte identical | No |
+
+Spot-checked explicitly at `v10.2.1`: `virtio_mem_ops.endianness` is
+`DEVICE_LITTLE_ENDIAN` (`:536`) against `virtio_legacy_mem_ops`'s
+`DEVICE_NATIVE_ENDIAN` (`:530`), the `force-legacy` default is `true` (`:769`),
+and the MMIO region size is `0x200` (`:790`, `:794`) — so §5, the endianness
+rule, applies unchanged.
+
+Line numbers quoted throughout are from `da6c4fe`; at `v10.2.1` they may be off
+by a few lines in `virt.c` and `virtio-mmio.c` owing to the include renames.
+Everywhere else they match exactly.
 
 ---
 

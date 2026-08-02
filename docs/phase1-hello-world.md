@@ -130,10 +130,35 @@ skipped under `MACHINE_QEMU_VIRT`, which mirrors the existing
 `MACHINE_LISA` workaround for `movec`/`pmove` at `bios/startup.S:398`.
 The CPU is whatever `-cpu` selected, defaulting to 68040.
 
-This is worth remembering as a class of problem rather than a one-off:
-**any EmuTOS probe that relies on catching a fault may abort QEMU
-instead of trapping.** Expect more of these as later phases enable more
-hardware detection.
+The blast radius is narrow and worth stating precisely
+(`target/m68k/helper.c:387-396`):
+
+```c
+    /* Unimplemented Registers */
+    case M68K_CR_CAAR:
+    case M68K_CR_PCR:
+    case M68K_CR_BUSCR:
+        cpu_abort(...);
+    }
+    /* Invalid control registers will generate an exception. */
+    raise_exception_ra(env, EXCP_ILLEGAL, 0);
+```
+
+Only `CAAR`, `PCR` and `BUSCR` abort. Genuinely invalid control
+registers fall through and raise `EXCP_ILLEGAL` normally, so
+fault-based detection works in general — these three are the exception.
+
+Note also that the abort has **no `m68k_feature` gate**, unlike the
+`DTT1` case immediately above it which tests `M68K_FEATURE_M68040`.
+So PCR aborts under `-cpu m68060` too: the probe can never succeed on
+QEMU m68k for any CPU model, and skipping it is the only option rather
+than a convenience for the 68040 target.
+
+The consequence is that this build reports 68040 even if `-cpu m68060`
+is passed. The proper fix is not to probe at all: QEMU already emits
+`BI_CPUTYPE` in the bootinfo (`hw/m68k/virt.c:243-256`) derived from the
+actual CPU. Phase 2 has to parse the bootinfo for `BI_MEMCHUNK` anyway,
+so the CPU type should come from the same walk.
 
 **`CONF_SERIAL_CONSOLE` must stay off.** Setting it looked reasonable —
 this machine's console *is* serial — but it selects the MFP RS232 port,

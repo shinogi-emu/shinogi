@@ -15,16 +15,22 @@ set -eu
 NEW="$1"
 GOLDEN="${2:-tests/golden/boot-phase2.log}"
 
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
 normalise() {
     # Mask hex addresses and decimal sizes, drop QEMU's own exit line.
     sed -E \
         -e 's/0x[0-9a-fA-F]{4,8}/0xADDR/g' \
         -e 's/=[0-9]{4,}/=NUM/g' \
         -e '/terminating on signal/d' \
-        "$1"
+        "$1" > "$2"
 }
 
-if diff -u <(normalise "$GOLDEN") <(normalise "$NEW"); then
+normalise "$GOLDEN" "$TMP/golden"
+normalise "$NEW" "$TMP/new"
+
+if diff -u "$TMP/golden" "$TMP/new"; then
     echo "boot trace matches golden (init sequence unchanged)"
 else
     echo

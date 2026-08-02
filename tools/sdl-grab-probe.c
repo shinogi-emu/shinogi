@@ -38,11 +38,19 @@
 #define INTERVAL_MS 3000
 #define INTERVALS   6
 
-int main(void)
+/*
+ * argc/argv rather than void: on Windows SDL redefines main to SDL_main,
+ * which is declared int(int, char **), and a void signature will not
+ * compile there.
+ */
+int main(int argc, char *argv[])
 {
     SDL_Window *win;
     Uint32 last;
     int grab = 0, motion = 0, done = 0;
+
+    (void)argc;
+    (void)argv;
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

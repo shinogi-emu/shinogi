@@ -1,0 +1,1123 @@
+bios_init()
+processor_init()
+Address Bus width is 32-bit
+vecs_init()
+init_delay()
+init_delay loopcount_1_msec=3800
+machine_detect()
+ttram_detect()
+ttram_detect(): ramtop=0x00000000
+detected_busses = 0x0
+machine_init()
+bmem_init()
+Memory map before balloc() adjustments:
+        _text = 0x00002140
+       _etext = 0x0004f306
+        _data = 0x0004f306
+       _edata = 0x0004f306
+         _bss = 0x0004f306
+   _endvdibss = 0x00055406
+        _ebss = 0x0005d7f2
+       stkbot = 0x00000800
+       stktop = 0x00001000
+_end_os_stram = 0x0005d7f4
+       membot = 0x0005d7f4
+       memtop = 0x00e00000
+cookie_init()
+fill_cookie_jar()
+cookie_vdo = 0xffffffff
+cookie_mch = 0xffffffff
+cookie_snd = 0x00000000
+cookie_akp = 0x00000000
+cookie_idt = 0x0000002f
+font_init()
+screen_init_mode()
+linea_init()
+vmode: 0
+linea_init(): 320x200 4-plane (v_lin_wr=160)
+screen_init_address()
+before balloc_stram: membot=0x0005d7f4, memtop=0x00e00000
+balloc_stram(32768, 1)
+balloc_stram(32768, 1) returns 0x00df8000
+ after balloc_stram: membot=0x0005d7f4, memtop=0x00df8000
+v_bas_ad = 0x00df8000, vram_size = 32768
+setphys(0x00df8000)
+vt52_init()
+after vt52_init()
+init_system_timer()
+chardev_init()
+init_serport()
+snd_init()
+kbd_init()
+ikbd_writeb(0x80)
+ikbd_writeb(0x01)
+midi_init()
+init_acia_vecs()
+after init_acia_vecs()
+calibrate_delay()
+Warning: loopcount_1_msec isn't calibrated.
+calibrate_delay loopcount_1_msec=3800
+blkdev_init()
+dskbufp = 0x00001004
+flop_detect_drive(0)
+flop_detect_drive(1)
+Removable logical drives:
+PUN INFO: max sector size = 512
+after blkdev_init()
+parport_init()
+clock_init()
+after clock_init()
+osinit_before_xmaddalt()
+before balloc_stram: membot=0x0005d7f4, memtop=0x00df8000
+balloc_stram(2128, 0)
+balloc_stram(2128, 0) returns 0x0005d7f4
+ after balloc_stram: membot=0x0005e044, memtop=0x00df8000
+Memory map after balloc() adjustments:
+       membot = 0x0005e044
+       memtop = 0x00df8000
+umem_init(): start_stram=0x0005e044, end_stram=0x00df8000
+after osinit_before_xmaddalt()
+altram_init()
+xmaddalt() qemu-virt adr=0x00e00000 size=119537664
+xmgetmd(): got new MDBLOCK at 0x00050992
+xmgetmd(): got MD at 0x00050996
+osinit_after_xmaddalt()
+BDOS: address of basepage = 0x000501c0
+BDOS: cinit - osinit successful ...
+after osinit_after_xmaddalt()
+disk_try_dmaboot()
+bios_init() end
+screen_height = 25, initinfo_height = 21, top_margin = 2
+initinfo_height is correct
+bootdev = 0
+bootflags = 0x00
+drvbits = 00000000
+bootcheck() returns 3
+BDOS (fn=0x000e)
+BDOS returns: 0x00000000
+BDOS (fn=0x004b)
+BDOS xexec: flag or mode = 7
+BDOS: Mxalloc(12,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=12
+xmgetmd(): got MD at 0x000509a8
+BDOS ffit: start=0x00e00000, length=12
+BDOS Mxalloc: returns 0x00e00000
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x000509a8 {
+|   0x0509a8[0xe0000c,0x71ffff4], 
+| }
+| alt alloc (1 entries) = 0x00050996 {
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS ffit: mp=&pmd
+BDOS ffit: requested=-1
+BDOS ffit: maxval=14262204
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=-1
+BDOS ffit: maxval=119537652
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=119537652
+BDOS ffit: start=0x00e0000c, length=119537652
+BDOS returns: 0x00e0000c
+BDOS (fn=0x004b)
+BDOS xexec: flag or mode = 4
+BDOS xexec: trying to load (and execute) a process on 0x0002406a ...
+BDOS (fn=0x004a)
+BDOS: Mshrink(0x00e0000c,256)
+BDOS Mshrink: mpb=pmdalt
+BDOS Mshrink: new length=256
+xmgetmd(): got MD at 0x000509ba
+xmgetmd(): MDBLOCK at 0x00050992 is now full
+xmgetmd(): removed MDBLOCK at 0x00050992 from mdb chain
+BDOS freeit: mp=&pmdalt
+BDOS freeit: start=0x00e0010c, length=119537396
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x000509ba {
+|   0x0509ba[0xe0010c,0x71ffef4], 
+| }
+| alt alloc (2 entries) = 0x000509a8 {
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00000000
+BDOS (fn=0x0009)
+BDOS returns: 0x00000000
+BDOS (fn=0x0019)
+BDOS returns: 0x00000000
+BDOS (fn=0x003d)
+findit(A:\EMUDESK.INF)
+
+ dcrack(0x00053794 -> 'A:\EMUDESK.INF')ckdrv(0)
+blkdev_getbpb(0)
+device is invalid
+xopen(A:\EMUDESK.INF,0): rc=-33
+BDOS returns: 0xffffffdf
+BDOS (fn=0x001a)
+BDOS returns: 0x0000009c
+BDOS (fn=0x004e)
+findit(\*.ACC)
+
+ dcrack(0x0005376e -> '\*.ACC')ckdrv(0)
+blkdev_getbpb(0)
+device is invalid
+BDOS returns: 0xffffffde
+iprocess("SCRENMGR")
+BDOS (fn=0x004b)
+BDOS xexec: flag or mode = 7
+BDOS: Mxalloc(12,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=12
+xmgetmd(): got new MDBLOCK at 0x000509d4
+xmgetmd(): got MD at 0x000509d8
+BDOS ffit: start=0x00e0010c, length=12
+BDOS Mxalloc: returns 0x00e0010c
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x000509d8 {
+|   0x0509d8[0xe00118,0x71ffee8], 
+| }
+| alt alloc (3 entries) = 0x000509ba {
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS ffit: mp=&pmd
+BDOS ffit: requested=-1
+BDOS ffit: maxval=14262204
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=-1
+BDOS ffit: maxval=119537384
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=119537384
+BDOS ffit: start=0x00e00118, length=119537384
+BDOS returns: 0x00e00118
+BDOS (fn=0x004b)
+BDOS xexec: flag or mode = 6
+BDOS xexec: trying to load (and execute) a process on 0x00024124 ...
+BDOS (fn=0x004a)
+BDOS: Mshrink(0x00e00118,256)
+BDOS Mshrink: mpb=pmdalt
+BDOS Mshrink: new length=256
+xmgetmd(): got MD at 0x000509ea
+BDOS freeit: mp=&pmdalt
+BDOS freeit: start=0x00e00218, length=119537128
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x000509ea {
+|   0x0509ea[0xe00218,0x71ffde8], 
+| }
+| alt alloc (4 entries) = 0x000509d8 {
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00000000
+BDOS (fn=0x0044)
+BDOS: Mxalloc(1024,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=1024
+xmgetmd(): got MD at 0x000509fc
+xmgetmd(): MDBLOCK at 0x000509d4 is now full
+xmgetmd(): removed MDBLOCK at 0x000509d4 from mdb chain
+BDOS ffit: start=0x00e00218, length=1024
+BDOS Mxalloc: returns 0x00e00218
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x000509fc {
+|   0x0509fc[0xe00618,0x71ff9e8], 
+| }
+| alt alloc (5 entries) = 0x000509ea {
+|   0x0509ea[0xe00218,0x000400], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e00218
+BDOS (fn=0x0019)
+BDOS returns: 0x00000000
+BDOS (fn=0x003d)
+findit(A:\EMUCURS.RSC)
+
+ dcrack(0x00053794 -> 'A:\EMUCURS.RSC')ckdrv(0)
+blkdev_getbpb(0)
+device is invalid
+xopen(A:\EMUCURS.RSC,0): rc=-33
+BDOS returns: 0xffffffdf
+BDOS (fn=0x0049)
+BDOS: Mfree(0x00e00218)
+BDOS Mfree: mpb=pmdalt
+BDOS freeit: mp=&pmdalt
+BDOS freeit: start=0x00e00218, length=1024
+xmfremd(): MD at 0x000509fc freed
+xmfremd(): MDBLOCK at 0x000509d4 now has free entry, moved to mdb chain
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x000509ea {
+|   0x0509ea[0xe00218,0x71ffde8], 
+| }
+| alt alloc (4 entries) = 0x000509d8 {
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00000000
+BDOS (fn=0x0019)
+BDOS returns: 0x00000000
+ikbd_writeb(0x08)
+ikbd_writeb(0x0b)
+ikbd_writeb(0x01)
+ikbd_writeb(0x01)
+ikbd_writeb(0x10)
+ikbd_writeb(0x07)
+ikbd_writeb(0x00)
+VDI video mode = 320x200 4-plane
+gsx_start(): gl_wchar=8, gl_hchar=8, gl_wbox=12, gl_hbox=11
+BDOS (fn=0x0044)
+BDOS: Mxalloc(20480,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=20480
+xmgetmd(): got MD at 0x000509fc
+xmgetmd(): MDBLOCK at 0x000509d4 is now full
+xmgetmd(): removed MDBLOCK at 0x000509d4 from mdb chain
+BDOS ffit: start=0x00e00218, length=20480
+BDOS Mxalloc: returns 0x00e00218
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x000509fc {
+|   0x0509fc[0xe05218,0x71fade8], 
+| }
+| alt alloc (5 entries) = 0x000509ea {
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e00218
+BDOS (fn=0x0019)
+BDOS returns: 0x00000000
+disp() to "        "
+BDOS (fn=0x000e)
+BDOS returns: 0x00000000
+BDOS (fn=0x003b)
+findit(A:\)
+
+ dcrack(0x00053792 -> 'A:\')ckdrv(0)
+blkdev_getbpb(0)
+device is invalid
+BDOS returns: 0xffffffde
+sh_ldapp: Starting EMUDESK, sh_nextapp=3, sh_isgem=1
+BDOS (fn=0x004b)
+BDOS xexec: flag or mode = 7
+BDOS: Mxalloc(12,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=12
+xmgetmd(): got new MDBLOCK at 0x00050a16
+xmgetmd(): got MD at 0x00050a1a
+BDOS ffit: start=0x00e05218, length=12
+BDOS Mxalloc: returns 0x00e05218
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050a1a {
+|   0x050a1a[0xe05224,0x71faddc], 
+| }
+| alt alloc (6 entries) = 0x000509fc {
+|   0x0509fc[0xe05218,0x00000c], 0x0509ea[0xe00218,0x005000], 
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS ffit: mp=&pmd
+BDOS ffit: requested=-1
+BDOS ffit: maxval=14262204
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=-1
+BDOS ffit: maxval=119516636
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=119516636
+BDOS ffit: start=0x00e05224, length=119516636
+BDOS returns: 0x00e05224
+BDOS (fn=0x004b)
+BDOS xexec: flag or mode = 6
+BDOS xexec: trying to load (and execute) a process on 0x00038082 ...
+BDOS (fn=0x004a)
+BDOS: Mshrink(0x00e05224,256)
+BDOS Mshrink: mpb=pmdalt
+BDOS Mshrink: new length=256
+xmgetmd(): got MD at 0x00050a2c
+BDOS freeit: mp=&pmdalt
+BDOS freeit: start=0x00e05324, length=119516380
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050a2c {
+|   0x050a2c[0xe05324,0x71facdc], 
+| }
+| alt alloc (7 entries) = 0x00050a1a {
+|   0x050a1a[0xe05224,0x000100], 0x0509fc[0xe05218,0x00000c], 
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00000000
+BDOS (fn=0x0019)
+BDOS returns: 0x00000000
+AES: EMUDESK: appl_init()
+disp() to "SCRENMGR"
+disp() to "EMUDESK "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+BDOS (fn=0x0044)
+BDOS: Mxalloc(896,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=896
+xmgetmd(): got MD at 0x00050a3e
+xmgetmd(): MDBLOCK at 0x00050a16 is now full
+xmgetmd(): removed MDBLOCK at 0x00050a16 from mdb chain
+BDOS ffit: start=0x00e05324, length=896
+BDOS Mxalloc: returns 0x00e05324
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050a3e {
+|   0x050a3e[0xe056a4,0x71fa95c], 
+| }
+| alt alloc (8 entries) = 0x00050a2c {
+|   0x050a2c[0xe05324,0x000380], 0x050a1a[0xe05224,0x000100], 
+|   0x0509fc[0xe05218,0x00000c], 0x0509ea[0xe00218,0x005000], 
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e05324
+BDOS (fn=0x0044)
+BDOS: Mxalloc(7128,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=7128
+xmgetmd(): got new MDBLOCK at 0x00050a58
+xmgetmd(): got MD at 0x00050a5c
+BDOS ffit: start=0x00e056a4, length=7128
+BDOS Mxalloc: returns 0x00e056a4
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050a5c {
+|   0x050a5c[0xe0727c,0x71f8d84], 
+| }
+| alt alloc (9 entries) = 0x00050a3e {
+|   0x050a3e[0xe056a4,0x001bd8], 0x050a2c[0xe05324,0x000380], 
+|   0x050a1a[0xe05224,0x000100], 0x0509fc[0xe05218,0x00000c], 
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e056a4
+BDOS (fn=0x0044)
+BDOS: Mxalloc(749,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=749
+xmgetmd(): got MD at 0x00050a6e
+BDOS ffit: start=0x00e0727c, length=752
+BDOS Mxalloc: returns 0x00e0727c
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050a6e {
+|   0x050a6e[0xe0756c,0x71f8a94], 
+| }
+| alt alloc (10 entries) = 0x00050a5c {
+|   0x050a5c[0xe0727c,0x0002f0], 0x050a3e[0xe056a4,0x001bd8], 
+|   0x050a2c[0xe05324,0x000380], 0x050a1a[0xe05224,0x000100], 
+|   0x0509fc[0xe05218,0x00000c], 0x0509ea[0xe00218,0x005000], 
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e0727c
+desktop menu bar: x=0x0002, w=0x001b
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+BDOS (fn=0x0044)
+BDOS: Mxalloc(4096,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=4096
+xmgetmd(): got MD at 0x00050a80
+xmgetmd(): MDBLOCK at 0x00050a58 is now full
+xmgetmd(): removed MDBLOCK at 0x00050a58 from mdb chain
+BDOS ffit: start=0x00e0756c, length=4096
+BDOS Mxalloc: returns 0x00e0756c
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050a80 {
+|   0x050a80[0xe0856c,0x71f7a94], 
+| }
+| alt alloc (11 entries) = 0x00050a6e {
+|   0x050a6e[0xe0756c,0x001000], 0x050a5c[0xe0727c,0x0002f0], 
+|   0x050a3e[0xe056a4,0x001bd8], 0x050a2c[0xe05324,0x000380], 
+|   0x050a1a[0xe05224,0x000100], 0x0509fc[0xe05218,0x00000c], 
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e0756c
+BDOS (fn=0x0044)
+BDOS: Mxalloc(2048,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=2048
+xmgetmd(): got new MDBLOCK at 0x00050a9a
+xmgetmd(): got MD at 0x00050a9e
+BDOS ffit: start=0x00e0856c, length=2048
+BDOS Mxalloc: returns 0x00e0856c
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050a9e {
+|   0x050a9e[0xe08d6c,0x71f7294], 
+| }
+| alt alloc (12 entries) = 0x00050a80 {
+|   0x050a80[0xe0856c,0x000800], 0x050a6e[0xe0756c,0x001000], 
+|   0x050a5c[0xe0727c,0x0002f0], 0x050a3e[0xe056a4,0x001bd8], 
+|   0x050a2c[0xe05324,0x000380], 0x050a1a[0xe05224,0x000100], 
+|   0x0509fc[0xe05218,0x00000c], 0x0509ea[0xe00218,0x005000], 
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e0856c
+BDOS (fn=0x004e)
+findit(A:\EMUICON.RSC)
+
+ dcrack(0x0005376e -> 'A:\EMUICON.RSC')ckdrv(0)
+blkdev_getbpb(0)
+device is invalid
+BDOS returns: 0xffffffde
+can't load user desktop icon file A:\EMUICON.RSC
+BDOS (fn=0x0044)
+BDOS: Mxalloc(2320,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=2320
+xmgetmd(): got MD at 0x00050ab0
+BDOS ffit: start=0x00e08d6c, length=2320
+BDOS Mxalloc: returns 0x00e08d6c
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050ab0 {
+|   0x050ab0[0xe0967c,0x71f6984], 
+| }
+| alt alloc (13 entries) = 0x00050a9e {
+|   0x050a9e[0xe08d6c,0x000910], 0x050a80[0xe0856c,0x000800], 
+|   0x050a6e[0xe0756c,0x001000], 0x050a5c[0xe0727c,0x0002f0], 
+|   0x050a3e[0xe056a4,0x001bd8], 0x050a2c[0xe05324,0x000380], 
+|   0x050a1a[0xe05224,0x000100], 0x0509fc[0xe05218,0x00000c], 
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e08d6c
+BDOS (fn=0x0044)
+BDOS: Mxalloc(4192,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=4192
+xmgetmd(): got MD at 0x00050ac2
+xmgetmd(): MDBLOCK at 0x00050a9a is now full
+xmgetmd(): removed MDBLOCK at 0x00050a9a from mdb chain
+BDOS ffit: start=0x00e0967c, length=4192
+BDOS Mxalloc: returns 0x00e0967c
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050ac2 {
+|   0x050ac2[0xe0a6dc,0x71f5924], 
+| }
+| alt alloc (14 entries) = 0x00050ab0 {
+|   0x050ab0[0xe0967c,0x001060], 0x050a9e[0xe08d6c,0x000910], 
+|   0x050a80[0xe0856c,0x000800], 0x050a6e[0xe0756c,0x001000], 
+|   0x050a5c[0xe0727c,0x0002f0], 0x050a3e[0xe056a4,0x001bd8], 
+|   0x050a2c[0xe05324,0x000380], 0x050a1a[0xe05224,0x000100], 
+|   0x0509fc[0xe05218,0x00000c], 0x0509ea[0xe00218,0x005000], 
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e0967c
+disp() to "        "
+BDOS (fn=0x003d)
+findit(A:\EMUDESK.INF)
+
+ dcrack(0x00053794 -> 'A:\EMUDESK.INF')ckdrv(0)
+blkdev_getbpb(0)
+device is invalid
+xopen(A:\EMUDESK.INF,0): rc=-33
+BDOS returns: 0xffffffdf
+BDOS (fn=0x0019)
+BDOS returns: 0x00000000
+BDOS (fn=0x000e)
+BDOS returns: 0x00000000
+BDOS (fn=0x0049)
+BDOS: Mfree(0x00e0967c)
+BDOS Mfree: mpb=pmdalt
+BDOS freeit: mp=&pmdalt
+BDOS freeit: start=0x00e0967c, length=4192
+xmfremd(): MD at 0x00050ac2 freed
+xmfremd(): MDBLOCK at 0x00050a9a now has free entry, moved to mdb chain
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050ab0 {
+|   0x050ab0[0xe0967c,0x71f6984], 
+| }
+| alt alloc (13 entries) = 0x00050a9e {
+|   0x050a9e[0xe08d6c,0x000910], 0x050a80[0xe0856c,0x000800], 
+|   0x050a6e[0xe0756c,0x001000], 0x050a5c[0xe0727c,0x0002f0], 
+|   0x050a3e[0xe056a4,0x001bd8], 0x050a2c[0xe05324,0x000380], 
+|   0x050a1a[0xe05224,0x000100], 0x0509fc[0xe05218,0x00000c], 
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00000000
+disp() to "        "
+BDOS (fn=0x0044)
+BDOS: Mxalloc(-1,0x0003)
+BDOS ffit: mp=&pmd
+BDOS ffit: requested=-1
+BDOS ffit: maxval=14262204
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=-1
+BDOS ffit: maxval=119499140
+BDOS Mxalloc: returns 0x071f6984
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050ab0 {
+|   0x050ab0[0xe0967c,0x71f6984], 
+| }
+| alt alloc (13 entries) = 0x00050a9e {
+|   0x050a9e[0xe08d6c,0x000910], 0x050a80[0xe0856c,0x000800], 
+|   0x050a6e[0xe0756c,0x001000], 0x050a5c[0xe0727c,0x0002f0], 
+|   0x050a3e[0xe056a4,0x001bd8], 0x050a2c[0xe05324,0x000380], 
+|   0x050a1a[0xe05224,0x000100], 0x0509fc[0xe05218,0x00000c], 
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x071f6984
+BDOS (fn=0x0044)
+BDOS: Mxalloc(8768,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=8768
+xmgetmd(): got MD at 0x00050ac2
+xmgetmd(): MDBLOCK at 0x00050a9a is now full
+xmgetmd(): removed MDBLOCK at 0x00050a9a from mdb chain
+BDOS ffit: start=0x00e0967c, length=8768
+BDOS Mxalloc: returns 0x00e0967c
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050ac2 {
+|   0x050ac2[0xe0b8bc,0x71f4744], 
+| }
+| alt alloc (14 entries) = 0x00050ab0 {
+|   0x050ab0[0xe0967c,0x002240], 0x050a9e[0xe08d6c,0x000910], 
+|   0x050a80[0xe0856c,0x000800], 0x050a6e[0xe0756c,0x001000], 
+|   0x050a5c[0xe0727c,0x0002f0], 0x050a3e[0xe056a4,0x001bd8], 
+|   0x050a2c[0xe05324,0x000380], 0x050a1a[0xe05224,0x000100], 
+|   0x0509fc[0xe05218,0x00000c], 0x0509ea[0xe00218,0x005000], 
+|   0x0509d8[0xe00118,0x000100], 0x0509ba[0xe0010c,0x00000c], 
+|   0x0509a8[0xe0000c,0x000100], 0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e0967c
+obj_init(): allocated 137 screen objects
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+BDOS (fn=0x0044)
+BDOS: Mxalloc(2394,0x0003)
+BDOS ffit: mp=&pmdalt
+BDOS ffit: requested=2394
+xmgetmd(): got new MDBLOCK at 0x00050adc
+xmgetmd(): got MD at 0x00050ae0
+BDOS ffit: start=0x00e0b8bc, length=2396
+BDOS Mxalloc: returns 0x00e0b8bc
+===mem_dump==========================
+| std free  (1 entries) = 0x0000048e {
+|   0x00048e[0x05e044,0xd99fbc], 
+| }
+| std alloc (0 entries) = 0x00000000 {
+|   
+| }
+| ----------------------
+| alt free  (1 entries) = 0x00050ae0 {
+|   0x050ae0[0xe0c218,0x71f3de8], 
+| }
+| alt alloc (15 entries) = 0x00050ac2 {
+|   0x050ac2[0xe0b8bc,0x00095c], 0x050ab0[0xe0967c,0x002240], 
+|   0x050a9e[0xe08d6c,0x000910], 0x050a80[0xe0856c,0x000800], 
+|   0x050a6e[0xe0756c,0x001000], 0x050a5c[0xe0727c,0x0002f0], 
+|   0x050a3e[0xe056a4,0x001bd8], 0x050a2c[0xe05324,0x000380], 
+|   0x050a1a[0xe05224,0x000100], 0x0509fc[0xe05218,0x00000c], 
+|   0x0509ea[0xe00218,0x005000], 0x0509d8[0xe00118,0x000100], 
+|   0x0509ba[0xe0010c,0x00000c], 0x0509a8[0xe0000c,0x000100], 
+|   0x050996[0xe00000,0x00000c], 
+| }
+===/mem_dump==========================
+BDOS returns: 0x00e0b8bc
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "        "
+disp() to "SCRENMGR"
+disp() to "EMUDESK "
+disp() to "        "
+disp() to "SCRENMGR"
+disp() to "EMUDESK "
+AES: EMUDESK: evnt_multi()
+disp() to "        "
+qemu-system-m68k: terminating on signal 15 from pid 1204411 (timeout)

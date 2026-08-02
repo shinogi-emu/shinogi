@@ -12,19 +12,55 @@ set -eu
 
 ELF="${1:-$HOME/git/emutos/emutos-virt.elf}"
 #
-# gtk, not sdl. With an absolute pointing device SDL grabs the pointer as
-# soon as it moves inside a focused window, and only releases it again
-# when the pointer touches a window edge (ui/sdl2.c handle_mousemotion).
-# Where that grab stops motion being delivered -- X11/XWayland under a
-# remote session, at least -- the edge can never be reached and the guest
-# pointer is dead until the window loses focus.
+# sdl by default: one backend on every platform, which keeps the three
+# bundles behaving the same way. Verified working on Windows.
 #
-# GTK never grabs while the device is absolute, and ungrabs if a device
-# becomes absolute (ui/gtk.c:695, ui/gtk.c:1081), so a tablet behaves the
-# way it is supposed to. macOS/cocoa keeps the pointer associated in
-# absolute mode and is fine too.
-DISP="${2:-gtk}"
+# BUT SDL IS UNUSABLE ON SOME LINUX SESSIONS. With an absolute pointing
+# device SDL grabs the pointer as soon as it moves inside a *focused*
+# window, and only releases it when the pointer touches a window edge
+# (ui/sdl2.c handle_mousemotion). Where the grab also stops motion being
+# delivered -- x11/XWayland under GNOME Remote Login, measured here --
+# the edge can never be reached, so the grab never lifts and the guest
+# pointer is frozen until the window loses focus.
+#
+# If the pointer will not move, pass gtk:
+#
+#     tools/run-shinogi.sh "" gtk
+#
+# GTK never grabs while the device is absolute and ungrabs when one
+# appears (ui/gtk.c:695, ui/gtk.c:1081); it also has a menubar and can
+# scale the window, neither of which SDL offers. tools/sdl-grab-probe.c
+# tells you whether a given machine is affected.
+DISP="${2:-sdl}"
+SCALE="${SHINOGI_SCALE:-1.5}"
 LOG="${TMPDIR:-/tmp}/shinogi-serial.log"
+
+#
+# Window sizing, gtk only.
+#
+# zoom-to-fit defaults to *on* for virtio-gpu, because QEMU assumes a
+# guest that can be told about window resizes will follow along. Ours
+# cannot -- the resolution is fixed at build time -- so the default
+# leaves GTK picking its own window size and scaling 1280x720 down into
+# it. Turning it off sizes the window to the guest instead.
+#
+# scale then enlarges that, keeping GEM text and icons readable rather
+# than giving them more pixels to shrink into. It arrived in QEMU 10.1,
+# so probe for it rather than hard-failing on an older build: asking for
+# a deliberately invalid value reports the type on a QEMU that has the
+# option and "unexpected" on one that does not, and either way the
+# option parser rejects it long before a window is created.
+#
+if [ "${DISP%%,*}" = gtk ] && [ "$DISP" = gtk ]; then
+    DISP="gtk,zoom-to-fit=off"
+    if qemu-system-m68k -M virt -m 16 -display "gtk,scale=bogus" 2>&1 \
+       | grep -q "for 'scale'"; then
+        DISP="$DISP,scale=$SCALE"
+    else
+        echo "note: this QEMU predates -display gtk,scale; window will" >&2
+        echo "      be 1280x720. QEMU 10.1 or newer scales it up." >&2
+    fi
+fi
 
 if [ ! -f "$ELF" ]; then
     echo "no guest image at $ELF" >&2

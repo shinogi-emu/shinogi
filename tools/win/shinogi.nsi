@@ -55,8 +55,8 @@ Section "shinogi" SecMain
 
   CreateDirectory "$SMPROGRAMS\shinogi"
   CreateShortcut "$SMPROGRAMS\shinogi\shinogi.lnk" "$INSTDIR\shinogi.exe"
-  CreateShortcut "$SMPROGRAMS\shinogi\shinogi (SDL display test).lnk" \
-                 "$INSTDIR\shinogi.exe" "sdl"
+  CreateShortcut "$SMPROGRAMS\shinogi\shinogi (GTK display).lnk" \
+                 "$INSTDIR\shinogi.exe" "gtk"
   CreateShortcut "$SMPROGRAMS\shinogi\Read me.lnk" "$INSTDIR\README.txt"
   CreateShortcut "$SMPROGRAMS\shinogi\Uninstall.lnk" "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\shinogi.lnk" "$INSTDIR\shinogi.exe"
@@ -84,7 +84,7 @@ SectionEnd
 Section "Uninstall"
   Delete "$DESKTOP\shinogi.lnk"
   Delete "$SMPROGRAMS\shinogi\shinogi.lnk"
-  Delete "$SMPROGRAMS\shinogi\shinogi (SDL display test).lnk"
+  Delete "$SMPROGRAMS\shinogi\shinogi (GTK display).lnk"
   Delete "$SMPROGRAMS\shinogi\Read me.lnk"
   Delete "$SMPROGRAMS\shinogi\Uninstall.lnk"
   RMDir "$SMPROGRAMS\shinogi"

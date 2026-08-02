@@ -10,14 +10,16 @@
  * The launcher resolves its own location rather than relying on the
  * working directory, so shortcuts and "run as" both behave.
  *
- * Display backend: gtk by default. With an absolute pointing device
- * QEMU's SDL frontend grabs the pointer as soon as it enters a focused
- * window and only releases it at a window edge; where that grab also
- * stops motion being delivered the pointer is stuck until the window
- * loses focus. GTK never grabs while the device is absolute.
+ * Display backend: sdl by default, the same as the other platforms so
+ * all three bundles behave alike. Verified working on Windows.
  *
- * Pass an argument to override, e.g. "shinogi.exe sdl", which is how
- * the SDL behaviour gets tested on a given host.
+ * Pass an argument to override, e.g. "shinogi.exe gtk". That matters
+ * on hosts where SDL is unusable: with an absolute pointing device SDL
+ * grabs the pointer as soon as it enters a *focused* window and only
+ * releases it at a window edge, so on a host where the grab also stops
+ * motion being delivered the pointer is frozen until the window loses
+ * focus. GTK never grabs while the device is absolute, and adds a
+ * menubar and window scaling that SDL does not have.
  */
 
 #include <windows.h>
@@ -68,7 +70,19 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     }
     *slash = '\0';
 
-    display = (cmdline && *cmdline) ? cmdline : "gtk";
+    /*
+     * gtk needs zoom-to-fit turned off, because it defaults to on for
+     * virtio-gpu and then scales our fixed 1280x720 into whatever window
+     * size GTK chose; scale enlarges it afterwards. SDL has neither
+     * option, so it is passed through untouched.
+     */
+    if (!cmdline || !*cmdline) {
+        display = "sdl";
+    } else if (lstrcmpiA(cmdline, "gtk") == 0) {
+        display = "gtk,zoom-to-fit=off,scale=1.5";
+    } else {
+        display = cmdline;
+    }
     log_dir(logs, sizeof(logs));
 
     _snprintf(cmd, sizeof(cmd),

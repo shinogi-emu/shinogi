@@ -31,62 +31,52 @@ Program Files).
 The display backend
 -------------------
 
-shinogi.exe uses QEMU's gtk display. That is deliberate.
+shinogi.exe uses QEMU's SDL display, the same as the Linux and macOS
+launchers, so all three behave alike. SDL is confirmed working on
+Windows: the pointer tracks correctly and there is no grab.
 
-With an absolute pointing device - which is what gives you a pointer
-that tracks yours exactly, instead of a captured relative mouse - QEMU's
-SDL frontend grabs the pointer the moment it moves inside a *focused*
-window, and only releases the grab when the pointer touches a window
-edge. On a host where that grab also stops mouse motion being delivered,
-the edge can never be reached, so the grab never lifts and the guest
-pointer is frozen until the window loses focus. That is exactly what
-happens on Linux under a GNOME Remote Login session.
+You can switch to GTK with:
 
-GTK never grabs while the pointing device is absolute, and actively
-releases the grab if a device becomes absolute, so it does the right
-thing. macOS/cocoa is fine too. There is no way to switch the SDL
-behaviour off: grab-mod is its only sub-option, and nothing on the guest
-side can prevent it without giving up absolute positioning.
+    shinogi.exe gtk
 
-Whether Windows is affected at all is still an open question. It very
-likely is not, because the Linux failure comes from how the X11/XWayland
-pointer grab behaves in a remote session and Windows uses an entirely
-different mechanism. Two ways to find out:
+or the "shinogi (GTK display)" Start Menu shortcut. GTK adds a menubar
+and opens a larger window (the launcher passes zoom-to-fit=off and
+scale=1.5, neither of which SDL supports - grab-mod is SDL's only
+sub-option). On SDL the window opens at 1280x720 and can be resized by
+dragging it.
 
+The reason the GTK option is there at all: on some Linux hosts SDL is
+unusable with this guest. With an absolute pointing device - which is
+what gives you a pointer tracking yours exactly, rather than a captured
+relative mouse - SDL grabs the pointer the moment it moves inside a
+*focused* window, and only releases the grab when the pointer touches a
+window edge. Where the grab also stops mouse motion being delivered, the
+edge can never be reached, the grab never lifts, and the guest pointer
+is frozen until the window loses focus. That happens on Linux under a
+GNOME Remote Login session. It does NOT happen on Windows.
 
-1. Run shinogi.exe with an argument:
+If a machine ever shows that symptom - pointer dead while the window is
+focused, fine while it is not - use gtk there, and confirm it with:
 
-       shinogi.exe sdl
+    sdl-grab-probe.exe
 
-   Same guest, forced onto the SDL display. Focus the window and move
-   the mouse.
+A small SDL2 program that tests the same thing with no QEMU and no
+guest involved. Click the window it opens and keep the mouse moving over
+it. It toggles the pointer grab every three seconds and prints how many
+mouse-motion events arrived in each interval.
 
-     - pointer tracks normally
-           -> Windows is unaffected, either backend works
-     - pointer frozen while focused, but tracks while the window is NOT
-       focused
-           -> Windows has the same fault, and gtk matters everywhere
+Healthy host - similar counts either way:
 
+    grab=OFF focus=1  motion events in last 3s: 341
+    grab=ON  focus=1  motion events in last 3s: 336
 
-2. Run sdl-grab-probe.exe from a command prompt.
+Affected host - zero whenever grabbed:
 
-   A small SDL2 program that tests the same thing with no QEMU and no
-   guest involved. Click the window it opens and keep the mouse moving
-   over it. It toggles the pointer grab every three seconds and prints
-   how many mouse-motion events arrived in each interval.
+    grab=OFF focus=1  motion events in last 3s: 337
+    grab=ON  focus=1  motion events in last 3s: 0
 
-   Healthy host - similar counts either way:
-
-       grab=OFF focus=1  motion events in last 3s: 341
-       grab=ON  focus=1  motion events in last 3s: 336
-
-   Affected host - zero whenever grabbed:
-
-       grab=OFF focus=1  motion events in last 3s: 337
-       grab=ON  focus=1  motion events in last 3s: 0
-
-   For reference the Linux box in the remote session reports 337 and 302
-   ungrabbed, 0 and 0 grabbed.
+For reference the Linux box in the remote session reports 337 and 302
+ungrabbed, 0 and 0 grabbed.
 
 
 Known cosmetic issue
@@ -95,9 +85,7 @@ Known cosmetic issue
 On the Linux remote-desktop session the host mouse pointer stays visible
 on top of the guest window, so two pointers are drawn. QEMU is already
 asking for the host pointer to be hidden and the remote-desktop layer
-ignores it. Windows should not do this. If it does, that is worth
-knowing, because it would mean the cause is something other than the
-remote session.
+ignores it. This has not been seen on Windows.
 
 
 Licensing / provenance

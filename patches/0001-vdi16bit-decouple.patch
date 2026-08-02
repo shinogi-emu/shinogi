@@ -1,0 +1,175 @@
+From 0ba50bc21d2df04b8dcfd750ded31983c0599d4e Mon Sep 17 00:00:00 2001
+From: rob <rmahlert@gmail.com>
+Date: Sun, 2 Aug 2026 16:16:09 -0400
+Subject: [PATCH] Allow CONF_WITH_VDI_16BIT without CONF_WITH_VIDEL
+
+The 16-bit VDI rendering code is machine independent, but config.h
+refused to build it unless CONF_WITH_VIDEL was also set. The Videl is
+Falcon hardware; the coupling is accidental rather than semantic, and it
+blocks any non-Falcon target that can provide a 16-bit chunky
+framebuffer.
+
+Three things were tied to CONF_WITH_VIDEL that belong to the 16-bit VDI:
+
+- the outright error when CONF_WITH_VDI_16BIT is set without it;
+- EXTENDED_PALETTE, which the 16-bit paths need for the 256-entry
+  palette tables regardless of which hardware supplies the mode.
+  Without it MAXCOLOURS stays 16 while numcolors becomes 256, and
+  MAP_COL[]/REV_MAP_COL[] overflow;
+- the chunky console paths in conout.c.
+
+The conout.c guards become "CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT"
+rather than being switched over, because TARGET_CART has CONF_WITH_VIDEL
+set with CONF_WITH_VDI_16BIT clear, and simply substituting would have
+disabled console code that target relies on.
+
+No functional change for any existing target: for every target in the
+tree, the new guard evaluates exactly as CONF_WITH_VIDEL did, and
+EXTENDED_PALETTE is unchanged because CONF_WITH_VDI_16BIT is only ever
+set where CONF_WITH_VIDEL already is. Verified by building aranym before
+and after, which produces a byte-identical image
+(md5 30057eb763ba0ff680da0aec68a561cc).
+---
+ bios/conout.c    | 22 +++++++++++-----------
+ include/config.h |  5 -----
+ vdi/vdi_defs.h   |  6 +++++-
+ 3 files changed, 16 insertions(+), 17 deletions(-)
+
+diff --git a/bios/conout.c b/bios/conout.c
+index a0ef9076..eadc608a 100644
+--- a/bios/conout.c
++++ b/bios/conout.c
+@@ -27,14 +27,14 @@
+ 
+ #define PLANE_OFFSET    2       /* interleaved planes */
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+ static const UWORD falcon_default_palette[16] = {
+     0xffdf, 0xf800, 0x07c0, 0xffc0, 0x001f, 0xf81f, 0x07df, 0xbdd7,
+     0x8c51, 0xa800, 0x0540, 0xad40, 0x0015, 0xa815, 0x0555, 0x0000
+ };
+ #endif
+ 
+-#if CONF_WITH_VDI_16BIT
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+ extern Vwk phys_work;           /* attribute area for physical workstation */
+ #endif
+ 
+@@ -97,7 +97,7 @@ static UBYTE *cell_addr(UWORD x, UWORD y)
+     if (y > v_cel_my)
+         y = v_cel_my;           /* clipped y */
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+     if (TRUECOLOR_MODE) {       /* chunky pixels */
+         disx = v_planes * x;
+     }
+@@ -128,7 +128,7 @@ static UBYTE *cell_addr(UWORD x, UWORD y)
+ 
+ 
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+ /*
+  * cell_xfer16 - cell_xfer() for Falcon 16-bit graphics
+  *
+@@ -159,7 +159,7 @@ static void cell_xfer16(UBYTE *src, UBYTE *dst)
+      * if we have 16-bit support in VDI and if the VDI workstation is initialized,
+      * we use its palette, otherwise, e.g. at boot, we use a default palette.
+      */
+-#if CONF_WITH_VDI_16BIT
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+     if (phys_work.ext) {
+         fgcol = phys_work.ext->palette[fg];
+         bgcol = phys_work.ext->palette[bg];
+@@ -207,7 +207,7 @@ static void cell_xfer(UBYTE *src, UBYTE *dst)
+     int fnt_wr, line_wr;
+     int plane;
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+     if (TRUECOLOR_MODE) {
+         cell_xfer16(src, dst);
+         return;
+@@ -302,7 +302,7 @@ static void neg_cell(UBYTE *cell)
+ 
+     v_stat_0 |= M_CRIT;                 /* start of critical section. */
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+     if (TRUECOLOR_MODE) {               /* chunky pixels */
+         for (len = cell_len; len--; ) {
+             WORD i;
+@@ -359,7 +359,7 @@ static BOOL next_cell(void)
+ 
+     v_cur_cx += 1;                      /* next cell to right */
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+     if (TRUECOLOR_MODE) {               /* chunky pixels */
+         v_cur_ad += 16;
+         return 0;
+@@ -533,7 +533,7 @@ void ascii_out(int ch)
+ 
+ 
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+ /*
+  * blank_out16 - blank_out() for Falcon 16-bit graphics
+  *
+@@ -556,7 +556,7 @@ static void blank_out16(int topx, int topy, int botx, int boty)
+     /* set standard background colour */
+     bgcol = falcon_default_palette[v_col_bg & 0xf];
+ 
+-#if CONF_WITH_VDI_16BIT
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+     /*
+      * if we're already in 16-bit mode, we can get the pixel value of
+      * the background colour from the physical workstation's palette instead
+@@ -601,7 +601,7 @@ void blank_out(int topx, int topy, int botx, int boty)
+     int pair, pairs, row, rows, offs;
+     UBYTE *addr;
+ 
+-#if CONF_WITH_VIDEL
++#if CONF_WITH_VIDEL || CONF_WITH_VDI_16BIT
+     if (TRUECOLOR_MODE) {
+         blank_out16(topx, topy, botx, boty);
+         return;
+diff --git a/include/config.h b/include/config.h
+index 41e43113..df6832b3 100644
+--- a/include/config.h
++++ b/include/config.h
+@@ -2195,11 +2195,6 @@
+ # endif
+ #endif
+ 
+-#if !CONF_WITH_VIDEL
+-# if CONF_WITH_VDI_16BIT
+-#  error CONF_WITH_VDI_16BIT requires CONF_WITH_VIDEL
+-# endif
+-#endif
+ 
+ #if CONF_WITH_EXTERNAL_DISK_DRIVER
+ # if CONF_WITH_XHDI || CONF_WITH_SCSI_DRIVER
+diff --git a/vdi/vdi_defs.h b/vdi/vdi_defs.h
+index af7e4efb..ba8337e1 100644
+--- a/vdi/vdi_defs.h
++++ b/vdi/vdi_defs.h
+@@ -17,7 +17,11 @@
+ 
+ #define HAVE_BEZIER 0           /* switch on bezier capability - entirely untested */
+ 
+-#define EXTENDED_PALETTE (CONF_WITH_VIDEL || CONF_WITH_TT_SHIFTER)
++/*
++ * The 16-bit VDI needs the 256-entry palette tables regardless of which
++ * hardware provides the mode.
++ */
++#define EXTENDED_PALETTE (CONF_WITH_VIDEL || CONF_WITH_TT_SHIFTER || CONF_WITH_VDI_16BIT)
+ 
+ #define TRUECOLOR_MODE  (v_planes > 8)
+ 
+-- 
+2.53.0
+

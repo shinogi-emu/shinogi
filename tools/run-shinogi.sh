@@ -11,7 +11,19 @@
 set -eu
 
 ELF="${1:-$HOME/git/emutos/emutos-virt.elf}"
-DISP="${2:-sdl}"
+#
+# gtk, not sdl. With an absolute pointing device SDL grabs the pointer as
+# soon as it moves inside a focused window, and only releases it again
+# when the pointer touches a window edge (ui/sdl2.c handle_mousemotion).
+# Where that grab stops motion being delivered -- X11/XWayland under a
+# remote session, at least -- the edge can never be reached and the guest
+# pointer is dead until the window loses focus.
+#
+# GTK never grabs while the device is absolute, and ungrabs if a device
+# becomes absolute (ui/gtk.c:695, ui/gtk.c:1081), so a tablet behaves the
+# way it is supposed to. macOS/cocoa keeps the pointer associated in
+# absolute mode and is fine too.
+DISP="${2:-gtk}"
 LOG="${TMPDIR:-/tmp}/shinogi-serial.log"
 
 if [ ! -f "$ELF" ]; then
@@ -33,6 +45,8 @@ exec qemu-system-m68k \
     -m 128 \
     -kernel "$ELF" \
     -device virtio-gpu-device \
+    -device virtio-keyboard-device \
+    -device virtio-tablet-device \
     -display "$DISP" \
     -serial "file:$LOG" \
     -d guest_errors -D "$LOG.err"

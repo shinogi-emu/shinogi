@@ -1,0 +1,17 @@
+hostfs: sublist .
+hostfs: sublist ..
+hostfs: sublist DEEP.TXT
+hostfs: sublist INNER.TXT
+hostfs: subopen rc 257
+hostfs: subread 11 bytes: inner file
+hostfs: subattrib rc 0x00000000
+hostfs: subsetpath rc 0
+hostfs: subrelopen rc 258
+hostfs: subrelread 7 bytes: deeper
+hostfs: subrellist .
+hostfs: subrellist ..
+hostfs: subrellist DEEP.TXT
+hostfs: subrellist INNER.TXT
+hostfs: subescape open rc -34
+hostfs: subescape attrib rc -34
+hostfs: subescape list rc -34

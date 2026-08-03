@@ -1,5 +1,6 @@
 9p: dirent .
 9p: dirent ..
+9p: dirent SUB
 9p: dirent a.b.c
 9p: dirent verylongname.txt
 9p: dirent HELLO.TXT

@@ -1,3 +1,12 @@
 hostfs: fsfirst HELLO.TXT
+hostfs: fsnext SUB
 hostfs: fsnext A+B.C
 hostfs: fsnext VERYLONG.TXT
+hostfs: fsfirst .
+hostfs: fsnext ..
+hostfs: fsnext DEEP.TXT
+hostfs: fsnext INNER.TXT
+hostfs: fsfirst .
+hostfs: fsnext ..
+hostfs: fsnext DEEP.TXT
+hostfs: fsnext INNER.TXT

@@ -1,3 +1,12 @@
 hostfs: dta HELLO.TXT len 6 attr 0x00
+hostfs: dta SUB len 0 attr 0x10
 hostfs: dta A+B.C len 0 attr 0x00
 hostfs: dta VERYLONG.TXT len 0 attr 0x00
+hostfs: dta . len 0 attr 0x10
+hostfs: dta .. len 0 attr 0x10
+hostfs: dta DEEP.TXT len 7 attr 0x00
+hostfs: dta INNER.TXT len 11 attr 0x00
+hostfs: dta . len 0 attr 0x10
+hostfs: dta .. len 0 attr 0x10
+hostfs: dta DEEP.TXT len 7 attr 0x00
+hostfs: dta INNER.TXT len 11 attr 0x00

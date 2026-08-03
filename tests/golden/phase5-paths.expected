@@ -1,0 +1,28 @@
+hostfs: rwopen handle 258
+hostfs: rwread 6 bytes: hello
+hostfs: rwwrite rc -36
+hostfs: rwclose rc 0
+hostfs: setdrv rc 0x00000004 curdrv 2
+hostfs: getpath ""
+hostfs: setpath "SUB" rc 0
+hostfs: getpath "\SUB"
+hostfs: setpath "\SUB\DEEP" rc 0
+hostfs: getpath "\SUB\DEEP"
+hostfs: setpath "..\" rc 0
+hostfs: getpath "\SUB"
+hostfs: setpath "\SUB\.." rc 0
+hostfs: getpath ""
+hostfs: escape ".." rc -34
+hostfs: escape "\.." rc -34
+hostfs: escape "\SUB\..\.." rc -34
+hostfs: escape "C:/../.." rc -34
+hostfs: escape "\SUB/../.." rc -34
+hostfs: escape "\..\..\ETC" rc -34
+hostfs: escape "\SUB\..\..\SUB" rc -34
+hostfs: escape "\NOSUCH" rc -34
+hostfs: escape "\HELLO.TXT" rc -34
+hostfs: getpath ""
+hostfs: fattrib HELLO.TXT rc 0x00000000
+hostfs: fattrib SUB rc -33
+hostfs: fattrib set rc -36
+hostfs: dfree free 65535 total 65535 secsiz 512 clsiz 2

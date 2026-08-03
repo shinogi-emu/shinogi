@@ -1,0 +1,3 @@
+hostfs: dta HELLO.TXT len 6 attr 0x00
+hostfs: dta A+B.C len 0 attr 0x00
+hostfs: dta VERYLONG.TXT len 0 attr 0x00

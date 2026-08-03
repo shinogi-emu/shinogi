@@ -2027,6 +2027,14 @@ cd ~/git/shinogi && git add tests/golden/phase5-paths.expected \
 - Listing order is raw-host-name byte order, uppercase before lowercase.
 - `tests/hostfs-name` passes.
 - The differential test has actually been run against Hatari and its result recorded on `shin-apn.9`.
+- A file can be **opened and read** from `C:` — `Fopen`, `Fread`, `Fclose`, `Fseek` (Task 10). A drive that can be listed but not read cannot boot anything, so this is part of Stage 1, not a nicety.
+- The remaining Stage 1 calls work: `Dsetdrv`, `Dgetdrv`, `Dsetpath`, `Dgetpath`, `Dfree`, `Fattrib` query (Task 11).
 
-Stage 2 (`Fopen`/`Fread`/`Fclose`/`Fseek`, then the write half) follows in
-a separate plan.
+Stage 2 is the write half — `Fcreate`, `Fwrite`, `Fdelete`, `Frename`,
+`Dcreate`, `Ddelete`, `Fdatime`, `Fattrib` set — and follows in a
+separate plan.
+
+Note for whoever picks this up: Tasks 10 and 11 were added after
+execution began, because the original task list stopped at listing while
+the Stage 1 call-surface table above already promised the read calls.
+The table was right and the task list was short.

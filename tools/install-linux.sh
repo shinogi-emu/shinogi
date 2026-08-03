@@ -29,7 +29,7 @@ mkdir -p "$BIN" "$LIBDIR" "$SHARE/applications" \
 
 # The launcher looks for the guest image beside itself, so both live in
 # the private lib dir and only a symlink goes on PATH.
-cc "$ROOT/tools/linux/shinogi-launcher.c" \
+cc "$ROOT/tools/shinogi-launcher.c" \
    -DSHINOGI_VERSION="\"$VERSION\"" \
    -o "$LIBDIR/shinogi" -O2 -Wall
 cp "$ELF" "$LIBDIR/emutos-virt.elf"

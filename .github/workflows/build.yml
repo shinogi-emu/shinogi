@@ -1,0 +1,219 @@
+name: build
+
+# Builds the guest once and packages it for each platform.
+#
+# The guest is host-independent -- the same emutos-virt.elf runs on
+# Linux, Windows and macOS -- so it is built once and handed to the
+# packaging jobs as an artifact, rather than rebuilt three times.
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'b*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  # Prebuilt m68k-atari-mintelf toolchain, the same source FreeMiNT's own
+  # CI uses. Note this publishes GCC 7.5.0: EmuTOS's ELF build passes
+  # --param=min-pagesize=0, which does not exist before GCC 11 and is a
+  # hard error rather than a warning, so the Makefile probes for it.
+  TOOLCHAIN_URL: https://atari.joska.no/snapshots
+  QEMU_WIN_URL: https://qemu.weilnetz.de/w64/qemu-w64-setup-20260729.exe
+  SDL2_MINGW_URL: https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-mingw.tar.gz
+
+jobs:
+  guest:
+    name: guest image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # The guest lives in a separate private repo, so the default
+          # token is not enough -- it only grants access to this one.
+          # Either set EMUTOS_TOKEN to a PAT with read access, or make
+          # the fork public and drop this.
+          token: ${{ secrets.EMUTOS_TOKEN || github.token }}
+
+      - name: Fetch the cross toolchain
+        run: |
+          set -eux
+          sudo mkdir -p /
+          for pkg in binutils gcc; do
+            curl -fsSL "$TOOLCHAIN_URL/$pkg/$pkg-mintelf-current.tar.bz2" \
+              | sudo tar xjf - -C /
+          done
+          m68k-atari-mintelf-gcc --version
+
+      - name: Build
+        working-directory: emutos
+        run: make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+
+      - name: Check it is a real m68k image
+        working-directory: emutos
+        run: |
+          set -eux
+          test -s emutos-virt.elf
+          file emutos-virt.elf | grep -q "Motorola m68k"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest
+          path: emutos/emutos-virt.elf
+          if-no-files-found: error
+
+  # The goldens boot the guest under QEMU and diff its serial output.
+  # They are the only thing that proves the image works rather than
+  # merely links, so a package is never published without them.
+  test:
+    name: goldens
+    needs: guest
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest
+          path: guest
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-m68k
+
+      - name: Build the fixtures
+        run: python3 tools/make-fixtures.py /tmp/shinogi-hostfs
+
+      - name: Run the goldens
+        env:
+          SHINOGI_ELF: ${{ github.workspace }}/guest/emutos-virt.elf
+        run: ./tools/run-all-goldens.sh
+
+  windows:
+    name: windows package
+    needs: [ guest, test ]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest
+          path: guest
+
+      - name: Install the cross toolchain and installer builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 nsis p7zip-full
+
+      - name: Fetch SDL2 for mingw
+        run: |
+          set -eux
+          curl -fsSL "$SDL2_MINGW_URL" -o sdl2.tar.gz
+          mkdir -p "$HOME/mingw-sdl2"
+          tar xzf sdl2.tar.gz --strip-components=1 -C "$HOME/mingw-sdl2"
+
+      - name: Fetch and unpack QEMU for Windows
+        run: |
+          set -eux
+          curl -fsSL "$QEMU_WIN_URL" -o qemu-w64-setup.exe
+          mkdir -p qemu-w64
+          7z x -oqemu-w64 qemu-w64-setup.exe > /dev/null
+          test -s qemu-w64/qemu-system-m68k.exe
+
+      - name: Build the package
+        env:
+          SHINOGI_ELF: ${{ github.workspace }}/guest/emutos-virt.elf
+          QEMU_WIN: ${{ github.workspace }}/qemu-w64
+          SDL2_MINGW: ${{ env.HOME }}/mingw-sdl2/x86_64-w64-mingw32
+        run: ./tools/make-windows-package.sh "${{ github.workspace }}/dist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macos package
+    needs: [ guest, test ]
+    runs-on: macos-14          # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest
+          path: guest
+
+      - name: Install QEMU
+        run: brew install qemu
+
+      - name: Build the app bundle
+        env:
+          SHINOGI_ELF: ${{ github.workspace }}/guest/emutos-virt.elf
+        run: ./tools/make-macos-package.sh "${{ github.workspace }}/dist"
+
+      # Signing and notarisation only run when the secrets exist, so a
+      # fork or a pull request still produces an unsigned bundle that can
+      # be tested locally with `xattr -d com.apple.quarantine`.
+      - name: Import the signing certificate
+        if: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -eu
+          KEYCHAIN=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign
+        if: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+        env:
+          IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: ./tools/sign-macos.sh "${{ github.workspace }}/dist/shinogi.app"
+
+      - name: Notarise
+        if: ${{ secrets.MACOS_NOTARY_KEY_P8 != '' }}
+        env:
+          ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          KEY_P8: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
+        run: |
+          set -eu
+          echo "$KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent dist/shinogi.app "$RUNNER_TEMP/shinogi.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/shinogi.zip" \
+            --issuer "$ISSUER" --key-id "$KEY_ID" \
+            --key "$RUNNER_TEMP/notary.p8" --wait
+          # The ticket has to be stapled to the bundle, or a machine that
+          # is offline when it first runs the app still sees it as
+          # unnotarised.
+          xcrun stapler staple dist/shinogi.app
+          xcrun stapler validate dist/shinogi.app
+          rm -f "$RUNNER_TEMP/notary.p8"
+
+      - name: Package for download
+        run: |
+          set -eu
+          VERSION=$(cat VERSION)
+          ditto -c -k --keepParent dist/shinogi.app \
+            "dist/shinogi-$VERSION-macos-arm64.zip"
+          shasum -a 256 "dist/shinogi-$VERSION-macos-arm64.zip" \
+            > "dist/shinogi-$VERSION-macos-arm64.zip.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip*
+          if-no-files-found: error

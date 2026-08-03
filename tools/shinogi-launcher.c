@@ -29,6 +29,10 @@
 #include <limits.h>
 #include <sys/stat.h>
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 #ifndef SHINOGI_VERSION
 #error "SHINOGI_VERSION not defined - build through tools/make-linux-package.sh"
 #endif
@@ -41,6 +45,10 @@
  */
 static int session_is_remote(void)
 {
+#ifdef __APPLE__
+    /* No logind, and cocoa does not have SDL's grab problem anyway. */
+    return 0;
+#else
     const char *id = getenv("XDG_SESSION_ID");
     char cmd[256];
     char line[128];
@@ -62,6 +70,7 @@ static int session_is_remote(void)
 
     pclose(p);
     return remote;
+#endif
 }
 
 /* The directory holding this executable. */
@@ -70,10 +79,20 @@ static int self_dir(char *out, size_t n)
     ssize_t len;
     char *slash;
 
+#ifdef __APPLE__
+    /* macOS has no /proc; the executable path comes from dyld. */
+    {
+        uint32_t sz = (uint32_t)n;
+        if (_NSGetExecutablePath(out, &sz) != 0)
+            return -1;
+        len = (ssize_t)strlen(out);
+    }
+#else
     len = readlink("/proc/self/exe", out, n - 1);
     if (len <= 0)
         return -1;
     out[len] = '\0';
+#endif
 
     slash = strrchr(out, '/');
     if (!slash)
@@ -126,7 +145,11 @@ int main(int argc, char *argv[])
      */
     want = (argc > 1) ? argv[1] : getenv("SHINOGI_DISPLAY");
     if (!want || !*want)
+#ifdef __APPLE__
+        want = "cocoa";
+#else
         want = session_is_remote() ? "gtk" : "sdl";
+#endif
 
     if (strcmp(want, "gtk") == 0)
         snprintf(display, sizeof(display),

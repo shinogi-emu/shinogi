@@ -28,7 +28,7 @@ jobs:
     name: guest image
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
           # The guest lives in a separate private repo, so the default
@@ -58,7 +58,7 @@ jobs:
           test -s emutos-virt.elf
           file emutos-virt.elf | grep -q "Motorola m68k"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: guest
           path: emutos/emutos-virt.elf
@@ -72,8 +72,8 @@ jobs:
     needs: guest
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
           name: guest
           path: guest
@@ -96,8 +96,8 @@ jobs:
     needs: [ guest, test ]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
           name: guest
           path: guest
@@ -130,7 +130,7 @@ jobs:
           SDL2_MINGW: ${{ github.workspace }}/mingw-sdl2/x86_64-w64-mingw32
         run: ./tools/make-windows-package.sh "${{ github.workspace }}/dist"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: windows
           path: dist/*
@@ -147,8 +147,8 @@ jobs:
       HAVE_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
       HAVE_NOTARY: ${{ secrets.MACOS_NOTARY_KEY_P8 != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
           name: guest
           path: guest
@@ -219,7 +219,7 @@ jobs:
           shasum -a 256 "dist/shinogi-$VERSION-macos-arm64.zip" \
             > "dist/shinogi-$VERSION-macos-arm64.zip.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: macos
           path: dist/*.zip*

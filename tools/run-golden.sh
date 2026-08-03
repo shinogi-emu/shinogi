@@ -31,6 +31,9 @@ BOOT_WAIT="${BOOT_WAIT:-25}"
 [ -f "$GOLDEN" ] || { echo "no golden file at $GOLDEN" >&2; exit 2; }
 [ -s "$GOLDEN" ] || { echo "golden file $GOLDEN is empty" >&2; exit 2; }
 
+# How many matching lines the golden expects.
+WANT=$(wc -l < "$GOLDEN")
+
 mkdir -p "$WORK" "$FOLDER"
 LOG="$WORK/serial.log"
 rm -f "$LOG"
@@ -69,7 +72,8 @@ while [ "$i" -lt "$BOOT_WAIT" ]; do
     fi
 
     if [ -s "$LOG" ]; then
-        grep -aoE "$PATTERN" "$LOG" 2>/dev/null | tr -d '\r' > "$WORK/probe" || true
+        grep -aoE "$PATTERN" "$LOG" 2>/dev/null | tr -d '\r' \
+            | head -n "$WANT" > "$WORK/probe" || true
         if cmp -s "$GOLDEN" "$WORK/probe"; then
             if [ -z "$matched_at" ]; then
                 matched_at="$i"
@@ -102,7 +106,18 @@ fi
 [ -s "$LOG" ] || { echo "no serial output captured in $LOG - guest never ran" >&2; exit 2; }
 
 # The guest emits CRLF; strip the CR so goldens can be plain LF.
-grep -aoE "$PATTERN" "$LOG" | tr -d '\r' > "$WORK/actual" || true
+#
+# Only the FIRST $WANT matching lines are compared. The guest keeps
+# running after it has produced them -- the desktop re-lists the drive,
+# so these lines repeat for as long as the capture window is open -- and
+# comparing everything would make each golden depend on how fast the
+# host booted it. That is not hypothetical: it passed locally and failed
+# on a CI runner purely because the window stayed open longer.
+#
+# The trade is real: a spurious line appearing AFTER the expected ones
+# is not caught. A wrong line, a missing line, or a wrong order still
+# is, and those are the failures these goldens exist to find.
+grep -aoE "$PATTERN" "$LOG" | tr -d '\r' | head -n "$WANT" > "$WORK/actual" || true
 
 if diff -u "$GOLDEN" "$WORK/actual"; then
     echo "PASS $NAME"

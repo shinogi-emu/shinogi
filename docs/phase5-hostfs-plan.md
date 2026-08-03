@@ -109,7 +109,8 @@ done
 kill "$QPID" 2>/dev/null || true
 wait "$QPID" 2>/dev/null || true
 
-grep -aoE "$PATTERN" "$LOG" > "$WORK/actual" || true
+# The guest emits CRLF; strip the CR so goldens can be plain LF.
+grep -aoE "$PATTERN" "$LOG" | tr -d '\r' > "$WORK/actual" || true
 
 if diff -u "$GOLDEN" "$WORK/actual"; then
     echo "PASS $NAME"
@@ -551,7 +552,7 @@ EOF
 ```bash
 mkdir -p /tmp/shinogi-hostfs && echo hello > /tmp/shinogi-hostfs/HELLO.TXT
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-attach '9p: (slot [0-9]+ msize|attached,)[^\n]*'; echo "exit=$?"
+cd ~/git/shinogi && tools/run-golden.sh phase5-attach '9p: (slot [0-9]+ msize|attached,).*'; echo "exit=$?"
 ```
 Expected: FAIL — no `9p:` lines at all, because the device is found by the
 probe but nothing handles it yet.
@@ -833,7 +834,7 @@ LONG p9_errno_to_gemdos(ULONG err)
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-attach '9p: (slot [0-9]+ msize|attached,)[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-attach '9p: (slot [0-9]+ msize|attached,).*'
 ```
 Expected: `PASS phase5-attach`, exit 0.
 
@@ -873,7 +874,7 @@ EOF
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-walk '9p: (walk|getattr)[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-walk '9p: (walk|getattr).*'
 ```
 Expected: `FAIL phase5-walk`.
 
@@ -994,7 +995,7 @@ Add to the end of `p9_attach()`, before `return 0`, a temporary probe:
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-walk '9p: (walk|getattr)[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-walk '9p: (walk|getattr).*'
 ```
 Expected: `PASS phase5-walk`.
 
@@ -1033,7 +1034,7 @@ EOF
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-readdir '9p: dirent[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-readdir '9p: dirent.*'
 ```
 Expected: `FAIL phase5-readdir`.
 
@@ -1159,7 +1160,7 @@ Replace the temporary probe in `p9_attach()` with:
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-readdir '9p: dirent[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-readdir '9p: dirent.*'
 ```
 Expected: `PASS phase5-readdir`.
 
@@ -1367,7 +1368,7 @@ EOF
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-listing 'hostfs: fs(first|next)[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-listing 'hostfs: fs(first|next).*'
 ```
 Expected: `FAIL phase5-listing`.
 
@@ -1515,7 +1516,7 @@ the desktop exercises the same path.
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-listing 'hostfs: fs(first|next)[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-listing 'hostfs: fs(first|next).*'
 ```
 Expected: `PASS phase5-listing` — the three lines in that exact order.
 
@@ -1568,7 +1569,7 @@ EOF
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-dta 'hostfs: dta[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-dta 'hostfs: dta.*'
 ```
 Expected: `FAIL phase5-dta`.
 
@@ -1733,7 +1734,7 @@ on each iteration and the runner can check it headlessly.
 
 ```bash
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-cd ~/git/shinogi && tools/run-golden.sh phase5-dta 'hostfs: dta[^\n]*'
+cd ~/git/shinogi && tools/run-golden.sh phase5-dta 'hostfs: dta.*'
 ```
 Expected: `PASS phase5-dta`.
 

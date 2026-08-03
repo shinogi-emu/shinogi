@@ -1888,6 +1888,22 @@ GEMDOS handle to a 9P fid plus the current offset. EmuTOS's own handle
 space must not be disturbed for other drives, so claim only handles the
 hostfs allocated.
 
+**Fids must be allocated, and they leak.** Every `Twalk` consumes a fid
+and nothing frees it but an explicit `Tclunk`. GEM opens and closes
+files constantly, so a single missing clunk on an error path exhausts
+the fid space after a few hundred operations and then everything fails
+at once, far from the actual bug. Up to now fids have been hardcoded
+(0 for the root, 1 as scratch); this task needs a real allocator. Use a
+small fixed bitmap, and make every error path that has walked a fid
+release it — including the paths where a later step fails. Prove it:
+the self-test should open and close the same file enough times to wrap
+the table, and still succeed on the last iteration.
+
+**Respect the negotiated msize.** `Tread` must never request more than
+the server agreed to, minus the 11-byte `Rread` header. Asking for what
+we wanted rather than what was granted fails only on large reads, so it
+survives every directory-listing test.
+
 - [ ] **Step 1: Write the failing test**
 
 ```bash

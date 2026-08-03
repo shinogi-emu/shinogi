@@ -46,15 +46,41 @@ qemu-system-m68k \
     -d guest_errors -D "$WORK/guest-errors.log" &
 QPID=$!
 
-# The guest never exits on its own; give it a fixed window then stop it.
-# But check periodically whether QEMU has already died on its own (bad
-# device option, missing binary, sandbox refusal, invalid kernel, etc.) -
-# in that case there is no point waiting out the full window.
+# The guest never exits on its own, so it has to be stopped from here.
+#
+# Waiting out the full window every time is what this loop avoids: most
+# boots produce their output in a fraction of BOOT_WAIT, and with several
+# goldens per verification pass the fixed sleep dominates the run.
+#
+# Stopping the moment the output matches would be wrong, though: a golden
+# can match early and then be spoiled by a later spurious line, which is
+# exactly the kind of bug worth catching. So once the extracted output
+# matches, wait SETTLE seconds and require it to still match, unchanged,
+# before believing it.
+#
+# QEMU dying on its own (bad device option, invalid kernel, sandbox
+# refusal) also breaks the loop early - there is nothing to wait for.
+SETTLE="${SETTLE:-3}"
 i=0
+matched_at=""
 while [ "$i" -lt "$BOOT_WAIT" ]; do
     if ! kill -0 "$QPID" 2>/dev/null; then
         break
     fi
+
+    if [ -s "$LOG" ]; then
+        grep -aoE "$PATTERN" "$LOG" 2>/dev/null | tr -d '\r' > "$WORK/probe" || true
+        if cmp -s "$GOLDEN" "$WORK/probe"; then
+            if [ -z "$matched_at" ]; then
+                matched_at="$i"
+            elif [ "$((i - matched_at))" -ge "$SETTLE" ]; then
+                break           # matched and stayed matched
+            fi
+        else
+            matched_at=""       # changed again; keep waiting
+        fi
+    fi
+
     sleep 1
     i=$((i + 1))
 done

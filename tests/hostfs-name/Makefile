@@ -2,7 +2,7 @@
 # EmuTOS tree, so the Hatari rules can be checked without booting.
 EMUTOS ?= $(HOME)/git/emutos
 
-CFLAGS = -Wall -Wextra -O1 -I$(EMUTOS)/bdos -I.
+CFLAGS = -Wall -Wextra -O1 -DMACHINE_QEMU_VIRT -I$(EMUTOS)/bdos -I.
 
 test: test_hostfs_name
 	./test_hostfs_name

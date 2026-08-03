@@ -38,6 +38,123 @@
 
 ---
 
+### Task 0: golden-log test runner
+
+**Files:**
+- Create: `shinogi/tools/run-golden.sh`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `tools/run-golden.sh <name> <grep-ere>` — boots the guest
+  against a host folder, extracts matching serial lines, diffs them
+  against `tests/golden/<name>.expected`, and exits non-zero on any
+  mismatch. Every later task's verification step calls this.
+
+Without this the `.expected` files are documentation, not tests: nothing
+compares them to anything and a regression would be invisible.
+
+- [ ] **Step 1: Write the runner**
+
+Create `shinogi/tools/run-golden.sh`:
+
+```sh
+#!/bin/sh
+#
+# Boot the guest and check its serial output against a golden file.
+#
+# Usage: tools/run-golden.sh <name> <grep-ere> [host-folder]
+#
+#   <name>      tests/golden/<name>.expected holds the expected lines
+#   <grep-ere>  extended regex selecting the lines to compare
+#
+# Exits 0 only when the extracted lines match the golden file exactly,
+# in order. Any mismatch prints a diff and exits 1.
+#
+set -eu
+
+NAME="${1:?usage: run-golden.sh <name> <grep-ere> [host-folder]}"
+PATTERN="${2:?usage: run-golden.sh <name> <grep-ere> [host-folder]}"
+FOLDER="${3:-/tmp/shinogi-hostfs}"
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
+GOLDEN="$ROOT/tests/golden/$NAME.expected"
+WORK="${TMPDIR:-/tmp}/run-golden-$NAME"
+BOOT_WAIT="${BOOT_WAIT:-25}"
+
+[ -f "$ELF" ]    || { echo "no guest image at $ELF" >&2; exit 2; }
+[ -f "$GOLDEN" ] || { echo "no golden file at $GOLDEN" >&2; exit 2; }
+
+mkdir -p "$WORK" "$FOLDER"
+LOG="$WORK/serial.log"
+rm -f "$LOG"
+
+qemu-system-m68k \
+    -M virt -m 128 \
+    -kernel "$ELF" \
+    -device virtio-gpu-device \
+    -fsdev "local,id=hostfs,path=$FOLDER,security_model=mapped-xattr" \
+    -device virtio-9p-device,fsdev=hostfs,mount_tag=shinogi \
+    -display none \
+    -serial "file:$LOG" \
+    -d guest_errors -D "$WORK/guest-errors.log" &
+QPID=$!
+
+# The guest never exits on its own; give it a fixed window then stop it.
+i=0
+while [ "$i" -lt "$BOOT_WAIT" ]; do
+    sleep 1
+    i=$((i + 1))
+done
+kill "$QPID" 2>/dev/null || true
+wait "$QPID" 2>/dev/null || true
+
+grep -aoE "$PATTERN" "$LOG" > "$WORK/actual" || true
+
+if diff -u "$GOLDEN" "$WORK/actual"; then
+    echo "PASS $NAME"
+    exit 0
+fi
+
+echo "FAIL $NAME - see $LOG" >&2
+exit 1
+```
+
+```bash
+chmod +x ~/git/shinogi/tools/run-golden.sh
+```
+
+- [ ] **Step 2: Verify it fails honestly when nothing matches**
+
+```bash
+cd ~/git/shinogi
+mkdir -p tests/golden
+printf 'this line will never appear\n' > tests/golden/selftest.expected
+tools/run-golden.sh selftest 'this line will never appear'; echo "exit=$?"
+```
+Expected: a diff showing the golden line missing, `FAIL selftest`, `exit=1`.
+**A runner that passes here is broken** — it must not report success
+without having matched anything.
+
+- [ ] **Step 3: Verify it passes on a line the guest really prints**
+
+```bash
+cd ~/git/shinogi
+printf 'virtio: 2 device(s)\n' > tests/golden/selftest.expected
+tools/run-golden.sh selftest 'virtio: [0-9]+ device\(s\)'; echo "exit=$?"
+```
+Expected: `PASS selftest`, `exit=0`. The count is 2 here because the
+runner passes only the GPU and the 9p device.
+
+- [ ] **Step 4: Remove the scratch golden file and commit**
+
+```bash
+cd ~/git/shinogi && rm -f tests/golden/selftest.expected
+git add tools/run-golden.sh && git commit -m "tools: check guest serial output against golden files"
+```
+
+---
+
 ### Task 1: 8.3 name mapping, host→Atari
 
 **Files:**
@@ -434,14 +551,10 @@ EOF
 ```bash
 mkdir -p /tmp/shinogi-hostfs && echo hello > /tmp/shinogi-hostfs/HELLO.TXT
 cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
-qemu-system-m68k -M virt -m 128 -kernel emutos-virt.elf \
-  -device virtio-gpu-device \
-  -fsdev local,id=hostfs,path=/tmp/shinogi-hostfs,security_model=mapped-xattr \
-  -device virtio-9p-device,fsdev=hostfs,mount_tag=shinogi \
-  -display none -serial file:/tmp/p9.log -d guest_errors -D /tmp/p9.err
-grep '^9p:' /tmp/p9.log
+cd ~/git/shinogi && tools/run-golden.sh phase5-attach '9p: (slot [0-9]+ msize|attached,)[^\n]*'; echo "exit=$?"
 ```
-Expected: no `9p:` lines at all — the device is found by the probe but nothing handles it.
+Expected: FAIL — no `9p:` lines at all, because the device is found by the
+probe but nothing handles it yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -718,11 +831,11 @@ LONG p9_errno_to_gemdos(ULONG err)
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run the same QEMU command as Step 2, then:
 ```bash
-grep '^9p:' /tmp/p9.log
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-attach '9p: (slot [0-9]+ msize|attached,)[^\n]*'
 ```
-Expected: both lines from `tests/golden/phase5-attach.expected`.
+Expected: `PASS phase5-attach`, exit 0.
 
 - [ ] **Step 5: Commit**
 
@@ -758,7 +871,11 @@ EOF
 
 - [ ] **Step 2: Run to verify it fails**
 
-Build and run as in Task 3; `grep 'walk\|getattr' /tmp/p9.log` produces nothing.
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-walk '9p: (walk|getattr)[^\n]*'
+```
+Expected: `FAIL phase5-walk`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -875,8 +992,11 @@ Add to the end of `p9_attach()`, before `return 0`, a temporary probe:
 
 - [ ] **Step 4: Run to verify it passes**
 
-Build and run as in Task 3.
-Expected: the two lines in `tests/golden/phase5-walk.expected`.
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-walk '9p: (walk|getattr)[^\n]*'
+```
+Expected: `PASS phase5-walk`.
 
 - [ ] **Step 5: Commit**
 
@@ -911,7 +1031,11 @@ EOF
 
 - [ ] **Step 2: Run to verify it fails**
 
-Build and run as in Task 3; `grep 'dirent' /tmp/p9.log` produces nothing.
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-readdir '9p: dirent[^\n]*'
+```
+Expected: `FAIL phase5-readdir`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1033,8 +1157,11 @@ Replace the temporary probe in `p9_attach()` with:
 
 - [ ] **Step 4: Run to verify it passes**
 
-Build and run as in Task 3.
-Expected: `9p: dirent HELLO.TXT` appears (alongside `.` and `..`, which the GEMDOS layer filters later).
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-readdir '9p: dirent[^\n]*'
+```
+Expected: `PASS phase5-readdir`.
 
 - [ ] **Step 5: Commit**
 
@@ -1071,7 +1198,11 @@ EOF
 
 - [ ] **Step 2: Run to verify it fails**
 
-Build and run as in Task 3; `grep 'hostfs:' /tmp/p9.log` produces nothing.
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-drive 'hostfs: drive C registered'
+```
+Expected: `FAIL phase5-drive`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1179,8 +1310,11 @@ Call `hostfs_init()` from `bios/bios.c` immediately after
 
 - [ ] **Step 4: Run to verify it passes**
 
-Build and run as in Task 3.
-Expected: `hostfs: drive C registered`.
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-drive 'hostfs: drive C registered'
+```
+Expected: `PASS phase5-drive`.
 
 - [ ] **Step 5: Commit**
 
@@ -1231,7 +1365,11 @@ EOF
 
 - [ ] **Step 2: Run to verify it fails**
 
-Build and run as in Task 3; `grep 'fsfirst\|fsnext' /tmp/p9.log` produces nothing.
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-listing 'hostfs: fs(first|next)[^\n]*'
+```
+Expected: `FAIL phase5-listing`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1354,10 +1492,32 @@ LONG hostfs_dispatch(WORD fn, short *pw)
 
 - [ ] **Step 4: Run to verify it passes**
 
-Build and run as in Task 3, then trigger a listing from the desktop, or
-temporarily call `Fsfirst`/`Fsnext` from `hostfs_init()`.
-Expected: the three lines in `tests/golden/phase5-listing.expected`, in
-that order.
+Add a temporary self-test so the listing can be verified headlessly. In
+`bios/bios.c`, after `boot_status |= DOS_AVAILABLE;` (`bios.c:576`),
+which is the first point where GEMDOS traps are safe to call:
+
+```c
+#ifdef MACHINE_QEMU_VIRT
+    {
+        static char selftest_dta[44];
+        LONG rc;
+
+        Fsetdta(selftest_dta);
+        for (rc = Fsfirst("C:\\*.*", 0); rc == 0; rc = Fsnext())
+            ;
+    }
+#endif
+```
+
+`bios.c` needs `#include "bdosbind.h"` if it does not already have it.
+**This block is temporary scaffolding and is removed in Stage 2**, once
+the desktop exercises the same path.
+
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-listing 'hostfs: fs(first|next)[^\n]*'
+```
+Expected: `PASS phase5-listing` — the three lines in that exact order.
 
 - [ ] **Step 5: Commit**
 
@@ -1406,7 +1566,11 @@ EOF
 
 - [ ] **Step 2: Run to verify it fails**
 
-Build and run as in Task 3; `grep 'hostfs: dta' /tmp/p9.log` produces nothing.
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-dta 'hostfs: dta[^\n]*'
+```
+Expected: `FAIL phase5-dta`.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1564,9 +1728,23 @@ LONG hostfs_dispatch(WORD fn, short *pw)
 
 - [ ] **Step 4: Run to verify it passes**
 
-Build and run as in Task 3, then open drive `C:` from the GEM desktop.
-Expected: `hostfs: dta HELLO.TXT len 6 attr 0x00`, and the files appear
-in the desktop window.
+The Task 7 self-test already walks `C:\*.*`, so this now populates a DTA
+on each iteration and the runner can check it headlessly.
+
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-dta 'hostfs: dta[^\n]*'
+```
+Expected: `PASS phase5-dta`.
+
+Then confirm interactively, because the headless check cannot prove the
+desktop renders it:
+
+```bash
+~/git/shinogi/tools/run-shinogi.sh "" gtk
+```
+Open drive `C:` from the desktop; the host folder's files should be
+listed with their clipped names.
 
 - [ ] **Step 5: Commit**
 
@@ -1593,7 +1771,24 @@ transcription error in the name rules is invisible to any test written
 from the same notes as the implementation. This compares against the
 actual other implementation.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Build Hatari**
+
+Hatari is not built on this machine, and without it this test exits 2
+and verifies nothing. Build it first:
+
+```bash
+cd ~/git/Hatari
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+ls -l build/src/hatari
+```
+
+If the build fails for a missing dependency, report it rather than
+skipping the task — this is the only check that can catch a name rule
+transcribed wrongly, and skipping it silently defeats the parity
+decision.
+
+- [ ] **Step 2: Write the differential test**
 
 Create `shinogi/tools/hostfs-difftest.sh`:
 
@@ -1647,19 +1842,19 @@ echo "Any difference in NAMES or ORDER is a parity bug."
 chmod +x ~/git/shinogi/tools/hostfs-difftest.sh
 ```
 
-- [ ] **Step 2: Run to verify it reports honestly**
+- [ ] **Step 3: Run to verify it reports honestly**
 
 Run: `~/git/shinogi/tools/hostfs-difftest.sh`
 Expected: either the listing, or a clear `no Hatari binary at ...` with
 exit 2. It must never report success without having compared anything.
 
-- [ ] **Step 3: Record the result**
+- [ ] **Step 4: Record the result**
 
 ```bash
 bd note shin-apn.9 "Stage 1 differential test against Hatari: <paste result>"
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 cd ~/git/shinogi && git add tools/hostfs-difftest.sh \

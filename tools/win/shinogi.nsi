@@ -28,7 +28,16 @@ ShowInstDetails show
 !include "MUI2.nsh"
 
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\shinogi.exe"
+; Launch through Explorer rather than directly.
+;
+; The installer runs elevated (RequestExecutionLevel admin), and anything
+; MUI_FINISHPAGE_RUN starts directly inherits that elevated token. QEMU
+; started that way misbehaves, and %LOCALAPPDATA% then resolves to the
+; administrator's profile, so the logs land somewhere the user will not
+; think to look. Handing the path to Explorer makes the shell start it as
+; the logged-in desktop user instead, which is what a shortcut would do.
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchAsUser
 !define MUI_FINISHPAGE_RUN_TEXT "Launch shinogi now"
 
 !insertmacro MUI_PAGE_LICENSE "${BUNDLE}\qemu\COPYING"
@@ -40,6 +49,10 @@ ShowInstDetails show
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
+
+Function LaunchAsUser
+  Exec '"$WINDIR\explorer.exe" "$INSTDIR\shinogi.exe"'
+FunctionEnd
 
 Section "shinogi" SecMain
   SectionIn RO

@@ -6,8 +6,32 @@ launcher all ship together. Nothing else needs installing.
 
     shinogi.exe          launch it
     emutos-virt.elf      the guest (EmuTOS), 1280x720 truecolor
+                         NOTE: no drive C on Windows, see below
     qemu\                the bundled QEMU 11.0.92 for Windows
     sdl-grab-probe.exe   diagnostic, see below
+
+
+IMPORTANT: no drive C on Windows
+--------------------------------
+
+The Linux and macOS builds expose a folder on your host as the guest's
+system drive, over virtio-9p. This Windows build does NOT, and cannot.
+
+QEMU refuses to build the 9p/virtfs feature on Windows. From its own
+meson.build:
+
+    have_virtfs = get_option('virtfs') \
+        .require(host_os == 'linux' or host_os == 'darwin'
+                 or host_os == 'freebsd', ...)
+
+That is an upstream platform requirement, not a missing build flag, so
+no rebuild of QEMU fixes it. The bundled Windows binary has the device
+names registered (virtio-9p-device and friends) with none of the
+implementation behind them.
+
+So this build boots to the GEM desktop with keyboard, mouse and a
+correct system clock, and has no filesystem. What Windows should use
+instead is an open question - tracked as shin-j8u.
 
 
 Running

@@ -10,6 +10,14 @@
  * The launcher resolves its own location rather than relying on the
  * working directory, so shortcuts and "run as" both behave.
  *
+ * No drive C here. The Linux and macOS launchers expose a host folder as
+ * the guest's system drive over virtio-9p, but QEMU cannot build that
+ * feature on Windows at all: meson.build requires host_os to be linux,
+ * darwin or freebsd for virtfs, so the official Windows binary has the
+ * device names registered and none of the implementation behind them.
+ * Passing -fsdev here would make QEMU refuse to start rather than
+ * degrade, so the option is simply absent. Tracked as shin-j8u.
+ *
  * Display backend: sdl by default, the same as the other platforms so
  * all three bundles behave alike. Verified working on Windows.
  *

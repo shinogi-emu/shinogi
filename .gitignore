@@ -3,3 +3,8 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Working documents and upstream patches: kept locally, not tracked
+docs/
+patches/
+next-session.md

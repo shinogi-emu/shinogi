@@ -10,13 +10,21 @@
  * The launcher resolves its own location rather than relying on the
  * working directory, so shortcuts and "run as" both behave.
  *
- * No drive C here. The Linux and macOS launchers expose a host folder as
- * the guest's system drive over virtio-9p, but QEMU cannot build that
- * feature on Windows at all: meson.build requires host_os to be linux,
- * darwin or freebsd for virtfs, so the official Windows binary has the
- * device names registered and none of the implementation behind them.
- * Passing -fsdev here would make QEMU refuse to start rather than
- * degrade, so the option is simply absent. Tracked as shin-j8u.
+ * Drive C is a folder on the host, exposed through QEMU's vvfat driver
+ * as a FAT16 block device on virtio-blk.
+ *
+ * It is not 9p, which is what the Linux build has used until now: QEMU
+ * cannot build virtfs on Windows at all (meson.build requires host_os to
+ * be linux, darwin or freebsd), so the Windows binary carries the
+ * virtio-9p device name with none of the implementation behind it.
+ * vvfat is in every build, and EmuTOS reads the DOS MBR and FAT16 it
+ * synthesises using its own stock filesystem code.
+ *
+ * readonly=on is mandatory, not caution: virtio-blk asks for write
+ * permission when it opens the drive, and QEMU refuses to start at all
+ * without it. Writes are refused by the guest driver as well -- vvfat's
+ * read-write mode is documented experimental and is being evaluated
+ * separately.
  *
  * Display backend: sdl by default, the same as the other platforms so
  * all three bundles behave alike. Verified working on Windows.
@@ -60,6 +68,7 @@ static void log_dir(char *out, size_t n)
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 {
     char exe[MAX_PATH], dir[MAX_PATH], logs[MAX_PATH];
+    char drivec[MAX_PATH];
     char cmd[4096];
     const char *display;
     STARTUPINFOA si;
@@ -99,6 +108,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     }
     log_dir(logs, sizeof(logs));
 
+    /* The host folder the guest sees as drive C:. */
+    {
+        const char *profile = getenv("USERPROFILE");
+        _snprintf(drivec, sizeof(drivec), "%s\\shinogi-drive-c",
+                  (profile && *profile) ? profile : dir);
+        drivec[sizeof(drivec) - 1] = '\0';
+        CreateDirectoryA(drivec, NULL);
+    }
+
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
               " -name \"shinogi " SHINOGI_VERSION "\""
@@ -108,10 +126,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
               " -device virtio-gpu-device"
               " -device virtio-keyboard-device"
               " -device virtio-tablet-device"
+              " -drive \"file=fat:%s,format=raw,if=none,id=hostblk,readonly=on\""
+              " -device virtio-blk-device,drive=hostblk"
               " -display %s"
               " -serial \"file:%s\\shinogi-serial.log\""
               " -d guest_errors -D \"%s\\shinogi-guest-errors.log\"",
-              dir, dir, display, logs, logs);
+              dir, dir, drivec, display, logs, logs);
     cmd[sizeof(cmd) - 1] = '\0';
 
     ZeroMemory(&si, sizeof(si));

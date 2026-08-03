@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=shinogi
+GenericName=Atari GEM desktop
+Comment=Atari GEM (EmuTOS) on QEMU, with a host folder as drive C:
+Exec=@BINDIR@/shinogi
+Icon=shinogi
+Terminal=false
+Categories=System;Emulator;
+Keywords=atari;gem;emutos;tos;m68k;emulator;
+StartupNotify=true

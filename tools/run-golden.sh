@@ -7,8 +7,13 @@
 #   <name>      tests/golden/<name>.expected holds the expected lines
 #   <grep-ere>  extended regex selecting the lines to compare
 #
-# Exits 0 only when the extracted lines match the golden file exactly,
-# in order. Any mismatch prints a diff and exits 1.
+# Exit codes:
+#   0 = the extracted lines match the golden file exactly, in order
+#   1 = the guest ran but the extracted lines did not match (diff printed)
+#   2 = the test could not be run at all (bad setup, QEMU never produced
+#       output, or QEMU exited early) - this is never reported as pass
+#       or fail, since a harness failure must never look like a test
+#       result
 #
 set -eu
 
@@ -24,6 +29,7 @@ BOOT_WAIT="${BOOT_WAIT:-25}"
 
 [ -f "$ELF" ]    || { echo "no guest image at $ELF" >&2; exit 2; }
 [ -f "$GOLDEN" ] || { echo "no golden file at $GOLDEN" >&2; exit 2; }
+[ -s "$GOLDEN" ] || { echo "golden file $GOLDEN is empty" >&2; exit 2; }
 
 mkdir -p "$WORK" "$FOLDER"
 LOG="$WORK/serial.log"
@@ -41,13 +47,33 @@ qemu-system-m68k \
 QPID=$!
 
 # The guest never exits on its own; give it a fixed window then stop it.
+# But check periodically whether QEMU has already died on its own (bad
+# device option, missing binary, sandbox refusal, invalid kernel, etc.) -
+# in that case there is no point waiting out the full window.
 i=0
 while [ "$i" -lt "$BOOT_WAIT" ]; do
+    if ! kill -0 "$QPID" 2>/dev/null; then
+        break
+    fi
     sleep 1
     i=$((i + 1))
 done
 kill "$QPID" 2>/dev/null || true
-wait "$QPID" 2>/dev/null || true
+
+set +e
+wait "$QPID"
+QSTATUS=$?
+set -e
+
+# A clean SIGTERM shutdown (our own kill above) reports 143; anything
+# else non-zero means QEMU exited on its own, almost certainly with an
+# error, before we stopped it.
+if [ "$QSTATUS" -ne 0 ] && [ "$QSTATUS" -ne 143 ]; then
+    echo "qemu-system-m68k exited early with status $QSTATUS - see $WORK/guest-errors.log" >&2
+    exit 2
+fi
+
+[ -s "$LOG" ] || { echo "no serial output captured in $LOG - guest never ran" >&2; exit 2; }
 
 grep -aoE "$PATTERN" "$LOG" > "$WORK/actual" || true
 

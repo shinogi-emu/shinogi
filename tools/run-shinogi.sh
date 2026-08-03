@@ -35,6 +35,11 @@ DISP="${2:-sdl}"
 SCALE="${SHINOGI_SCALE:-1.5}"
 LOG="${TMPDIR:-/tmp}/shinogi-serial.log"
 
+# The host folder exposed as the guest's drive C: over virtio-9p. Override
+# with SHINOGI_HOSTFS to point the guest at a different directory.
+HOSTFS="${SHINOGI_HOSTFS:-$HOME/shinogi-drive-c}"
+mkdir -p "$HOSTFS"
+
 #
 # Window sizing, gtk only.
 #
@@ -72,6 +77,7 @@ fi
 
 echo "shinogi: $ELF"
 echo "display: $DISP    serial log: $LOG"
+echo "drive C: $HOSTFS"
 
 # -serial file: rather than stdio, so the window is the only thing the
 # user has to look at. -d guest_errors costs nothing and turns a silent
@@ -83,6 +89,8 @@ exec qemu-system-m68k \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
+    -fsdev "local,id=hostfs,path=$HOSTFS,security_model=mapped-xattr" \
+    -device virtio-9p-device,fsdev=hostfs,mount_tag=shinogi \
     -display "$DISP" \
     -serial "file:$LOG" \
     -d guest_errors -D "$LOG.err"

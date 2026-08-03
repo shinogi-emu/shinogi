@@ -50,7 +50,42 @@ int main(void)
     /* The literal ".." is the sole exception to the dot rule. */
     check("..", "..");
 
+    /* Atari->host clipping: FIRST dot, no substitution, no upcase. */
+    {
+        struct { const char *in, *want; } clips[] = {
+            { "a.b.c",            "a.b"      },
+            { "longfilename.txt", "longfile.txt" },
+            { "HELLO.C",          "HELLO.C"  },
+            { "lower.txt",        "lower.txt" },
+        };
+        size_t i;
+        char got[13];
+
+        for (i = 0; i < sizeof(clips) / sizeof(clips[0]); i++)
+        {
+            hostfs_atari_clip(clips[i].in, got);
+            if (strcmp(got, clips[i].want) != 0)
+            {
+                printf("FAIL atari_clip(\"%s\") = \"%s\", want \"%s\"\n",
+                       clips[i].in, got, clips[i].want);
+                failures++;
+            }
+        }
+    }
+
+    /* Sort is case-SENSITIVE byte order: all A-Z before all a-z. */
+    if (!(hostfs_name_compare("Zebra", "apple") < 0))
+    {
+        printf("FAIL sort: expected \"Zebra\" before \"apple\"\n");
+        failures++;
+    }
+    if (!(hostfs_name_compare("AUTO", "auto") < 0))
+    {
+        printf("FAIL sort: expected \"AUTO\" before \"auto\"\n");
+        failures++;
+    }
+
     if (failures == 0)
-        printf("all host2atari cases passed\n");
+        printf("all name cases passed\n");
     return failures != 0;
 }

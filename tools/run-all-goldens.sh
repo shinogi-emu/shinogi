@@ -25,9 +25,15 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FOLDER="${SHINOGI_HOSTFS:-/tmp/shinogi-hostfs}"
+VVFAT="${SHINOGI_VVFAT:-/tmp/shinogi-vvfat}"
 
-# name<TAB>pattern. Keep in step with the comment at the top of
-# tools/make-fixtures.py, which records the same pairing.
+# name<TAB>pattern[<TAB>vvfat]. Keep in step with the comment at the top
+# of tools/make-fixtures.py, which records the same pairing.
+#
+# A third field of "vvfat" attaches the block device for that golden
+# only. It is not attached to every run because it takes a virtio-mmio
+# slot and moves the one the 9P device lands in, which phase5-attach
+# pins by number.
 GOLDENS="
 phase5-attach	9p: (slot [0-9]+ msize|attached,).*
 phase5-walk	9p: (walk|getattr).*
@@ -41,6 +47,7 @@ phase5-subdir	hostfs: sub.*
 phase5-listing	hostfs: fs(first|next).*
 phase5-dta	hostfs: dta.*
 phase5-many	hostfs: many.*
+phase5-vvfat	vblk: .*	vvfat
 "
 
 want=""
@@ -48,11 +55,12 @@ if [ "$#" -gt 0 ]; then
     want=" $* "
 fi
 
-# phase5-bigread asserts an FNV-1a hash the guest computes over BIG.DAT.
-# A hash is the one golden line that cannot be read and judged by eye, so
-# it is checked here against the same hash computed from the fixture
-# definition -- an independent calculation, not a re-recording of
-# whatever the guest last printed.
+# phase5-bigread and phase5-vvfat each assert an FNV-1a hash the guest
+# computes over BIG.DAT -- once read over 9P, once read off the vvfat
+# block device. A hash is the one golden line that cannot be read and
+# judged by eye, so both are checked here against the same hash computed
+# from the fixture definition -- an independent calculation, not a
+# re-recording of whatever the guest last printed.
 python3 - "$ROOT" <<'EOF' || exit 2
 import sys, os
 sys.dont_write_bytecode = True      # no __pycache__ in the source tree
@@ -68,13 +76,16 @@ for b in data:
     h ^= b
     h = (h * 16777619) & 0xffffffff
 
-want = "hostfs: big %d bytes fnv1a 0x%08x" % (len(data), h)
-path = os.path.join(sys.argv[1], "tests", "golden", "phase5-bigread.expected")
-lines = open(path).read().splitlines()
-if want not in lines:
-    sys.stderr.write("phase5-bigread golden does not match the fixture:\n"
-                     "  expected: %s\n  golden:   %s\n" % (want, lines))
-    sys.exit(1)
+for golden, want in (
+        ("phase5-bigread", "hostfs: big %d bytes fnv1a 0x%08x" % (len(data), h)),
+        ("phase5-vvfat",   "vblk: big %d bytes fnv1a 0x%08x" % (len(data), h))):
+    path = os.path.join(sys.argv[1], "tests", "golden", golden + ".expected")
+    lines = open(path).read().splitlines()
+    if want not in lines:
+        sys.stderr.write("%s golden does not match the fixture:\n"
+                         "  expected: %s\n  golden:   %s\n"
+                         % (golden, want, lines))
+        sys.exit(1)
 EOF
 
 pass=0
@@ -82,12 +93,12 @@ fail=0
 error=0
 failed_names=""
 
-echo "$GOLDENS" | while IFS='	' read -r name pattern; do
+echo "$GOLDENS" | while IFS='	' read -r name pattern vvfat; do
     [ -n "$name" ] || continue
-    printf '%s\t%s\n' "$name" "$pattern"
+    printf '%s\t%s\t%s\n' "$name" "$pattern" "$vvfat"
 done > /tmp/.run-all-goldens.$$
 
-while IFS='	' read -r name pattern; do
+while IFS='	' read -r name pattern vvfat; do
     [ -n "$name" ] || continue
     if [ -n "$want" ]; then
         case "$want" in
@@ -96,7 +107,11 @@ while IFS='	' read -r name pattern; do
         esac
     fi
 
-    "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER"
+    if [ "$vvfat" = "vvfat" ]; then
+        "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER" "$VVFAT"
+    else
+        "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER"
+    fi
     case $? in
         0) pass=$((pass + 1)) ;;
         1) fail=$((fail + 1)); failed_names="$failed_names $name" ;;

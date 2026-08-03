@@ -15,8 +15,10 @@
 #   tools/make-fixtures.py /some/dir       just that one
 #
 # Default folders:
-#   /tmp/shinogi-hostfs    what tools/run-golden.sh mounts
+#   /tmp/shinogi-hostfs    what tools/run-golden.sh mounts over 9P
 #   ~/shinogi-drive-c      what tools/run-shinogi.sh mounts interactively
+#   /tmp/shinogi-vvfat     what run-golden.sh hands to QEMU's vvfat
+#                          driver as a virtio-blk device
 #
 # The two are kept identical so an interactive run shows exactly what the
 # goldens verified.
@@ -39,6 +41,7 @@
 #   phase5-listing  hostfs: fs(first|next).*
 #   phase5-dta      hostfs: dta.*
 #   phase5-many     hostfs: many.*
+#   phase5-vvfat    vblk: .*
 
 import calendar
 import os
@@ -114,6 +117,33 @@ def bigread_bytes():
     return bytes((i * 7 + 13) & 0xff for i in range(BIGREAD_SIZE))
 
 
+# The vvfat drive is a SEPARATE fixture folder, deliberately.
+#
+# QEMU's vvfat driver presents a host directory as a FAT16 block device,
+# and the guest reaches it through the stock EmuTOS block layer -- MBR
+# scan, BPB, FAT -- rather than through 9P. What it needs from a fixture
+# is therefore nothing like what the host-folder goldens need: no long
+# names, no pre-1980 timestamps, no 120-entry directory. Two files are
+# enough, and pointing vvfat at the host-folder fixture instead would
+# couple the two sets of goldens for no gain.
+#
+# HELLO.TXT deliberately has NO trailing newline: the guest prints its
+# contents on one line and a newline in the file would split the golden
+# line in two.
+VVFAT_DEFAULT = "/tmp/shinogi-vvfat"
+
+VVFAT_FILES = {
+    "HELLO.TXT": "vvfat hello",
+}
+
+# BIG.DAT is the same content as the host folder's, so tools/
+# run-all-goldens.sh checks both hashes against the one oracle in
+# bigread_bytes(). On this drive it proves something different: 40960
+# bytes is five clusters at vvfat's 16 sectors per cluster, so a FAT
+# walk that repeated or skipped a cluster, or a virtio-blk request whose
+# byte count wrapped, changes the hash.
+
+
 def write(path, data):
     with open(path, "wb") as f:
         f.write(data if isinstance(data, bytes) else data.encode())
@@ -151,11 +181,27 @@ def build(base):
     print("fixtures rebuilt in %s" % base)
 
 
+def build_vvfat(base):
+    os.makedirs(base, exist_ok=True)
+
+    for name, body in VVFAT_FILES.items():
+        write(os.path.join(base, name), body)
+
+    write(os.path.join(base, BIGREAD_NAME), bigread_bytes())
+
+    print("vvfat fixtures rebuilt in %s" % base)
+
+
 def main():
     targets = sys.argv[1:] or ["/tmp/shinogi-hostfs",
                                os.path.expanduser("~/shinogi-drive-c")]
     for t in targets:
         build(t)
+
+    # The vvfat folder is not one of the host-folder targets and is not
+    # interchangeable with them, so it is always rebuilt at its own
+    # location rather than being driven by the arguments above.
+    build_vvfat(VVFAT_DEFAULT)
 
 
 if __name__ == "__main__":

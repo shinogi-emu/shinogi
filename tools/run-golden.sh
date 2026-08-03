@@ -2,10 +2,19 @@
 #
 # Boot the guest and check its serial output against a golden file.
 #
-# Usage: tools/run-golden.sh <name> <grep-ere> [host-folder]
+# Usage: tools/run-golden.sh <name> <grep-ere> [host-folder] [vvfat-folder]
 #
-#   <name>      tests/golden/<name>.expected holds the expected lines
-#   <grep-ere>  extended regex selecting the lines to compare
+#   <name>         tests/golden/<name>.expected holds the expected lines
+#   <grep-ere>     extended regex selecting the lines to compare
+#   <host-folder>  exported over 9P as drive C
+#   <vvfat-folder> exported as a virtio-blk device via QEMU's vvfat
+#                  driver, if given; omitted, no block device is
+#                  attached at all
+#
+# The vvfat folder is OPTIONAL and off by default, which is not tidiness:
+# attaching the device consumes a virtio-mmio transport slot and shifts
+# the slot the 9P device lands in, and tests/golden/phase5-attach pins
+# that slot number. Only the goldens that need the block device get it.
 #
 # Exit codes:
 #   0 = the extracted lines match the golden file exactly, in order
@@ -20,6 +29,7 @@ set -eu
 NAME="${1:?usage: run-golden.sh <name> <grep-ere> [host-folder]}"
 PATTERN="${2:?usage: run-golden.sh <name> <grep-ere> [host-folder]}"
 FOLDER="${3:-/tmp/shinogi-hostfs}"
+VVFAT="${4:-}"
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
@@ -38,12 +48,27 @@ mkdir -p "$WORK" "$FOLDER"
 LOG="$WORK/serial.log"
 rm -f "$LOG"
 
+# readonly=on is required, not a precaution: without it QEMU refuses to
+# start at all with "Block node is read-only", because a vvfat drive
+# opened without ":rw" is a read-only block node and virtio-blk asks for
+# write permission unless told otherwise. The guest driver is read-only
+# too and refuses writes on its own.
+if [ -n "$VVFAT" ]; then
+    [ -d "$VVFAT" ] || { echo "no vvfat folder at $VVFAT" >&2; exit 2; }
+    set -- \
+        -drive "file=fat:$VVFAT,format=raw,if=none,id=hostblk,readonly=on" \
+        -device virtio-blk-device,drive=hostblk
+else
+    set --
+fi
+
 qemu-system-m68k \
     -M virt -m 128 \
     -kernel "$ELF" \
     -device virtio-gpu-device \
     -fsdev "local,id=hostfs,path=$FOLDER,security_model=mapped-xattr" \
     -device virtio-9p-device,fsdev=hostfs,mount_tag=shinogi \
+    "$@" \
     -display none \
     -serial "file:$LOG" \
     -d guest_errors -D "$WORK/guest-errors.log" &

@@ -1,0 +1,4 @@
+vblk: drive D unit 34
+vblk: read 11 bytes: vvfat hello
+vblk: big 40960 bytes fnv1a 0x08231dc5
+vblk: create rc -13

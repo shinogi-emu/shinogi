@@ -1,4 +1,4 @@
 [submodule "emutos"]
 	path = emutos
-	url = git@github.com:rmahlert/emutos.git
+	url = https://github.com/shinogi-emu/emutos.git
 	branch = shinogi

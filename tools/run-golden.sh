@@ -75,7 +75,8 @@ fi
 
 [ -s "$LOG" ] || { echo "no serial output captured in $LOG - guest never ran" >&2; exit 2; }
 
-grep -aoE "$PATTERN" "$LOG" > "$WORK/actual" || true
+# The guest emits CRLF; strip the CR so goldens can be plain LF.
+grep -aoE "$PATTERN" "$LOG" | tr -d '\r' > "$WORK/actual" || true
 
 if diff -u "$GOLDEN" "$WORK/actual"; then
     echo "PASS $NAME"

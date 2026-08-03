@@ -1,14 +1,19 @@
+hostfs: dta BIG.DAT len 40960 attr 0x00
+hostfs: dta FIXED.TXT len 16 attr 0x00
 hostfs: dta HELLO.TXT len 6 attr 0x00
 hostfs: dta MANY len 0 attr 0x10
+hostfs: dta README.TXT len 20 attr 0x00
 hostfs: dta SUB len 0 attr 0x10
-hostfs: dta A+B.C len 0 attr 0x00
-hostfs: dta VERYLONG.TXT len 0 attr 0x00
+hostfs: dta A+B.C len 5 attr 0x00
+hostfs: dta VERYLONG.TXT len 15 attr 0x00
 hostfs: dta . len 0 attr 0x10
 hostfs: dta .. len 0 attr 0x10
+hostfs: dta DEEP len 0 attr 0x10
 hostfs: dta DEEP.TXT len 7 attr 0x00
 hostfs: dta INNER.TXT len 11 attr 0x00
 hostfs: dta . len 0 attr 0x10
 hostfs: dta .. len 0 attr 0x10
+hostfs: dta DEEP len 0 attr 0x10
 hostfs: dta DEEP.TXT len 7 attr 0x00
 hostfs: dta INNER.TXT len 11 attr 0x00
 hostfs: dta . len 0 attr 0x10
@@ -133,3 +138,10 @@ hostfs: dta DATA104.BIN len 10 attr 0x00
 hostfs: dta DATA108.BIN len 10 attr 0x00
 hostfs: dta DATA112.BIN len 10 attr 0x00
 hostfs: dta DATA116.BIN len 10 attr 0x00
+hostfs: dta BIG.DAT len 40960 attr 0x00
+hostfs: dtaguard missing rc -34
+hostfs: dtaguard stale rc -49
+hostfs: dta BIG.DAT len 40960 attr 0x00
+hostfs: dtaguard other rc -34
+hostfs: dta FIXED.TXT len 16 attr 0x00
+hostfs: dtaguard resume rc 0 name FIXED.TXT

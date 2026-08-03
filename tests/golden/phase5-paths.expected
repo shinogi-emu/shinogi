@@ -1,8 +1,11 @@
-hostfs: rwopen handle 258
+hostfs: rwopen handle 257
 hostfs: rwread 6 bytes: hello
 hostfs: rwwrite rc -36
 hostfs: rwclose rc 0
 hostfs: setdrv rc 0x00000004 curdrv 2
+hostfs: specname CON: rc 0x0000ffff
+hostfs: specname AUX: rc 0x0000fffe
+hostfs: specname PRN: rc 0x0000fffd
 hostfs: getpath ""
 hostfs: setpath "SUB" rc 0
 hostfs: getpath "\SUB"
@@ -26,3 +29,9 @@ hostfs: fattrib HELLO.TXT rc 0x00000000
 hostfs: fattrib SUB rc -33
 hostfs: fattrib set rc -36
 hostfs: dfree free 65535 total 65535 secsiz 512 clsiz 2
+hostfs: longname C:\VERYLONGNAME.TXT ok 15 bytes: long name test
+hostfs: longname C:\VERYLONG.TXT ok 15 bytes: long name test
+hostfs: dtaguard missing rc -34
+hostfs: dtaguard stale rc -49
+hostfs: dtaguard other rc -34
+hostfs: dtaguard resume rc 0 name FIXED.TXT

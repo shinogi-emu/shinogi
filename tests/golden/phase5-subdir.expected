@@ -1,15 +1,17 @@
 hostfs: sublist .
 hostfs: sublist ..
+hostfs: sublist DEEP
 hostfs: sublist DEEP.TXT
 hostfs: sublist INNER.TXT
-hostfs: subopen rc 258
+hostfs: subopen rc 263
 hostfs: subread 11 bytes: inner file
 hostfs: subattrib rc 0x00000000
 hostfs: subsetpath rc 0
-hostfs: subrelopen rc 259
+hostfs: subrelopen rc 256
 hostfs: subrelread 7 bytes: deeper
 hostfs: subrellist .
 hostfs: subrellist ..
+hostfs: subrellist DEEP
 hostfs: subrellist DEEP.TXT
 hostfs: subrellist INNER.TXT
 hostfs: subescape open rc -34

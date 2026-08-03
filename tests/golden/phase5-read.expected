@@ -1,5 +1,5 @@
-hostfs: open HELLO.TXT handle 261
+hostfs: open HELLO.TXT handle 256
 hostfs: read 6 bytes: hello
 hostfs: seek 2 read 3: llo
-hostfs: close handle 261
-hostfs: wrap 23 opens, last handle 260 ok
+hostfs: close handle 256
+hostfs: wrap 23 opens, last handle 263 ok

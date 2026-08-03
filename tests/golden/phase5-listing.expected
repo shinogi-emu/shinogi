@@ -1,14 +1,19 @@
-hostfs: fsfirst HELLO.TXT
+hostfs: fsfirst BIG.DAT
+hostfs: fsnext FIXED.TXT
+hostfs: fsnext HELLO.TXT
 hostfs: fsnext MANY
+hostfs: fsnext README.TXT
 hostfs: fsnext SUB
 hostfs: fsnext A+B.C
 hostfs: fsnext VERYLONG.TXT
 hostfs: fsfirst .
 hostfs: fsnext ..
+hostfs: fsnext DEEP
 hostfs: fsnext DEEP.TXT
 hostfs: fsnext INNER.TXT
 hostfs: fsfirst .
 hostfs: fsnext ..
+hostfs: fsnext DEEP
 hostfs: fsnext DEEP.TXT
 hostfs: fsnext INNER.TXT
 hostfs: fsfirst .
@@ -133,3 +138,6 @@ hostfs: fsnext DATA104.BIN
 hostfs: fsnext DATA108.BIN
 hostfs: fsnext DATA112.BIN
 hostfs: fsnext DATA116.BIN
+hostfs: fsfirst BIG.DAT
+hostfs: fsfirst BIG.DAT
+hostfs: fsnext FIXED.TXT

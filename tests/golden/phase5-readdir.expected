@@ -1,5 +1,8 @@
 9p: dirent .
 9p: dirent ..
+9p: dirent BIG.DAT
+9p: dirent FIXED.TXT
+9p: dirent README.TXT
 9p: dirent MANY
 9p: dirent SUB
 9p: dirent a.b.c

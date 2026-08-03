@@ -33,6 +33,12 @@
 #include <windows.h>
 #include <stdio.h>
 
+/* Supplied by the build; see tools/make-windows-package.sh. Kept out of
+ * the source so the version lives in exactly one file, VERSION. */
+#ifndef SHINOGI_VERSION
+#error "SHINOGI_VERSION not defined - build through tools/make-windows-package.sh"
+#endif
+
 /* Logs go beside the guest image only if that is writable; a bundle
  * installed under Program Files is not, so use LOCALAPPDATA instead. */
 static void log_dir(char *out, size_t n)
@@ -95,6 +101,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
+              " -name \"shinogi " SHINOGI_VERSION "\""
               " -M virt"
               " -m 128"
               " -kernel \"%s\\emutos-virt.elf\""

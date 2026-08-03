@@ -12,8 +12,11 @@
 !ifndef OUTFILE
   !define OUTFILE "shinogi-setup.exe"
 !endif
+!ifndef VERSION
+  !error "VERSION not defined - build through tools/make-windows-package.sh"
+!endif
 
-Name "shinogi"
+Name "shinogi ${VERSION}"
 OutFile "${OUTFILE}"
 Unicode True
 InstallDir "$PROGRAMFILES64\shinogi"
@@ -62,9 +65,10 @@ Section "shinogi" SecMain
   CreateShortcut "$DESKTOP\shinogi.lnk" "$INSTDIR\shinogi.exe"
 
   WriteRegStr HKLM "Software\shinogi" "InstallDir" "$INSTDIR"
+  WriteRegStr HKLM "Software\shinogi" "Version" "${VERSION}"
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
-    "DisplayName" "shinogi - Atari GEM on QEMU"
+    "DisplayName" "shinogi ${VERSION} - Atari GEM on QEMU"
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
     "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
@@ -77,6 +81,9 @@ Section "shinogi" SecMain
   WriteRegDWORD HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
     "NoRepair" 1
+  WriteRegStr HKLM \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
+    "DisplayVersion" "${VERSION}"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd

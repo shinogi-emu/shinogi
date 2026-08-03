@@ -1864,6 +1864,162 @@ cd ~/git/shinogi && git add tools/hostfs-difftest.sh \
 
 ---
 
+### Task 10: opening and reading a file
+
+**Files:**
+- Modify: `emutos/bdos/hostfs.c`, `emutos/bdos/hostfs.h`
+- Modify: `emutos/bios/virtio_9p.c`, `emutos/bios/virtio_9p.h`
+
+**Interfaces:**
+- Consumes: `p9_walk()`, `p9_lopen()`, `p9_clunk()`, `hostfs_match()`, the
+  snapshot from Task 7.
+- Produces: `Fopen` (0x3D), `Fclose` (0x3E), `Fread` (0x3F), `Fseek`
+  (0x42) handled for drive `C:`, plus
+  `LONG p9_read(ULONG fid, ULONG offset, UBYTE *buf, ULONG count);`
+
+Tasks 0-9 make the host folder *visible*. They do not make it
+*readable* — nothing can open a file, so EmuTOS cannot load a program
+from the drive it just mounted. This task closes that gap, and without
+it Stage 1's own call-surface table is unmet.
+
+A GEMDOS handle table is needed because `Fread` and `Fclose` identify
+the file by handle rather than by path: a small fixed array mapping a
+GEMDOS handle to a 9P fid plus the current offset. EmuTOS's own handle
+space must not be disturbed for other drives, so claim only handles the
+hostfs allocated.
+
+- [ ] **Step 1: Write the failing test**
+
+```bash
+mkdir -p /tmp/shinogi-hostfs && printf 'hello\n' > /tmp/shinogi-hostfs/HELLO.TXT
+cat > ~/git/shinogi/tests/golden/phase5-read.expected <<'EOF'
+hostfs: open HELLO.TXT handle 6
+hostfs: read 6 bytes: hello
+hostfs: close handle 6
+EOF
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-read 'hostfs: (open|read|close).*'
+```
+Expected: `FAIL phase5-read`.
+
+- [ ] **Step 3: Implement**
+
+Add `p9_read()` to `virtio_9p.c` alongside `p9_readdir()`. `Tread` is
+`fid[4] offset[8] count[4]`; `Rread` is `count[4] data[count]`. It needs
+the same discipline `p9_readdir()` already uses: require at least 11
+bytes before reading `count`, then clamp `count` against both the real
+reply length and the caller's buffer before copying. Reuse the existing
+`p9_rx_len` for that — do not trust the length field alone.
+
+In `hostfs.c` add the handle table and the four call handlers, following
+the structure already established by `hostfs_dispatch()`. Extend
+`hostfs_claims()` to claim 0x3D by path, and 0x3E/0x3F/0x42 by handle —
+claiming a handle only if this module allocated it.
+
+Resolve the path for `Fopen` exactly as the listing does: snapshot the
+directory, match against RAW host names with `hostfs_match()`, take the
+first `strcasecmp` hit in readdir order. That reuse is the point — a
+second, subtly different resolver is how the two views drift apart.
+
+Extend the temporary self-test in `bios/bios.c` to open `C:\HELLO.TXT`,
+read it, log the bytes, and close it, so the golden can verify headlessly.
+
+- [ ] **Step 4: Run to verify it passes**
+
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-read 'hostfs: (open|read|close).*'
+```
+Expected: `PASS phase5-read`. Re-run every earlier golden to confirm no
+regression.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/git/emutos && git add bdos/hostfs.c bdos/hostfs.h bios/virtio_9p.c bios/virtio_9p.h bios/bios.c \
+  && git commit -m "qemu-virt: open and read files from the host folder"
+cd ~/git/shinogi && git add tests/golden/phase5-read.expected \
+  && git commit -m "tests: record the expected host folder read output"
+```
+
+---
+
+### Task 11: the remaining directory calls
+
+**Files:**
+- Modify: `emutos/bdos/hostfs.c`, `emutos/bdos/hostfs.h`
+
+**Interfaces:**
+- Consumes: everything from Task 10.
+- Produces: `Dsetdrv` (0x0E), `Dgetdrv` (0x19), `Dsetpath` (0x3B),
+  `Dgetpath` (0x47), `Dfree` (0x36), `Fattrib` query (0x43) handled for
+  drive `C:`.
+
+These complete Stage 1's call surface. `Dsetpath`/`Dgetpath` need a
+current-directory string per drive, and `..` must be resolved textually
+and refuse to climb above the drive root — the host folder is the user's
+real filesystem, so containment is a correctness requirement rather than
+a nicety.
+
+`Dfree` has no meaningful answer over 9P without a statfs call; report a
+large fixed free space and document that choice in a comment. Inventing
+a number is acceptable here, silently reporting zero is not — a zero
+would make GEM refuse to write in Stage 2.
+
+- [ ] **Step 1: Write the failing test**
+
+```bash
+cat > ~/git/shinogi/tests/golden/phase5-paths.expected <<'EOF'
+hostfs: setpath \
+hostfs: getpath \
+hostfs: dfree reported
+EOF
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-paths 'hostfs: (setpath|getpath|dfree).*'
+```
+Expected: `FAIL phase5-paths`.
+
+- [ ] **Step 3: Implement**
+
+Add a current-path string for the drive, defaulting to `\`. `Dsetpath`
+validates the target exists via `p9_walk()` before accepting it, and
+rejects any path that would escape the root. `Dgetpath` returns the
+stored string. `Dsetdrv`/`Dgetdrv` track the current drive, and must
+still let EmuTOS manage drives this module does not own. `Fattrib` in
+query mode returns the attribute byte already computed by
+`hostfs_fill_dta()` — reuse that code rather than restating the rules.
+
+Extend the self-test in `bios/bios.c` to exercise the three logged calls.
+
+- [ ] **Step 4: Run to verify it passes**
+
+```bash
+cd ~/git/emutos && make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+cd ~/git/shinogi && tools/run-golden.sh phase5-paths 'hostfs: (setpath|getpath|dfree).*'
+```
+Expected: `PASS phase5-paths`, and every earlier golden still green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ~/git/emutos && git add bdos/hostfs.c bdos/hostfs.h bios/bios.c \
+  && git commit -m "qemu-virt: add the host folder directory and drive calls"
+cd ~/git/shinogi && git add tests/golden/phase5-paths.expected \
+  && git commit -m "tests: record the expected host folder path output"
+```
+
+---
+
 ## Stage 1 done when
 
 - `hostfs: drive C registered` appears at boot with a 9p device present, and does not appear without one.

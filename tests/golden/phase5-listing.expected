@@ -1,0 +1,3 @@
+hostfs: fsfirst HELLO.TXT
+hostfs: fsnext A+B.C
+hostfs: fsnext VERYLONG.TXT

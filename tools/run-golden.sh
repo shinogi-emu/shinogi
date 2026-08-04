@@ -16,6 +16,24 @@
 # the slot the 9P device lands in, and tests/golden/phase5-attach pins
 # that slot number. Only the goldens that need the block device get it.
 #
+# GOLDEN_SORTED=1 compares the extracted lines as a SET rather than as a
+# sequence: the first <n> matching lines are still the ones taken, but
+# both sides are sorted before the diff.
+#
+# This is for goldens whose lines are in raw host readdir() order, which
+# POSIX does not define and which really does differ between hosts -- a
+# folder built on tmpfs lists in creation order, the same folder on ext4
+# with dir_index lists in hash order. Asserting that order asserts a
+# property of the developer's filesystem, and every such golden fails on
+# any machine whose /tmp is not the same kind of filesystem.
+#
+# Sorting drops ONLY the ordering claim. The lines are still compared
+# one for one, so a missing entry, an extra entry, a misspelled name or
+# a repeated entry all still fail -- a repeat pushes a real line out of
+# the first <n> and the sorted sets then differ. Do not reach for it to
+# quiet a golden over output the GUEST sorted: that order is the guest's
+# own and is the thing under test.
+#
 # Exit codes:
 #   0 = the extracted lines match the golden file exactly, in order
 #   1 = the guest ran but the extracted lines did not match (diff printed)
@@ -36,6 +54,7 @@ ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 GOLDEN="$ROOT/tests/golden/$NAME.expected"
 WORK="${TMPDIR:-/tmp}/run-golden-$NAME"
 BOOT_WAIT="${BOOT_WAIT:-25}"
+GOLDEN_SORTED="${GOLDEN_SORTED:-0}"
 
 [ -f "$ELF" ]    || { echo "no guest image at $ELF" >&2; exit 2; }
 [ -f "$GOLDEN" ] || { echo "no golden file at $GOLDEN" >&2; exit 2; }
@@ -43,6 +62,32 @@ BOOT_WAIT="${BOOT_WAIT:-25}"
 
 # How many matching lines the golden expects.
 WANT=$(wc -l < "$GOLDEN")
+
+# The side of the comparison the golden file supplies. Sorted in the C
+# collation, so the answer does not depend on the runner's locale.
+EXPECT="$WORK/expected"
+mkdir -p "$WORK"
+if [ "$GOLDEN_SORTED" = "1" ]; then
+    LC_ALL=C sort "$GOLDEN" > "$EXPECT"
+else
+    cat "$GOLDEN" > "$EXPECT"
+fi
+
+# Pull the lines this golden is about out of the serial log, into $1.
+#
+# head runs BEFORE any sort, deliberately: "the first $WANT matching
+# lines" has to mean the first the guest emitted, not the $WANT that
+# happen to sort lowest, or a repeated early line could displace a later
+# one without the comparison noticing.
+extract() {
+    grep -aoE "$PATTERN" "$LOG" 2>/dev/null | tr -d '\r' \
+        | head -n "$WANT" > "$1.raw" || true
+    if [ "$GOLDEN_SORTED" = "1" ]; then
+        LC_ALL=C sort "$1.raw" > "$1"
+    else
+        cat "$1.raw" > "$1"
+    fi
+}
 
 mkdir -p "$WORK" "$FOLDER"
 LOG="$WORK/serial.log"
@@ -97,9 +142,8 @@ while [ "$i" -lt "$BOOT_WAIT" ]; do
     fi
 
     if [ -s "$LOG" ]; then
-        grep -aoE "$PATTERN" "$LOG" 2>/dev/null | tr -d '\r' \
-            | head -n "$WANT" > "$WORK/probe" || true
-        if cmp -s "$GOLDEN" "$WORK/probe"; then
+        extract "$WORK/probe"
+        if cmp -s "$EXPECT" "$WORK/probe"; then
             if [ -z "$matched_at" ]; then
                 matched_at="$i"
             elif [ "$((i - matched_at))" -ge "$SETTLE" ]; then
@@ -142,9 +186,12 @@ fi
 # The trade is real: a spurious line appearing AFTER the expected ones
 # is not caught. A wrong line, a missing line, or a wrong order still
 # is, and those are the failures these goldens exist to find.
-grep -aoE "$PATTERN" "$LOG" | tr -d '\r' | head -n "$WANT" > "$WORK/actual" || true
+#
+# (Under GOLDEN_SORTED=1 the order claim is given up on purpose -- see
+# the note at the top of this file. Everything else still holds.)
+extract "$WORK/actual"
 
-if diff -u "$GOLDEN" "$WORK/actual"; then
+if diff -u "$EXPECT" "$WORK/actual"; then
     echo "PASS $NAME"
     exit 0
 fi

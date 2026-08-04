@@ -28,9 +28,16 @@
 # so they are recorded here and in tools/run-all-goldens.sh, which runs
 # the whole set:
 #
+# phase5-readdir is compared as a SET, not as a sequence: its lines come
+# straight out of the host's readdir(), whose order POSIX does not
+# define and which really does differ -- this folder on tmpfs lists in
+# creation order and on ext4 with dir_index in hash order. Every other
+# listing golden is over output the GUEST sorted and is compared in
+# order, because that order is the guest's own.
+#
 #   phase5-attach   9p: (slot [0-9]+ msize|attached,).*
 #   phase5-walk     9p: (walk|getattr).*
-#   phase5-readdir  9p: dirent.*
+#   phase5-readdir  9p: dirent.*                        (sorted)
 #   phase5-drive    hostfs: drive C registered
 #   phase5-dates    hostfs: date FIXED.TXT.*
 #   phase5-read     hostfs: (open|read|seek|close|wrap) .*

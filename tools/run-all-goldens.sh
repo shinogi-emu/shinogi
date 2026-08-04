@@ -27,17 +27,25 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FOLDER="${SHINOGI_HOSTFS:-/tmp/shinogi-hostfs}"
 VVFAT="${SHINOGI_VVFAT:-/tmp/shinogi-vvfat}"
 
-# name<TAB>pattern[<TAB>vvfat]. Keep in step with the comment at the top
+# name<TAB>pattern[<TAB>flags]. Keep in step with the comment at the top
 # of tools/make-fixtures.py, which records the same pairing.
 #
-# A third field of "vvfat" attaches the block device for that golden
-# only. It is not attached to every run because it takes a virtio-mmio
-# slot and moves the one the 9P device lands in, which phase5-attach
-# pins by number.
+# The third field is a comma-separated set of flags:
+#
+#   vvfat   attach the vvfat block device for this golden only. It is
+#           not attached to every run because it takes a virtio-mmio
+#           slot and moves the one the 9P device lands in, which
+#           phase5-attach pins by number.
+#   sorted  compare the extracted lines as a set, not as a sequence.
+#           Only for goldens whose lines come out in raw host readdir()
+#           order, which is not defined by POSIX and differs between
+#           filesystems -- see the long note in tools/run-golden.sh.
+#           Goldens over output the GUEST sorted must NOT use it: that
+#           order is deterministic and is part of what is under test.
 GOLDENS="
 phase5-attach	9p: (slot [0-9]+ msize|attached,).*
 phase5-walk	9p: (walk|getattr).*
-phase5-readdir	9p: dirent.*
+phase5-readdir	9p: dirent.*	sorted
 phase5-drive	hostfs: drive C registered
 phase5-dates	hostfs: date FIXED.TXT.*
 phase5-read	hostfs: (open|read|seek|close|wrap) .*
@@ -93,12 +101,12 @@ fail=0
 error=0
 failed_names=""
 
-echo "$GOLDENS" | while IFS='	' read -r name pattern vvfat; do
+echo "$GOLDENS" | while IFS='	' read -r name pattern flags; do
     [ -n "$name" ] || continue
-    printf '%s\t%s\t%s\n' "$name" "$pattern" "$vvfat"
+    printf '%s\t%s\t%s\n' "$name" "$pattern" "$flags"
 done > /tmp/.run-all-goldens.$$
 
-while IFS='	' read -r name pattern vvfat; do
+while IFS='	' read -r name pattern flags; do
     [ -n "$name" ] || continue
     if [ -n "$want" ]; then
         case "$want" in
@@ -107,11 +115,19 @@ while IFS='	' read -r name pattern vvfat; do
         esac
     fi
 
-    if [ "$vvfat" = "vvfat" ]; then
-        "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER" "$VVFAT"
-    else
-        "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER"
-    fi
+    case ",$flags," in
+        *,sorted,*) sorted=1 ;;
+        *)          sorted=0 ;;
+    esac
+
+    case ",$flags," in
+        *,vvfat,*)
+            GOLDEN_SORTED="$sorted" \
+                "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER" "$VVFAT" ;;
+        *)
+            GOLDEN_SORTED="$sorted" \
+                "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER" ;;
+    esac
     case $? in
         0) pass=$((pass + 1)) ;;
         1) fail=$((fail + 1)); failed_names="$failed_names $name" ;;

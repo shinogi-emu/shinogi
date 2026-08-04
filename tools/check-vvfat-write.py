@@ -64,6 +64,9 @@ import time
 sys.dont_write_bytecode = True
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Overridable so a locally built QEMU can be tested against the distro
+# one -- which is how the vvfat patch is verified.
+QEMU = os.environ.get("QEMU", "qemu-system-m68k")
 ELF = os.environ.get("SHINOGI_ELF",
                      os.path.expanduser("~/git/emutos/emutos-virt.elf"))
 BOOT_WAIT = int(os.environ.get("BOOT_WAIT", "30"))
@@ -164,7 +167,7 @@ def run_guest(folder, log):
         os.remove(log)
 
     cmd = [
-        "qemu-system-m68k", "-M", "virt", "-m", "128",
+        QEMU, "-M", "virt", "-m", "128",
         "-kernel", ELF,
         "-device", "virtio-gpu-device",
         "-drive", "file=fat:rw:%s,format=raw,if=none,id=hostblk" % folder,

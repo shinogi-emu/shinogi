@@ -241,8 +241,8 @@ static void stop_helper(HANDLE helper, const char *sock, const char *ready)
  * caller tells "failed to start" from "started and was closed".
  */
 static DWORD run_qemu(const char *dir, const char *logs, const char *display,
-                      const char *hostfs, DWORD *elapsed, char *cmdout,
-                      size_t cmdoutlen)
+                      const char *hostfs, const char *kernel, DWORD *elapsed,
+                      char *cmdout, size_t cmdoutlen)
 {
     char cmd[4096];
     STARTUPINFOA si;
@@ -261,7 +261,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
               " -name \"shinogi " SHINOGI_VERSION "\""
               " -M virt"
               " -m 128"
-              " -kernel \"%s\\emutos-virt.elf\""
+              " -kernel \"%s\""
               " -device virtio-gpu-device"
               " -device virtio-keyboard-device"
               " -device virtio-tablet-device"
@@ -269,7 +269,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
               " -display %s"
               " -serial \"file:%s\\shinogi-serial.log\""
               " -d guest_errors -D \"%s\\shinogi-guest-errors.log\"",
-              dir, dir, hostfs, display, logs, logs);
+              dir, kernel, hostfs, display, logs, logs);
     cmd[sizeof(cmd) - 1] = '\0';
 
     lstrcpynA(cmdout, cmd, (int)cmdoutlen);
@@ -298,6 +298,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 {
     char exe[MAX_PATH], dir[MAX_PATH], logs[MAX_PATH];
     char drivec[MAX_PATH], sock[MAX_PATH], ready[MAX_PATH];
+    char kernel[MAX_PATH];
     char hostfs[1024], lastcmd[4096];
     const char *display;
     HANDLE helper = NULL;
@@ -346,6 +347,35 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         CreateDirectoryA(drivec, NULL);
     }
 
+    /*
+     * The guest image, which the user may replace without reinstalling.
+     * Drop a newer EmuTOS into the drive C folder as EMUTOS.ELF and it is
+     * used instead of the bundled one; delete it and the bundled one comes
+     * back. The guest cannot load this itself -- drive C only exists once
+     * EmuTOS is running -- but nothing stops US from reading it, and the
+     * drive C folder is the one directory the user already knows.
+     *
+     * Only a REGULAR FILE counts. A directory of that name would otherwise
+     * be handed to -kernel and QEMU would fail to start, with the cause
+     * sitting in a log the user has no reason to open.
+     */
+    {
+        char user_elf[MAX_PATH];
+        DWORD attrs;
+
+        _snprintf(user_elf, sizeof(user_elf), "%s\\EMUTOS.ELF", drivec);
+        user_elf[sizeof(user_elf) - 1] = '\0';
+
+        attrs = GetFileAttributesA(user_elf);
+        if (attrs != INVALID_FILE_ATTRIBUTES &&
+            !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            lstrcpynA(kernel, user_elf, sizeof(kernel));
+        } else {
+            _snprintf(kernel, sizeof(kernel), "%s\\emutos-virt.elf", dir);
+            kernel[sizeof(kernel) - 1] = '\0';
+        }
+    }
+
     _snprintf(sock, sizeof(sock), "%s\\hostfs.sock", logs);
     sock[sizeof(sock) - 1] = '\0';
     _snprintf(ready, sizeof(ready), "%s\\hostfs.ready", logs);
@@ -381,7 +411,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         }
     }
 
-    code = run_qemu(dir, logs, display, hostfs, &elapsed,
+    code = run_qemu(dir, logs, display, hostfs, kernel, &elapsed,
                     lastcmd, sizeof(lastcmd));
 
     /*
@@ -398,7 +428,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
              "The emulator is starting again without it. Everything else\n"
              "works; see shinogi-guest-errors.log in:\n"
              "%LOCALAPPDATA%\\shinogi");
-        code = run_qemu(dir, logs, display, hostfs, &elapsed,
+        code = run_qemu(dir, logs, display, hostfs, kernel, &elapsed,
                         lastcmd, sizeof(lastcmd));
     }
 

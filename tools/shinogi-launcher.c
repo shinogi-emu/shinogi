@@ -123,12 +123,6 @@ int main(int argc, char *argv[])
     if (stat(qemu, &st) != 0)
         snprintf(qemu, sizeof(qemu), "qemu-system-m68k");
 
-    snprintf(elf, sizeof(elf), "%s/emutos-virt.elf", dir);
-    if (stat(elf, &st) != 0) {
-        fprintf(stderr, "shinogi: no guest image at %s\n", elf);
-        return 1;
-    }
-
     /* The host folder the guest sees as drive C:. */
     if (getenv("SHINOGI_HOSTFS"))
         snprintf(hostfs, sizeof(hostfs), "%s", getenv("SHINOGI_HOSTFS"));
@@ -136,6 +130,27 @@ int main(int argc, char *argv[])
         snprintf(hostfs, sizeof(hostfs), "%s/shinogi-drive-c",
                  home ? home : ".");
     mkdir(hostfs, 0755);
+
+    /*
+     * The guest image, which the user may replace without reinstalling.
+     * Drop a newer EmuTOS into the drive C folder as EMUTOS.ELF and it is
+     * used instead of the bundled one; remove it and the bundled one comes
+     * back. The guest cannot load this itself -- drive C only exists once
+     * EmuTOS is running -- but nothing stops US from reading it, and the
+     * drive C folder is the one directory the user already knows.
+     *
+     * Only a REGULAR file counts: a directory of that name would be handed
+     * to -kernel, and QEMU would fail to start for a reason the user has
+     * no way to guess.
+     */
+    snprintf(elf, sizeof(elf), "%s/EMUTOS.ELF", hostfs);
+    if (stat(elf, &st) != 0 || !S_ISREG(st.st_mode)) {
+        snprintf(elf, sizeof(elf), "%s/emutos-virt.elf", dir);
+        if (stat(elf, &st) != 0) {
+            fprintf(stderr, "shinogi: no guest image at %s\n", elf);
+            return 1;
+        }
+    }
 
     /*
      * Display: an argument beats the environment, which beats the

@@ -5,6 +5,7 @@ A complete, self-contained package: the guest, the emulator and the
 launcher all ship together. Nothing else needs installing.
 
     shinogi.exe          launch it
+    shinogi-hostfsd.exe  serves drive C, started for you
     emutos-virt.elf      the guest (EmuTOS), 1280x720 truecolor
     qemu\                the bundled QEMU 11.0.92 for Windows
     sdl-grab-probe.exe   diagnostic, see below
@@ -20,19 +21,49 @@ Drive C: is a folder on your host:
 It is created on first run. Put files there and they appear on the Atari
 desktop; the 8.3 names you see are what FAT gives them.
 
-It is READ-ONLY for now. The guest can list and open and run what is
-there, and cannot write back. That is deliberate: the mechanism
-underneath is QEMU's vvfat driver, whose read-write mode is documented
-as experimental with a history of corrupting the directory it is mapping,
-so writing is being evaluated separately rather than switched on and
-hoped for. Change files from the host side meanwhile.
+Drive C is back for Windows, and it is now the SAME mechanism the Linux
+and macOS builds use. It is not QEMU's vvfat driver any more, and it is
+not 9p either -- QEMU cannot build 9p on Windows at all.
 
-Note this is NOT the same mechanism the Linux build has used until now.
-QEMU cannot build virtio-9p on Windows at all -- its meson.build requires
-the host to be Linux, macOS or FreeBSD -- so the Windows binary carries
-the device name with none of the implementation behind it. vvfat is
-present in every build, and EmuTOS reads the DOS MBR and FAT16 it
-synthesises using its own stock filesystem code.
+What serves it is shinogi-hostfsd.exe, a small program in this
+directory. The launcher starts it before the emulator and stops it
+afterwards; you never run it yourself and it has no window. It talks to
+the guest over a virtio-serial port, which is just a byte pipe, and does
+the real work of opening and reading your files. The guest never learns
+a host path.
+
+The practical difference from b4: the folder is live. Add, rename or
+delete a file on the host and the guest sees it on its next look, with
+no drive to re-attach and no image to rebuild.
+
+Writing: not yet, and honestly. The host end of the link implements the
+whole write set -- write, create, delete, rename, make and remove
+directory -- but the guest's own filesystem layer still answers Fwrite
+with "access denied" until its write path is finished, so from inside
+the Atari desktop drive C is read-only. That is one change away, on the
+guest side, and nothing in this package will have to change with it.
+
+What this replaces is worth stating plainly, because it is the reason
+the drive was read-only before. b4 used QEMU's vvfat driver, whose
+read-write mode LOSES HOST DATA: delete a file on the drive, then write
+a different file in a subdirectory, and the host file is truncated to
+the deleted one's length while the guest is told the write succeeded.
+That is somebody's document silently becoming eight bytes long, and it
+is measured rather than assumed. Nothing in the new path can do it:
+every operation is an explicit request that either completed or did not.
+
+If drive C does not appear, the launcher will tell you so and start the
+emulator without it. The helper's own log is:
+
+    %LOCALAPPDATA%\shinogi\shinogi-hostfsd.log
+
+Drive C needs Unix-domain socket support, which Windows has had since
+Windows 10 version 1803 (April 2018) -- the same era of Windows the
+bundled QEMU itself needs, so there is no machine that can run one and
+not the other.
+
+Uninstalling does NOT delete %USERPROFILE%\shinogi-drive-c. Your files
+are yours.
 
 
 Running

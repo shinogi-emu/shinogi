@@ -13,6 +13,11 @@
 # Output: <output-dir>/shinogi-<version>-win64-setup.exe and a .sha256
 # beside it. Default output-dir is the LAN share.
 #
+# The bundle carries two programs of our own: shinogi.exe, the launcher,
+# and shinogi-hostfsd.exe, the helper that serves the host folder the
+# guest sees as drive C. Both are built here from the same sources the
+# Linux and macOS builds use.
+#
 # Prerequisites, none of which this script installs:
 #   - x86_64-w64-mingw32-gcc          (cross compiler)
 #   - makensis                        (installer builder)
@@ -62,6 +67,12 @@ cp "$SDL2/bin/SDL2.dll" "$BUNDLE/"
 x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
     -DSHINOGI_VERSION="\"$VERSION\"" \
     -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra
+
+# The host end of drive C. Console subsystem, but the launcher starts it
+# with CREATE_NO_WINDOW so nothing flashes up; -lws2_32 is for the
+# AF_UNIX socket it listens on, which Windows serves through Winsock.
+x86_64-w64-mingw32-gcc "$ROOT/tools/hostfsd/shinogi-hostfsd.c" \
+    -o "$BUNDLE/shinogi-hostfsd.exe" -mconsole -O2 -Wall -Wextra -lws2_32
 
 x86_64-w64-mingw32-gcc "$ROOT/tools/sdl-grab-probe.c" \
     -I"$SDL2/include" -I"$SDL2/include/SDL2" -L"$SDL2/lib" \

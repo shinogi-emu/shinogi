@@ -3,8 +3,13 @@
 ; Build with:
 ;   makensis -DBUNDLE=<path to assembled tree> -DOUTFILE=<setup.exe> shinogi.nsi
 ;
-; The bundle tree is expected to contain shinogi.exe, emutos-virt.elf,
-; the qemu\ subtree, and the diagnostic probe.
+; The bundle tree is expected to contain shinogi.exe,
+; shinogi-hostfsd.exe, emutos-virt.elf, the qemu\ subtree, and the
+; diagnostic probe.
+;
+; shinogi-hostfsd.exe is not optional: it is the host end of drive C and
+; the launcher starts it. Installed beside shinogi.exe, which is where
+; the launcher looks for it.
 
 !ifndef BUNDLE
   !error "BUNDLE not defined"
@@ -59,6 +64,7 @@ Section "shinogi" SecMain
   SetOutPath "$INSTDIR"
 
   File "${BUNDLE}\shinogi.exe"
+  File "${BUNDLE}\shinogi-hostfsd.exe"
   File "${BUNDLE}\emutos-virt.elf"
   File "${BUNDLE}\sdl-grab-probe.exe"
   File "${BUNDLE}\SDL2.dll"
@@ -110,6 +116,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\shinogi"
 
   Delete "$INSTDIR\shinogi.exe"
+  Delete "$INSTDIR\shinogi-hostfsd.exe"
   Delete "$INSTDIR\emutos-virt.elf"
   Delete "$INSTDIR\sdl-grab-probe.exe"
   Delete "$INSTDIR\SDL2.dll"

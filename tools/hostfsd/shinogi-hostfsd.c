@@ -57,98 +57,131 @@
  * ===========================================================================
  *
  * Everything below this block speaks in terms of a listener and a
- * connection and never touches a descriptor or a HANDLE, so porting is
- * this section and nothing else. On Windows the Unix socket becomes a
- * named pipe, which is what QEMU's `socket` chardev uses there; the rest
- * of the program is byte-for-byte the same.
+ * connection and never touches a descriptor or a SOCKET, so porting is
+ * this section and nothing else.
+ *
+ * The transport is a Unix-domain socket on EVERY platform, Windows
+ * included. Windows has had AF_UNIX since Windows 10 1803 and QEMU's
+ * `socket` chardev uses it there like anywhere else; the QEMU builds
+ * this project ships require a newer Windows than that, so there is no
+ * host it can run on where the socket is unavailable. The alternative,
+ * a named pipe through QEMU's `pipe` chardev, was rejected because that
+ * chardev can only ever be the SERVER, which forces the startup race
+ * described below rather than removing it.
  *
  * The helper can be either end of the connection because the launcher
  * may want either: QEMU with `server=on` listens and the helper connects
  * (--connect), while the tests and a `server=off` chardev want the
  * helper to listen (--listen).
+ *
+ * --listen is what the shipped launchers use. QEMU DISCARDS a guest
+ * write to a port whose far end is not connected, so if QEMU listens
+ * the guest can probe the port before the helper has arrived and lose
+ * the drive for the whole session, silently. With the helper listening
+ * first, QEMU connects while it is parsing its own command line, long
+ * before the guest runs, and there is no window at all.
  */
 
 #ifdef _WIN32
 
+#include <winsock2.h>
+#include <afunix.h>
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
 #include <direct.h>
 #include <dirent.h>
 
-typedef HANDLE conn_t;
-#define CONN_NONE INVALID_HANDLE_VALUE
+typedef SOCKET conn_t;
+#define CONN_NONE INVALID_SOCKET
 
-typedef struct { char name[256]; } listener_t;
+typedef struct { SOCKET fd; } listener_t;
 
 #define plat_mkdir(p)   _mkdir(p)
 #define plat_access_w(p) _access((p), 2)
 
+static int sockaddr_for(struct sockaddr_un *sa, const char *path)
+{
+    if (strlen(path) >= sizeof(sa->sun_path))
+        return -1;
+    memset(sa, 0, sizeof(*sa));
+    sa->sun_family = AF_UNIX;
+    strcpy(sa->sun_path, path);
+    return 0;
+}
+
 static int listener_open(listener_t *l, const char *path)
 {
-    /* A named pipe is created afresh for each client, so the listener
-     * holds only the name; the instance is made in listener_accept(). */
-    if (strlen(path) >= sizeof(l->name))
+    struct sockaddr_un sa;
+
+    if (sockaddr_for(&sa, path) < 0)
         return -1;
-    strcpy(l->name, path);
+
+    l->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (l->fd == INVALID_SOCKET)
+        return -1;
+
+    /* Windows will not bind over an existing file, and the socket file
+     * is not removed when the process that made it goes away, so a
+     * previous run's leftover has to go first. */
+    DeleteFileA(path);
+
+    if (bind(l->fd, (struct sockaddr *)&sa, sizeof(sa)) == SOCKET_ERROR
+     || listen(l->fd, 1) == SOCKET_ERROR)
+    {
+        closesocket(l->fd);
+        l->fd = INVALID_SOCKET;
+        return -1;
+    }
     return 0;
 }
 
 static conn_t listener_accept(listener_t *l)
 {
-    HANDLE h = CreateNamedPipeA(l->name,
-                                PIPE_ACCESS_DUPLEX,
-                                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                                1, HOSTFS_MAX_FRAME, HOSTFS_MAX_FRAME,
-                                0, NULL);
-    if (h == INVALID_HANDLE_VALUE)
-        return CONN_NONE;
-
-    /* ERROR_PIPE_CONNECTED means the client won the race and is already
-     * on the far end -- a connection, not a failure. */
-    if (!ConnectNamedPipe(h, NULL) && GetLastError() != ERROR_PIPE_CONNECTED)
-    {
-        CloseHandle(h);
-        return CONN_NONE;
-    }
-    return h;
+    return accept(l->fd, NULL, NULL);
 }
 
 static void listener_close(listener_t *l)
 {
-    (void)l;
+    if (l->fd != INVALID_SOCKET)
+        closesocket(l->fd);
+    l->fd = INVALID_SOCKET;
 }
 
 static conn_t conn_connect(const char *path)
 {
-    HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-                           OPEN_EXISTING, 0, NULL);
-    return (h == INVALID_HANDLE_VALUE) ? CONN_NONE : h;
+    struct sockaddr_un sa;
+    SOCKET s;
+
+    if (sockaddr_for(&sa, path) < 0)
+        return CONN_NONE;
+
+    s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET)
+        return CONN_NONE;
+
+    if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) == SOCKET_ERROR)
+    {
+        closesocket(s);
+        return CONN_NONE;
+    }
+    return s;
 }
 
 static long conn_recv(conn_t c, void *buf, unsigned long n)
 {
-    DWORD got = 0;
-    if (!ReadFile(c, buf, (DWORD)n, &got, NULL))
-        return (GetLastError() == ERROR_BROKEN_PIPE) ? 0 : -1;
-    return (long)got;
+    return (long)recv(c, (char *)buf, (int)n, 0);
 }
 
 static long conn_send(conn_t c, const void *buf, unsigned long n)
 {
-    DWORD put = 0;
-    if (!WriteFile(c, buf, (DWORD)n, &put, NULL))
-        return -1;
-    return (long)put;
+    return (long)send(c, (const char *)buf, (int)n, 0);
 }
 
 static void conn_close(conn_t c)
 {
     if (c != CONN_NONE)
-    {
-        DisconnectNamedPipe(c);
-        CloseHandle(c);
-    }
+        closesocket(c);
 }
 
 /* GetFinalPathNameByHandle is the only call that resolves junctions and
@@ -193,8 +226,19 @@ static int plat_dfree(const char *root, unsigned long *freekb,
     return 0;
 }
 
-static void plat_unlink_socket(const char *path) { (void)path; }
-static void plat_ignore_sigpipe(void) { }
+static void plat_unlink_socket(const char *path)
+{
+    DeleteFileA(path);
+}
+
+/* Winsock has to be started before any of the calls above will work,
+ * and it is the only global setup Windows needs. */
+static int plat_init(void)
+{
+    WSADATA wsa;
+
+    return WSAStartup(MAKEWORD(2, 2), &wsa) == 0 ? 0 : -1;
+}
 
 #else /* POSIX */
 
@@ -345,9 +389,10 @@ static void plat_unlink_socket(const char *path)
  * A guest that vanishes mid-reply must not kill the helper: the write
  * fails, the connection is dropped, and the next client is accepted.
  */
-static void plat_ignore_sigpipe(void)
+static int plat_init(void)
 {
     signal(SIGPIPE, SIG_IGN);
+    return 0;
 }
 
 #endif /* _WIN32 */
@@ -1282,11 +1327,37 @@ static void usage(void)
         "                       [--once] [--verbose]\n"
         "\n"
         "  --root DIR      the folder served as the guest's drive C\n"
-        "  --listen PATH   listen on PATH (unix socket, or named pipe on\n"
-        "                  Windows) and serve each client in turn\n"
+        "  --listen PATH   listen on PATH (a unix socket, on Windows\n"
+        "                  too) and serve each client in turn\n"
         "  --connect PATH  connect to PATH instead -- QEMU's chardev with\n"
         "                  server=on is the listener in that arrangement\n"
-        "  --once          exit after the first client disconnects\n");
+        "  --once          exit after the first client disconnects\n"
+        "  --ready-file P  create P once the channel is up, and only\n"
+        "                  then -- the launcher waits for it rather than\n"
+        "                  sleeping, so QEMU never starts before the\n"
+        "                  socket is accepting\n");
+}
+
+/*
+ * Announce readiness.
+ *
+ * The launcher must not start QEMU until the listening socket exists,
+ * and must not guess how long that takes: a fixed sleep is either a
+ * wasted second or a lost drive, depending on the machine. The socket
+ * file itself appears at bind() rather than at listen(), so it is not
+ * the right thing to watch; this file is created after the listener is
+ * complete, or after --connect has connected, and nothing else creates
+ * it.
+ */
+static void signal_ready(const char *path)
+{
+    FILE *f;
+
+    if (!path)
+        return;
+    f = fopen(path, "wb");
+    if (f)
+        fclose(f);
 }
 
 /* The folder's own name, for HELLO. The guest gets a label and never a
@@ -1317,6 +1388,7 @@ int main(int argc, char **argv)
 {
     const char *dir = NULL;
     const char *sockpath = NULL;
+    const char *readyfile = NULL;
     int do_listen = 0, once = 0;
     struct stat st;
     listener_t l;
@@ -1336,6 +1408,8 @@ int main(int argc, char **argv)
             sockpath = argv[++i];
             do_listen = 0;
         }
+        else if (!strcmp(argv[i], "--ready-file") && i + 1 < argc)
+            readyfile = argv[++i];
         else if (!strcmp(argv[i], "--once"))
             once = 1;
         else if (!strcmp(argv[i], "--verbose"))
@@ -1373,7 +1447,11 @@ int main(int argc, char **argv)
         root[--rootlen] = '\0';
 
     make_label(root);
-    plat_ignore_sigpipe();
+    if (plat_init() != 0)
+    {
+        fprintf(stderr, "shinogi-hostfsd: cannot initialise sockets\n");
+        return 1;
+    }
 
     if (!do_listen)
     {
@@ -1385,6 +1463,7 @@ int main(int argc, char **argv)
                     sockpath, strerror(errno));
             return 1;
         }
+        signal_ready(readyfile);
         dbg("hostfsd: serving %s to %s\n", label, sockpath);
         serve_client(c);
         conn_close(c);
@@ -1398,6 +1477,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    signal_ready(readyfile);
     dbg("hostfsd: serving %s on %s\n", label, sockpath);
 
     for (;;)
@@ -1406,8 +1486,12 @@ int main(int argc, char **argv)
 
         if (c == CONN_NONE)
         {
+#ifndef _WIN32
+            /* accept() already retries on EINTR; this is belt and
+             * braces, and errno means nothing to Winsock. */
             if (errno == EINTR)
                 continue;
+#endif
             break;
         }
         serve_client(c);

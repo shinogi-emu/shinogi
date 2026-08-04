@@ -836,6 +836,217 @@ static void test_handle_limits(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Case folding                                                        */
+
+/*
+ * GEMDOS lookup ignores case, and the guest cannot boot without it:
+ * EmuTOS scans \AUTO in upper case while FreeMiNT asks for
+ * \mint\1-19-cur\ and xaaes/xaloader.prg in lower case out of compiled-in
+ * string literals. Linux is case-sensitive, so the helper has to do the
+ * folding the guest used to do for itself.
+ */
+
+static int host_size(const char *rel)
+{
+    char p[512];
+    struct stat st;
+
+    host_path(p, sizeof(p), rel);
+    return lstat(p, &st) == 0 ? (int)st.st_size : -1;
+}
+
+static int host_present(const char *rel)
+{
+    char p[512];
+
+    host_path(p, sizeof(p), rel);
+    return host_exists(p);
+}
+
+static void test_case_folding(void)
+{
+    char p[512];
+    int fh, first, i;
+
+    host_path(p, sizeof(p), "casefold");
+    if (mkdir(p, 0777) != 0)
+        die("mkdir casefold");
+
+    host_write("casefold/lower.txt", "lower");            /* 5 bytes */
+    host_write("casefold/UPPER.TXT", "uppercase");        /* 9 bytes */
+
+    /* Lower case on disk, upper case on the wire -- the AUTO folder
+     * shape, which is how EmuTOS asks. */
+    check(rpc_path(HOSTFS_OP_STAT, 0, "CASEFOLD/LOWER.TXT") == HOSTFS_E_OK,
+          "an upper-case request did not find a lower-case file");
+    check(reply_a == 5, "the folded lookup found the wrong file: %lu bytes",
+          reply_a);
+
+    /* And the reverse -- the FreeMiNT shape. */
+    check(rpc_path(HOSTFS_OP_STAT, 0, "casefold/upper.txt") == HOSTFS_E_OK,
+          "a lower-case request did not find an upper-case file");
+    check(reply_a == 9, "the folded lookup found the wrong file: %lu bytes",
+          reply_a);
+
+    /* Mixed in both directions, and the exact spelling still works. */
+    check(rpc_path(HOSTFS_OP_STAT, 0, "CaseFold/LoWeR.TxT") == HOSTFS_E_OK,
+          "a mixed-case request did not find the file");
+    check(reply_a == 5, "the mixed-case lookup found the wrong file");
+    check(rpc_path(HOSTFS_OP_STAT, 0, "casefold/lower.txt") == HOSTFS_E_OK,
+          "the exact spelling stopped working");
+    check(reply_a == 5, "the exact spelling found the wrong file");
+
+    /* Folding is a lookup, not a wildcard: a name that matches nothing
+     * in any case is still missing. */
+    check(rpc_path(HOSTFS_OP_STAT, 0, "casefold/NOSUCH.TXT") == HOSTFS_EFILNF,
+          "a folded lookup invented a file");
+
+    /* Every operation goes through the same resolver, so every operation
+     * folds. */
+    check(rpc_path(HOSTFS_OP_OPEN, HOSTFS_O_RDONLY, "CASEFOLD/LOWER.TXT")
+          == HOSTFS_E_OK, "OPEN did not fold");
+    fh = (int)reply_a;
+    check(rpc(HOSTFS_OP_READ, fh, 0, 5, NULL, 0) == HOSTFS_E_OK
+          && reply_datalen() == 5 && !memcmp(reply_data(), "lower", 5),
+          "a folded OPEN returned the wrong file's bytes");
+    check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE");
+    check(rpc_path(HOSTFS_OP_OPENDIR, 0, "CASEFOLD") == HOSTFS_E_OK,
+          "OPENDIR did not fold");
+    check(rpc(HOSTFS_OP_CLOSEDIR, reply_a, 0, 0, NULL, 0) == HOSTFS_E_OK,
+          "CLOSEDIR");
+
+    /*
+     * The real thing: several components, each spelled differently from
+     * the disk. This is the FreeMiNT install tree, which is what the fix
+     * exists for.
+     */
+    host_path(p, sizeof(p), "mint");
+    if (mkdir(p, 0777) != 0)
+        die("mkdir mint");
+    host_path(p, sizeof(p), "mint/1-19-cur");
+    if (mkdir(p, 0777) != 0)
+        die("mkdir 1-19-cur");
+    host_path(p, sizeof(p), "mint/1-19-cur/XAAES");
+    if (mkdir(p, 0777) != 0)
+        die("mkdir XAAES");
+    host_write("mint/1-19-cur/XAAES/xaloader.prg", "xaloader");
+
+    check(rpc_path(HOSTFS_OP_STAT, 0, "MINT/1-19-CUR/XAAES/XALOADER.PRG")
+          == HOSTFS_E_OK, "an all-upper-case nested path was not found");
+    check(rpc_path(HOSTFS_OP_STAT, 0, "mint/1-19-cur/xaaes/xaloader.prg")
+          == HOSTFS_E_OK, "an all-lower-case nested path was not found");
+    check(rpc_path(HOSTFS_OP_STAT, 0, "MiNt/1-19-CUR/xaAeS/XaLoAdEr.PrG")
+          == HOSTFS_E_OK, "a nested path spelled every which way was not found");
+    check(reply_a == 8, "the nested folded lookup found the wrong file");
+
+    /* Folding a directory component does not fold the leaf away: a
+     * missing leaf under a folded directory is still missing. */
+    check(rpc_path(HOSTFS_OP_STAT, 0, "MINT/1-19-CUR/XAAES/NOSUCH.PRG")
+          == HOSTFS_EFILNF, "a folded directory invented a leaf");
+
+    /*
+     * Two entries differing only in case.
+     *
+     * An exact spelling must select the exact entry -- that is the rule
+     * that makes an unambiguous name unambiguous. The ambiguous spelling
+     * takes the first readdir() hit, which is deliberate: it is what
+     * Hatari does, and matching Hatari is the decision recorded in
+     * docs/phase5-hostfs-design.md. It is not required to be the same
+     * entry on another host, only to be one of them and to be the same
+     * one every time within a run.
+     */
+    host_path(p, sizeof(p), "dup");
+    if (mkdir(p, 0777) != 0)
+        die("mkdir dup");
+    host_write("dup/Case.txt", "AAA");          /* 3 bytes */
+    host_write("dup/CASE.TXT", "bbbbbb");       /* 6 bytes */
+
+    if (host_size("dup/Case.txt") == 3 && host_size("dup/CASE.TXT") == 6)
+    {
+        check(rpc_path(HOSTFS_OP_STAT, 0, "dup/Case.txt") == HOSTFS_E_OK
+              && reply_a == 3,
+              "an exact spelling did not win over a case-insensitive twin");
+        check(rpc_path(HOSTFS_OP_STAT, 0, "dup/CASE.TXT") == HOSTFS_E_OK
+              && reply_a == 6,
+              "the other exact spelling did not win either");
+
+        check(rpc_path(HOSTFS_OP_STAT, 0, "dup/case.TXT") == HOSTFS_E_OK,
+              "an ambiguous spelling was not resolved at all");
+        first = (int)reply_a;
+        check(first == 3 || first == 6,
+              "an ambiguous spelling resolved to neither candidate: %d", first);
+
+        /* Stable within a run: readdir order does not wander. */
+        for (i = 0; i < 4; i++)
+        {
+            check(rpc_path(HOSTFS_OP_STAT, 0, "dup/case.TXT") == HOSTFS_E_OK
+                  && (int)reply_a == first,
+                  "an ambiguous lookup was not stable across repeats");
+        }
+    }
+    else
+    {
+        /* A case-insensitive host cannot hold both, and there is then
+         * nothing to be ambiguous about. */
+        check(host_present("dup/Case.txt"),
+              "neither spelling of the ambiguous pair exists");
+    }
+
+    /*
+     * CREATION USES THE GUEST'S SPELLING. Folding is a lookup rule; it
+     * must never rename anything and must never decide what a new file
+     * is called.
+     */
+    check(rpc_path(HOSTFS_OP_CREATE, 0, "casefold/NewFile.TxT")
+          == HOSTFS_E_OK, "CREATE with a mixed-case name");
+    check(rpc(HOSTFS_OP_CLOSE, reply_a, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE");
+    check(host_present("casefold/NewFile.TxT"),
+          "CREATE did not use the name the guest gave");
+    check(!host_present("casefold/newfile.txt")
+          && !host_present("casefold/NEWFILE.TXT"),
+          "CREATE invented a different case for the new file");
+
+    check(rpc_path(HOSTFS_OP_MKDIR, 0, "casefold/MadeDir") == HOSTFS_E_OK,
+          "MKDIR with a mixed-case name");
+    check(host_present("casefold/MadeDir"),
+          "MKDIR did not use the name the guest gave");
+    check(!host_present("casefold/madedir"),
+          "MKDIR invented a different case for the new folder");
+
+    /* But a CREATE whose name folds onto an existing file reopens THAT
+     * file, as GEMDOS does -- it does not lay a second entry beside it. */
+    host_write("casefold/trunc.txt", "abcdef");
+    check(rpc_path(HOSTFS_OP_CREATE, 0, "casefold/TRUNC.TXT") == HOSTFS_E_OK,
+          "CREATE over a differently-cased file");
+    check(rpc(HOSTFS_OP_CLOSE, reply_a, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE");
+    check(!host_present("casefold/TRUNC.TXT"),
+          "CREATE made a second entry differing only in case");
+    check(host_size("casefold/trunc.txt") == 0,
+          "CREATE did not truncate the file its name folded onto");
+
+    /* Writing operations resolve the same way. */
+    host_write("casefold/gone.txt", "x");
+    check(rpc_path(HOSTFS_OP_DELETE, 0, "casefold/GONE.TXT") == HOSTFS_E_OK,
+          "DELETE did not fold");
+    check(!host_present("casefold/gone.txt"), "DELETE removed nothing");
+
+    {
+        char both[64];
+        unsigned n = 0;
+
+        host_write("casefold/src.txt", "moved");
+        memcpy(both, "CASEFOLD/SRC.TXT", 16); n = 16;
+        both[n++] = '\0';
+        memcpy(both + n, "CaseFold/Dst.TXT", 16); n += 16;
+        check(rpc(HOSTFS_OP_RENAME, 0, 0, 0, both, n) == HOSTFS_E_OK,
+              "RENAME did not fold the source");
+    }
+    check(!host_present("casefold/src.txt"), "the folded RENAME moved nothing");
+    check(host_present("casefold/Dst.TXT"),
+          "RENAME did not give the destination the guest's spelling");
+}
+
+/* ------------------------------------------------------------------ */
 /* Containment                                                         */
 
 /*
@@ -1023,6 +1234,85 @@ static void test_containment(void)
             die("symlink toSibling");
         refuse("toSibling", "a sibling folder sharing the root's prefix");
     }
+
+    /*
+     * The same attacks again, through the CASE-INSENSITIVE lookup.
+     *
+     * Folding widened what a request can name, so every rule above has
+     * to hold for every spelling of it and not just the one the rule was
+     * written against. Containment is proved on the RESOLVED path, after
+     * any folded match, which is what makes these refusals hold.
+     */
+
+    /* Traversal. ".." has no letters, so nothing can fold onto it -- but
+     * that is a property to assert rather than to assume, and readdir()
+     * hands "." and ".." out to the scan like any other entry. */
+    refuse("..", "bare .. with folding in play");
+    refuse("../OUTSIDE.TXT", "upper-case parent traversal");
+    refuse("SUB/../../OUTSIDE.TXT", "mixed-case traversal through a subfolder");
+    refuse("SUB/..", "upper-case traversal to the parent");
+    refuse("SUB/.", "upper-case dot component");
+
+    /* Absolute paths in every case. */
+    refuse("/ETC/PASSWD", "upper-case absolute path");
+    refuse("\\OUTSIDE.TXT", "upper-case leading backslash");
+    refuse("C:\\WINDOWS\\WIN.INI", "upper-case drive letter");
+    refuse("c:outside.txt", "lower-case drive-relative path");
+    {
+        char upper[512];
+        size_t k;
+
+        snprintf(upper, sizeof(upper), "%s/outside.txt", tmproot);
+        for (k = 0; upper[k]; k++)
+            if (upper[k] >= 'a' && upper[k] <= 'z')
+                upper[k] = (char)(upper[k] - 'a' + 'A');
+        refuse(upper, "the absolute host path of the target, upper-cased");
+    }
+
+    /*
+     * Device names in every case. The fixtures above are real files
+     * called "NUL", "CON", "aux.txt", "COM1", "LPT9" and "sub/NUL", so
+     * without the refusal a folded lookup would now FIND them: these
+     * checks would pass by accident if the files were absent.
+     */
+    refuse("nul", "device name nul");
+    refuse("Con", "device name Con");
+    refuse("AuX.txt", "device name AuX with an extension");
+    refuse("aux.TXT", "device name aux, other case");
+    refuse("cOm1", "device name cOm1");
+    refuse("lpt9", "device name lpt9");
+    refuse("SUB/nUl", "device name in a folded subfolder");
+    refuse("Nul", "device name Nul");
+
+    /* A symlink out of the folder whose name differs from the guest's
+     * spelling only by case: the folded match finds the link, and the
+     * containment check on the resolved path still refuses it. */
+    {
+        char link[512];
+
+        host_path(link, sizeof(link), "EscapeMixed");
+        if (symlink(tmproot, link) != 0)
+            die("symlink EscapeMixed");
+        refuse("escapemixed", "an escaping symlink found by folding");
+        refuse("ESCAPEMIXED/outside.txt", "through an escaping folded symlink");
+        refuse("escapemixed/OUTSIDE.TXT",
+               "an upper-case leaf through an escaping folded symlink");
+        refuse_write("EscapeMIXED/created.txt",
+                     "writing through an escaping folded symlink");
+
+        /* And the ones created earlier, asked for in the wrong case. */
+        refuse("ESCAPE/outside.txt", "the escaping symlink, upper-cased");
+        refuse("escape/OUTSIDE.TXT", "a folded leaf beyond an escaping symlink");
+        refuse("ESCAPEFILE", "the escaping file symlink, upper-cased");
+        refuse("EscapeRoot/PASSWD", "the absolute escaping symlink, mixed case");
+        refuse("TOSIBLING", "the prefix-sharing sibling, upper-cased");
+    }
+
+    /* A symlink that stays inside must still resolve when its case is
+     * wrong, or the refusals above are refusing everything rather than
+     * refusing escapes. */
+    check(rpc_path(HOSTFS_OP_STAT, 0, "INSIDE") == HOSTFS_E_OK,
+          "a contained symlink was refused when asked for in upper case");
 
     /* Writes, through the traversals that matter most. */
     refuse_write("../created.txt", "create above the root");
@@ -1302,6 +1592,7 @@ int main(void)
     test_readdir();
     test_readdir_churn();
     test_handle_limits();
+    test_case_folding();
     test_containment();
     test_still_usable();
     test_malformed();

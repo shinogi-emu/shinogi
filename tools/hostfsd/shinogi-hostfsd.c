@@ -99,6 +99,9 @@ typedef struct { SOCKET fd; } listener_t;
 
 #define plat_mkdir(p)   _mkdir(p)
 #define plat_access_w(p) _access((p), 2)
+/* No lstat: Windows has no symlink that stat() would not follow in the
+ * only case this probe cares about -- "does this name exist". */
+#define plat_lstat(p, st) stat((p), (st))
 
 static int sockaddr_for(struct sockaddr_un *sa, const char *path)
 {
@@ -257,6 +260,7 @@ typedef struct { int fd; } listener_t;
 
 #define plat_mkdir(p)    mkdir((p), 0777)
 #define plat_access_w(p) access((p), W_OK)
+#define plat_lstat(p, st) lstat((p), (st))
 
 static int sockaddr_for(struct sockaddr_un *sa, const char *path)
 {
@@ -575,12 +579,113 @@ static int component_ok(const char *comp, size_t len)
 }
 
 /*
+ * ---------------------------------------------------------------------
+ * Case folding
+ * ---------------------------------------------------------------------
+ *
+ * GEMDOS lookup is case-insensitive and the guest depends on it: EmuTOS
+ * scans \AUTO in upper case while FreeMiNT asks for \mint\1-19-cur\ and
+ * xaaes/xaloader.prg in lower case from compiled-in string literals, so
+ * no single spelling on disk satisfies both. Resolution used to happen
+ * in the guest, which folded; doing it here means folding here.
+ *
+ * The fold is ASCII-only and deliberately so. tolower() follows the
+ * host's locale, which would make the same folder behave differently on
+ * two machines -- the class of bug that has already cost this project a
+ * tmpfs-versus-ext4 readdir difference and a timezone-dependent fixture.
+ * The guest is 8-bit and its high half is Atari ST, not Latin-1, so
+ * there is nothing above 0x7f a host fold could get right anyway.
+ */
+static int ascii_lower(int c)
+{
+    return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c;
+}
+
+static int name_eq_fold(const char *a, const char *b, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i < len; i++)
+        if (ascii_lower((unsigned char)a[i]) != ascii_lower((unsigned char)b[i]))
+            return 0;
+    return 1;
+}
+
+/*
+ * The on-disk spelling of COMP (LEN bytes) inside DIR, when the literal
+ * spelling does not exist. Returns 1 and writes LEN bytes -- an ASCII
+ * fold never changes a name's length -- into OUT, or 0 for no match.
+ *
+ * AMBIGUITY IS DELIBERATE. Where two entries differ only in case, the
+ * FIRST one readdir() hands over wins: no sort, no preferred case, no
+ * error. That is precisely what the reference implementation does
+ * (Hatari gemdos.c match_host_dir_entry() breaks on the first strcasecmp
+ * hit in raw readdir order), and matching it byte for byte is a decision
+ * the project has already taken -- see "Collisions: match Hatari
+ * exactly" in docs/phase5-hostfs-design.md. Which file wins is therefore
+ * not stable across hosts, and the mitigation is the shipping rule that
+ * everything the guest must find is unique when folded.
+ *
+ * An exact hit never reaches here, so a directory is scanned only for
+ * the lookups that would otherwise have failed outright.
+ */
+static int match_fold(const char *dir, const char *comp, size_t len, char *out)
+{
+    DIR *dp = opendir(dir);
+    struct dirent *de;
+    int found = 0;
+
+    if (!dp)
+        return 0;
+
+    while ((de = readdir(dp)) != NULL)
+    {
+        /* "." and ".." are not candidates for anything. component_ok()
+         * has already refused them as a spelling the guest may send, and
+         * they must not come back in by the side door either. */
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+        if (strlen(de->d_name) != len)
+            continue;
+        if (!name_eq_fold(de->d_name, comp, len))
+            continue;
+        /* Nothing more to vet: a fold changes only letters, so an entry
+         * matching a component that passed component_ok() passes it too
+         * -- same length, same punctuation, and is_dos_device() already
+         * ignores case. */
+        memcpy(out, de->d_name, len);
+        found = 1;
+        break;
+    }
+
+    closedir(dp);
+    return found;
+}
+
+/* True if DIR is the served root or resolves inside it. The fold scan
+ * asks this before opening a directory, so a case-insensitive match can
+ * never be drawn from outside the folder even though the containment
+ * check below would refuse the result anyway. */
+static int dir_under_root(const char *dir)
+{
+    char resolved[FULLPATH_MAX];
+
+    return plat_realpath(dir, resolved) != NULL && under_root(resolved);
+}
+
+/*
  * Resolve a guest path against the served root.
  *
  * REL/RELLEN is the raw wire path: drive-relative, '/'-separated, not
  * NUL-terminated. It is vetted component by component, joined to the
  * root, and then RESOLVED -- textual vetting alone would still let a
  * symlink inside the folder point out of it.
+ *
+ * Each component is joined in the spelling the guest sent if that
+ * spelling exists on disk, and otherwise in the on-disk spelling that
+ * matches it ignoring case. A component that matches nothing at all is
+ * left exactly as the guest sent it, which is what makes CREATE and
+ * MKDIR name the new object the way the guest asked.
  *
  * The leaf may legitimately not exist yet (CREATE, MKDIR, RENAME's
  * destination), so containment is proved on the resolved PARENT and, if
@@ -597,6 +702,7 @@ static int resolve_path(const char *rel, size_t rellen, char *out)
     char resolved[FULLPATH_MAX];
     const char *leaf = NULL;
     size_t leaflen = 0;
+    size_t joinedlen;
     size_t i, start;
 
     if (rellen > HOSTFS_MAX_PATH)
@@ -615,8 +721,18 @@ static int resolve_path(const char *rel, size_t rellen, char *out)
         return 0;
     }
 
+    if (rootlen + 1 + rellen >= sizeof(joined))
+        return HOSTFS_EPTHNF;
+
+    memcpy(joined, root, rootlen);
+    joined[rootlen] = '\0';
+    joinedlen = rootlen;
+
     for (start = 0, i = 0; i <= rellen; i++)
     {
+        size_t len;
+        struct stat probe;
+
         if (i < rellen && rel[i] != '/')
             continue;
         /* An empty component is "//", a leading '/' or a trailing one.
@@ -624,24 +740,36 @@ static int resolve_path(const char *rel, size_t rellen, char *out)
          * looks exactly like the first, so none of them is accepted. */
         if (i == start)
             return HOSTFS_EPTHNF;
-        if (!component_ok(rel + start, i - start))
+        len = i - start;
+        if (!component_ok(rel + start, len))
             return HOSTFS_EPTHNF;
-        leaf = rel + start;
-        leaflen = i - start;
+
+        joined[joinedlen] = '/';
+        memcpy(joined + joinedlen + 1, rel + start, len);
+        joined[joinedlen + 1 + len] = '\0';
+
+        /* An exact hit always wins and costs no directory scan. lstat()
+         * rather than stat() so that a dangling symlink still counts as
+         * present: DELETE has to be able to name one. */
+        if (plat_lstat(joined, &probe) != 0)
+        {
+            char folded[HOSTFS_MAX_NAME + 1];
+
+            joined[joinedlen] = '\0';           /* cut back to the parent */
+            if (dir_under_root(joined)
+             && match_fold(joined, rel + start, len, folded))
+                memcpy(joined + joinedlen + 1, folded, len);
+            joined[joinedlen] = '/';            /* and put it back */
+        }
+
+        leaf = joined + joinedlen + 1;
+        leaflen = len;
+        joinedlen += 1 + len;
         start = i + 1;
     }
 
-    if (rootlen + 1 + rellen >= sizeof(joined))
-        return HOSTFS_EPTHNF;
-
-    memcpy(joined, root, rootlen);
-    joined[rootlen] = '/';
-    memcpy(joined + rootlen + 1, rel, rellen);
-    joined[rootlen + 1 + rellen] = '\0';
-
     /* Split off the leaf and resolve the directory holding it. */
     {
-        size_t joinedlen = rootlen + 1 + rellen;
         size_t cut = joinedlen - leaflen - 1;
 
         memcpy(parent, joined, cut);

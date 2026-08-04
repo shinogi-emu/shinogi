@@ -1,0 +1,29 @@
+hostfs: wtest begin
+hostfs: wtest new write rc 18
+hostfs: wtest new close rc 0
+hostfs: wtest over write rc 12
+hostfs: wtest over close rc 0
+hostfs: wtest big write 40960 bytes
+hostfs: wtest big close rc 0
+hostfs: wtest big reread 40960 bytes fnv1a 0x9f445dc5
+hostfs: wtest delete rc 0
+hostfs: wtest afterdel write rc 25
+hostfs: wtest afterdel close rc 0
+hostfs: wtest ren write rc 10
+hostfs: wtest ren close rc 0
+hostfs: wtest rename rc 0
+hostfs: wtest mkdir rc 0
+hostfs: wtest inner write rc 31
+hostfs: wtest inner close rc 0
+hostfs: wtest mktmp rc 0
+hostfs: wtest rmdir rc 0
+hostfs: wtest ro write rc -36
+hostfs: wtest datime rc 0
+hostfs: wtest datime set rc -36
+hostfs: wtest attr set rc 1
+hostfs: wtest attr get rc 1
+hostfs: wtest attr clear rc 0
+hostfs: wtest escape create rc -34
+hostfs: wtest escape mkdir rc -34
+hostfs: wtest escape delete rc -34
+hostfs: wtest end

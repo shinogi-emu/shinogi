@@ -49,6 +49,12 @@
 #   phase5-dta      hostfs: dta.*
 #   phase5-many     hostfs: many.*
 #   phase5-vvfat    vblk: .*
+#
+# phase5-write is deliberately absent from that list. It belongs to
+# tools/check-hostfs-write.py, which runs the guest against a THROWAWAY
+# folder built by build_hostfs_write() below -- the WTEST directory in
+# it is what arms the guest's write self-test, and it must never appear
+# in the folders above.
 
 import calendar
 import os
@@ -123,6 +129,101 @@ def bigread_bytes():
     golden is checked against an independent calculation rather than
     against whatever the guest happened to print."""
     return bytes((i * 7 + 13) & 0xff for i in range(BIGREAD_SIZE))
+
+
+# The host-folder WRITE fixture.
+#
+# This is the ordinary fixture above with one directory added, and that
+# directory is what turns the guest's write self-test on: bios/bios.c
+# looks for C:\WTEST and does nothing at all when it is absent. The
+# goldens' folder therefore never gets written to, and this one -- built
+# somewhere disposable by tools/check-hostfs-write.py -- does.
+#
+# Everything under WTEST/ is declared here so there is a single host-side
+# statement of what the guest is supposed to have written. The C in
+# bios/bios.c is the independent side of the comparison.
+WTEST_DIR = "WTEST"
+
+# Already on the host when the guest boots.
+WTEST_KEEP_NAME = "WTEST/KEEP.TXT"
+WTEST_KEEP_BODY = b"keep me exactly as I am\n"
+
+# Already there, and deleted by the guest.
+WTEST_DEL_NAME = "WTEST/DEL.TXT"
+WTEST_DEL_BODY = b"the guest deletes this one\n"
+
+# Already there, and overwritten by the guest with something SHORTER.
+# The old body is long so a create that failed to truncate leaves a tail
+# behind that the size check cannot miss.
+WTEST_OVER_NAME = "WTEST/OVER.TXT"
+WTEST_OVER_OLD = b"old contents, and plenty of them\n" * 16
+WTEST_OVER_NEW = b"overwritten\n"
+
+# Created by the guest.
+WTEST_NEW_NAME = "WTEST/NEW.TXT"
+WTEST_NEW_BODY = b"hostfs write test\n"
+
+# Written immediately AFTER the delete above -- the sequence that
+# corrupted a folder under vvfat. Deliberately a different length from
+# WTEST_DEL_BODY, so a file that inherited the deleted one's length
+# fails on size before anything has to look at the bytes.
+WTEST_AFTER_NAME = "WTEST/AFTER.TXT"
+WTEST_AFTER_BODY = b"written after the delete\n"
+
+# Created, then renamed. REN1.TXT must not be on the host afterwards.
+WTEST_REN_FROM = "WTEST/REN1.TXT"
+WTEST_REN_TO = "WTEST/REN2.TXT"
+WTEST_REN_BODY = b"rename me\n"
+
+# A directory the guest creates, and a file it writes inside it.
+WTEST_DIR_NAME = "WTEST/NEWDIR"
+WTEST_INNER_NAME = "WTEST/NEWDIR/INSIDE.TXT"
+WTEST_INNER_BODY = b"inside a folder the guest made\n"
+
+# A directory the guest creates and removes again: it must be gone.
+WTEST_TMPDIR_NAME = "WTEST/TMPDIR"
+
+# Ten times one transport frame's payload (4080 bytes), so a write that
+# issued a single frame and reported the whole count is short by an
+# amount no rounding could excuse.
+WTEST_BIG_NAME = "WTEST/BIGW.DAT"
+WTEST_BIG_SIZE = 40960
+
+
+def wtest_big_bytes():
+    """The BIGW.DAT contents. A different pattern from bigread_bytes()
+    on purpose: a write path that somehow echoed the file the guest had
+    just READ would otherwise hash correctly."""
+    return bytes((i * 13 + 5) & 0xff for i in range(WTEST_BIG_SIZE))
+
+
+# Everything under WTEST/ the guest creates, renames or deletes. Used by
+# tools/check-hostfs-write.py to decide which pre-existing files must be
+# untouched: everything NOT in this set must come out byte-identical.
+WTEST_GUEST_WRITES = (
+    WTEST_NEW_NAME, WTEST_OVER_NAME, WTEST_DEL_NAME, WTEST_AFTER_NAME,
+    WTEST_REN_FROM, WTEST_REN_TO, WTEST_INNER_NAME, WTEST_BIG_NAME,
+)
+
+
+def build_hostfs_write(base):
+    """The read fixture, plus the WTEST directory that arms the guest's
+    write self-test. Point it at a THROWAWAY folder: the guest writes
+    into it, which is the entire point, and it is rebuilt from scratch
+    on every run so a pass can never rest on a previous run's leftovers.
+    """
+    build(base)
+
+    wtest = os.path.join(base, WTEST_DIR)
+    if os.path.isdir(wtest):
+        shutil.rmtree(wtest)
+    os.makedirs(wtest)
+
+    write(os.path.join(base, WTEST_KEEP_NAME), WTEST_KEEP_BODY)
+    write(os.path.join(base, WTEST_DEL_NAME), WTEST_DEL_BODY)
+    write(os.path.join(base, WTEST_OVER_NAME), WTEST_OVER_OLD)
+
+    print("host-folder write fixture rebuilt in %s" % wtest)
 
 
 # The vvfat drive is a SEPARATE fixture folder, deliberately.

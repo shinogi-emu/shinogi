@@ -77,6 +77,15 @@ fi
 # needs a write-enabled build and a disposable folder, since what it is
 # measuring is whether vvfat damages one. It does -- see the note in
 # emutos include/config.h.
+#
+# tests/golden/phase5-write.expected is likewise NOT in the table above,
+# and for the same shape of reason. The guest's host-folder write
+# self-test is armed by a WTEST directory in the served folder, which
+# THIS folder must never have: the writes would land in the fixture the
+# thirteen goldens assert over. tools/check-hostfs-write.py builds a
+# disposable folder that has one, checks that golden itself, and then
+# checks the only thing that actually proves a write -- the host folder,
+# by size and sha256.
 # The wire header is shared VERBATIM by the host helper and the guest
 # transport, and the guest keeps its own copy because EmuTOS builds from
 # its own tree. A copy that drifts is the worst kind of protocol bug --

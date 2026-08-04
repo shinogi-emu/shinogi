@@ -93,15 +93,31 @@ mkdir -p "$WORK" "$FOLDER"
 LOG="$WORK/serial.log"
 rm -f "$LOG"
 
-# readonly=on is required, not a precaution: without it QEMU refuses to
-# start at all with "Block node is read-only", because a vvfat drive
-# opened without ":rw" is a read-only block node and virtio-blk asks for
-# write permission unless told otherwise. The guest driver is read-only
-# too and refuses writes on its own.
+# The drive is attached READ-ONLY, matching the default guest build,
+# whose driver refuses writes (CONF_WITH_VIRTIO_BLK_WRITE is 0).
+#
+# readonly=on is required for that, not a precaution: without it QEMU
+# refuses to start at all with "Block node is read-only", because a
+# vvfat drive opened without "rw:" is a read-only block node and
+# virtio-blk asks for write permission unless told otherwise.
+#
+# SHINOGI_VVFAT_RW=1 attaches it read-write instead, for a guest built
+# with CONF_WITH_VIRTIO_BLK_WRITE=1. That takes two separate changes on
+# this side and both are needed: the "rw:" prefix puts vvfat itself into
+# read-write mode, and readonly=on has to go so the block node grants
+# the write permission. THE GUEST THEN WRITES TO THIS FOLDER, and vvfat
+# in that mode loses host data -- see tools/check-vvfat-write.py, which
+# is what actually measures it. Point it only at a folder
+# tools/make-fixtures.py can rebuild.
 if [ -n "$VVFAT" ]; then
     [ -d "$VVFAT" ] || { echo "no vvfat folder at $VVFAT" >&2; exit 2; }
+    if [ "${SHINOGI_VVFAT_RW:-0}" = "1" ]; then
+        DRIVE="file=fat:rw:$VVFAT,format=raw,if=none,id=hostblk"
+    else
+        DRIVE="file=fat:$VVFAT,format=raw,if=none,id=hostblk,readonly=on"
+    fi
     set -- \
-        -drive "file=fat:$VVFAT,format=raw,if=none,id=hostblk,readonly=on" \
+        -drive "$DRIVE" \
         -device virtio-blk-device,drive=hostblk
 else
     set --

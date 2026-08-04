@@ -22,9 +22,22 @@
  *
  * readonly=on is mandatory, not caution: virtio-blk asks for write
  * permission when it opens the drive, and QEMU refuses to start at all
- * without it. Writes are refused by the guest driver as well -- vvfat's
- * read-write mode is documented experimental and is being evaluated
- * separately.
+ * without it.
+ *
+ * The drive is read-only because vvfat's read-write mode LOSES HOST
+ * DATA, which is measured rather than assumed -- tools/
+ * check-vvfat-write.py reproduces it on every run. Delete a file on the
+ * drive, then write a different file in a subdirectory, and the second
+ * file's data reaches the host correctly while its length does not: the
+ * host file is truncated to the length of the deleted one, and the
+ * guest is told the write succeeded. That is somebody's document
+ * silently becoming eight bytes long.
+ *
+ * The guest driver's write path is complete and is enabled by building
+ * EmuTOS with CONF_WITH_VIRTIO_BLK_WRITE=1; this launcher would then
+ * also need "fat:rw:" here and readonly=on removed. Both are left off
+ * deliberately, and turning them on to evaluate write mode should be
+ * done against a folder holding copies.
  *
  * Display backend: sdl by default, the same as the other platforms so
  * all three bundles behave alike. Verified working on Windows.

@@ -52,6 +52,7 @@
 
 import calendar
 import os
+import shutil
 import subprocess
 import sys
 
@@ -143,6 +144,45 @@ VVFAT_FILES = {
     "HELLO.TXT": "vvfat hello",
 }
 
+# What the guest's own self-test creates on this drive (bios/bios.c,
+# vblk_writetest). These are outputs, not fixtures: they are swept away
+# on a rebuild.
+#
+# The contents are declared here so there is one host-side statement of
+# what the guest is supposed to have written, used by two consumers that
+# would otherwise each keep their own: tools/check-vvfat-write.py
+# compares the bytes that reached the host folder, and
+# tools/run-all-goldens.sh recomputes the FNV-1a hash the guest prints
+# after reading the file back. The C in bios/bios.c is the independent
+# side of both comparisons.
+VVFAT_NEW_NAME = "NEW.TXT"
+VVFAT_NEW_BODY = b"vvfat write test"
+
+# NEW.TXT does not survive under that name: the self-test renames it.
+VVFAT_RENAMED_NAME = "RENAMED.TXT"
+
+VVFAT_BIG_NAME = "BIGWRITE.DAT"
+VVFAT_BIG_SIZE = 12288
+
+# Created, written, and then deleted by the guest. It is listed as a
+# guest write because the guest CREATES it -- whether it is still on the
+# host afterwards is exactly what tools/check-vvfat-write.py reports on.
+VVFAT_DEL_NAME = "DEL.TXT"
+
+VVFAT_DIR_NAME = "NEWDIR"
+VVFAT_INNER_NAME = "NEWDIR/INSIDE.TXT"
+VVFAT_INNER_BODY = bytes((ord('a') + (i % 26)) for i in range(64))
+
+VVFAT_GUEST_WRITES = (VVFAT_NEW_NAME, VVFAT_RENAMED_NAME, VVFAT_BIG_NAME,
+                      VVFAT_DEL_NAME)
+
+
+def vvfat_write_bytes():
+    """The BIGWRITE.DAT contents. Larger than vvfat's 8KB cluster on
+    purpose, and a different pattern from bigread_bytes() so a read-back
+    that returned BIG.DAT instead could not hash correctly."""
+    return bytes((i * 11 + 7) & 0xff for i in range(VVFAT_BIG_SIZE))
+
 # BIG.DAT is the same content as the host folder's, so tools/
 # run-all-goldens.sh checks both hashes against the one oracle in
 # bigread_bytes(). On this drive it proves something different: 40960
@@ -190,6 +230,19 @@ def build(base):
 
 def build_vvfat(base):
     os.makedirs(base, exist_ok=True)
+
+    # The guest WRITES to this drive: its self-test creates several files
+    # and a directory here on every run that attaches it. They are
+    # removed rather than left, so "rebuilt" means the same folder every
+    # time and a run that failed to create them cannot pass on leftovers
+    # from the run before. vvfat writes 8.3 names back in lower case, so
+    # both spellings are swept.
+    for name in os.listdir(base):
+        full = os.path.join(base, name)
+        if name.upper() in VVFAT_GUEST_WRITES:
+            os.remove(full)
+        elif name.upper() == VVFAT_DIR_NAME and os.path.isdir(full):
+            shutil.rmtree(full)
 
     for name, body in VVFAT_FILES.items():
         write(os.path.join(base, name), body)

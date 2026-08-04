@@ -69,6 +69,14 @@ fi
 # judged by eye, so both are checked here against the same hash computed
 # from the fixture definition -- an independent calculation, not a
 # re-recording of whatever the guest last printed.
+#
+# These goldens are over a DEFAULT build, in which the guest driver is
+# read-only (CONF_WITH_VIRTIO_BLK_WRITE is 0) and phase5-vvfat's last
+# line is a refused write. The write path has its own test, which is not
+# part of this suite because it cannot be: tools/check-vvfat-write.py
+# needs a write-enabled build and a disposable folder, since what it is
+# measuring is whether vvfat damages one. It does -- see the note in
+# emutos include/config.h.
 python3 - "$ROOT" <<'EOF' || exit 2
 import sys, os
 sys.dont_write_bytecode = True      # no __pycache__ in the source tree
@@ -78,11 +86,15 @@ spec = importlib.util.spec_from_file_location(
 mkfix = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mkfix)
 
+def fnv1a(data):
+    h = 2166136261
+    for b in data:
+        h ^= b
+        h = (h * 16777619) & 0xffffffff
+    return h
+
 data = mkfix.bigread_bytes()
-h = 2166136261
-for b in data:
-    h ^= b
-    h = (h * 16777619) & 0xffffffff
+h = fnv1a(data)
 
 for golden, want in (
         ("phase5-bigread", "hostfs: big %d bytes fnv1a 0x%08x" % (len(data), h)),

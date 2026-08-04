@@ -19,51 +19,24 @@ Drive C: is a folder on your host:
     %USERPROFILE%\shinogi-drive-c
 
 It is created on first run. Put files there and they appear on the Atari
-desktop; the 8.3 names you see are what FAT gives them.
+desktop; the 8.3 names you see are what the mapping gives them.
 
-Drive C is back for Windows, and it is now the SAME mechanism the Linux
-and macOS builds use. It is not QEMU's vvfat driver any more, and it is
-not 9p either -- QEMU cannot build 9p on Windows at all.
+It is READ/WRITE. The guest can create, write, delete, rename files and
+make directories, and the changes appear in the folder immediately.
 
-What serves it is shinogi-hostfsd.exe, a small program in this
-directory. The launcher starts it before the emulator and stops it
-afterwards; you never run it yourself and it has no window. It talks to
-the guest over a virtio-serial port, which is just a byte pipe, and does
-the real work of opening and reading your files. The guest never learns
-a host path.
+How it works, and why it changed twice: QEMU cannot build virtio-9p on
+Windows at all, so the first Windows builds had no drive C. The next
+used QEMU's vvfat, which maps a directory as a FAT disk -- but its
+write mode corrupts silently (delete a file, save a document, and the
+document is truncated to the deleted file's length). So the drive is now
+served by a small helper process, shinogi-hostfsd.exe, installed beside
+shinogi.exe and started and stopped for you. The guest talks to it over
+a virtio-serial pipe, which every QEMU build has.
 
-The practical difference from b4: the folder is live. Add, rename or
-delete a file on the host and the guest sees it on its next look, with
-no drive to re-attach and no image to rebuild.
-
-Writing: not yet, and honestly. The host end of the link implements the
-whole write set -- write, create, delete, rename, make and remove
-directory -- but the guest's own filesystem layer still answers Fwrite
-with "access denied" until its write path is finished, so from inside
-the Atari desktop drive C is read-only. That is one change away, on the
-guest side, and nothing in this package will have to change with it.
-
-What this replaces is worth stating plainly, because it is the reason
-the drive was read-only before. b4 used QEMU's vvfat driver, whose
-read-write mode LOSES HOST DATA: delete a file on the drive, then write
-a different file in a subdirectory, and the host file is truncated to
-the deleted one's length while the guest is told the write succeeded.
-That is somebody's document silently becoming eight bytes long, and it
-is measured rather than assumed. Nothing in the new path can do it:
-every operation is an explicit request that either completed or did not.
-
-If drive C does not appear, the launcher will tell you so and start the
-emulator without it. The helper's own log is:
-
-    %LOCALAPPDATA%\shinogi\shinogi-hostfsd.log
-
-Drive C needs Unix-domain socket support, which Windows has had since
-Windows 10 version 1803 (April 2018) -- the same era of Windows the
-bundled QEMU itself needs, so there is no machine that can run one and
-not the other.
-
-Uninstalling does NOT delete %USERPROFILE%\shinogi-drive-c. Your files
-are yours.
+Writes are verified against the host folder rather than by asking the
+guest: files are checked by size and SHA-256, pre-existing files are
+checked to be untouched, and the folder's parent is checked to be sure
+nothing was written outside it.
 
 
 Running

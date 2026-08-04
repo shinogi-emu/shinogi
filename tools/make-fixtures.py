@@ -19,6 +19,8 @@
 #   ~/shinogi-drive-c      what tools/run-shinogi.sh mounts interactively
 #   /tmp/shinogi-vvfat     what run-golden.sh hands to QEMU's vvfat
 #                          driver as a virtio-blk device
+#   /tmp/shinogi-hostfs-exec  the same fixture plus the two test
+#                          programs, for phase5-exec only
 #
 # The two are kept identical so an interactive run shows exactly what the
 # goldens verified.
@@ -48,7 +50,13 @@
 #   phase5-listing  hostfs: fs(first|next).*
 #   phase5-dta      hostfs: dta.*
 #   phase5-many     hostfs: many.*
+#   phase5-exec     (hostfs: exec .*|prg: .*)
 #   phase5-vvfat    vblk: .*
+#
+# phase5-exec is the one golden in that list whose fixture is NOT the
+# folder the others share: it needs an AUTO directory, which EmuTOS
+# executes at boot, so it gets a folder of its own -- see
+# build_hostfs_exec() below.
 #
 # phase5-write is deliberately absent from that list. It belongs to
 # tools/check-hostfs-write.py, which runs the guest against a THROWAWAY
@@ -59,6 +67,7 @@
 import calendar
 import os
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -129,6 +138,111 @@ def bigread_bytes():
     golden is checked against an independent calculation rather than
     against whatever the guest happened to print."""
     return bytes((i * 7 + 13) & 0xff for i in range(BIGREAD_SIZE))
+
+
+# The host-folder EXECUTE fixture.
+#
+# Its own folder, like the write fixture and for the same shape of
+# reason: it holds an AUTO directory, and an AUTO directory is not
+# something the other goldens' folder may have. EmuTOS runs every .PRG
+# it finds there at boot (autoexec() in bios/bios.c), so putting one in
+# the shared fixture would make every one of the other goldens boot a
+# program -- and would add entries to the root that three listing
+# goldens assert over, entry by entry.
+#
+# EXEC_DEFAULT is where tools/run-all-goldens.sh looks for it.
+EXEC_DEFAULT = "/tmp/shinogi-hostfs-exec"
+
+# The program the guest's self-test runs by name, and the one autoexec()
+# finds for itself. Two files rather than one so the golden can tell the
+# two routes apart: a single program run twice proves only that
+# something ran twice.
+EXEC_NAME = "EXEC.PRG"
+EXEC_MESSAGE = "prg: hello from drive C"
+
+EXEC_AUTO_DIR = "AUTO"
+EXEC_AUTO_NAME = "AUTO/AUTOEXEC.PRG"
+EXEC_AUTO_MESSAGE = "prg: hello from the AUTO folder"
+
+# The goldfish-tty character register (bios/qemuvirt.h: GF_TTY_BASE +
+# GF_TTY_PUT_CHAR), written a longword at a time.
+#
+# A test program that has run has to be able to SAY so, and on this
+# machine the serial log the goldens read is the goldfish tty -- it is
+# where the guest's own KINFO() lines come out. Cconws would be correct
+# GEMDOS and useless here: it goes to the framebuffer console, which a
+# headless golden run cannot see. So the program writes the device
+# directly. It runs in user mode when it does; that this works is not an
+# assumption, it is how EmuTOS's own kprintf() reaches the same register
+# from user state (bios/kprint.c).
+EXEC_TTY_PUT_CHAR = 0xFF008000
+
+
+def exec_program(message):
+    """A GEMDOS .PRG that prints one line on the goldfish tty and exits.
+
+    Assembled by hand so that building a fixture needs nothing but
+    Python -- the m68k cross toolchain is needed to build the guest, not
+    to lay out 52 bytes. The listing is the specification; the bytes
+    below are what m68k-atari-mintelf-as produces from it.
+
+        lea     (msg).l,a0          41f9 0000001a
+        move.l  #$ff008000,a1       227c ff008000
+    loop:
+        moveq   #0,d0               7000
+        move.b  (a0)+,d0            1018
+        beq.s   done                6704
+        move.l  d0,(a1)             2280
+        bra.s   loop                60f6
+    done:
+        clr.w   -(sp)               4267        ; Pterm0
+        trap    #1                  4e41
+    msg:
+        dc.b    "...",13,10,0
+
+    The string is addressed ABSOLUTELY rather than PC-relative on
+    purpose. That is the one longword in the program that has to be
+    fixed up at load time, so a loader that read the text but never
+    reached the relocation table would produce a program that runs and
+    prints garbage -- which is a different failure from one that does
+    not load at all, and worth being able to tell apart.
+    """
+    body = message.encode("ascii") + b"\r\n\0"
+    if len(body) % 2:
+        body += b"\0"           # keep the text an even number of bytes
+
+    text = (b"\x41\xf9\x00\x00\x00\x1a"
+            + b"\x22\x7c" + struct.pack(">L", EXEC_TTY_PUT_CHAR)
+            + b"\x70\x00\x10\x18\x67\x04\x22\x80\x60\xf6"
+            + b"\x42\x67\x4e\x41"
+            + body)
+
+    # The 28-byte GEMDOS header: magic, then the four segment lengths,
+    # a reserved long, the program flags, and the absolute flag. Zero
+    # for the absolute flag is what says "relocation information
+    # follows".
+    header = struct.pack(">HLLLLLLH", 0x601A, len(text), 0, 0, 0, 0, 0, 0)
+
+    # The relocation table: the offset of the first longword to fix up,
+    # then the terminating zero byte. Offset 2 is the address inside the
+    # lea above.
+    reloc = struct.pack(">L", 2) + b"\0"
+
+    return header + text + reloc
+
+
+def build_hostfs_exec(base):
+    """The read fixture, plus the two test programs. Point it somewhere
+    of its own: the AUTO directory here would be executed by every other
+    golden's boot if it were in the folder they share."""
+    build(base)
+
+    write(os.path.join(base, EXEC_NAME), exec_program(EXEC_MESSAGE))
+
+    os.makedirs(os.path.join(base, EXEC_AUTO_DIR), exist_ok=True)
+    write(os.path.join(base, EXEC_AUTO_NAME), exec_program(EXEC_AUTO_MESSAGE))
+
+    print("host-folder exec fixture rebuilt in %s" % base)
 
 
 # The host-folder WRITE fixture.
@@ -361,7 +475,10 @@ def main():
 
     # The vvfat folder is not one of the host-folder targets and is not
     # interchangeable with them, so it is always rebuilt at its own
-    # location rather than being driven by the arguments above.
+    # location rather than being driven by the arguments above. The exec
+    # folder is separate for the same reason and is likewise always
+    # rebuilt where tools/run-all-goldens.sh expects it.
+    build_hostfs_exec(EXEC_DEFAULT)
     build_vvfat(VVFAT_DEFAULT)
 
 

@@ -30,7 +30,7 @@
 # HOW THE GUEST IS ARMED
 #
 # The write self-test in bios/bios.c runs only when C:\WTEST exists, and
-# this script is what builds a folder that has one. The thirteen goldens
+# this script is what builds a folder that has one. The suite's goldens
 # use a folder without it and are therefore never written to. That is
 # also why this script insists on building its own folder from scratch:
 # a folder left over from a previous run would let a pass rest on files

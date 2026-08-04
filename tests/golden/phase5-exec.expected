@@ -1,0 +1,3 @@
+prg: hello from drive C
+hostfs: exec rc 0
+prg: hello from the AUTO folder

@@ -25,6 +25,7 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FOLDER="${SHINOGI_HOSTFS:-/tmp/shinogi-hostfs}"
+EXECFOLDER="${SHINOGI_HOSTFS_EXEC:-/tmp/shinogi-hostfs-exec}"
 VVFAT="${SHINOGI_VVFAT:-/tmp/shinogi-vvfat}"
 
 # name<TAB>pattern[<TAB>flags]. Keep in step with the comment at the top
@@ -36,6 +37,12 @@ VVFAT="${SHINOGI_VVFAT:-/tmp/shinogi-vvfat}"
 #           not attached to every run because it takes a virtio-mmio
 #           slot and moves the one the 9P device lands in, which
 #           phase5-attach pins by number.
+#   exec    serve $EXECFOLDER as drive C instead of $FOLDER. That
+#           folder is the same fixture plus two test programs and an
+#           AUTO directory, and the AUTO directory is why it cannot be
+#           the shared one: EmuTOS runs every .PRG it finds there at
+#           boot, so a program in the folder the other goldens use
+#           would be executed on every one of their runs.
 #   sorted  compare the extracted lines as a set, not as a sequence.
 #           Only for goldens whose lines come out in raw host readdir()
 #           order, which is not defined by POSIX and differs between
@@ -55,6 +62,7 @@ phase5-subdir	hostfs: sub.*
 phase5-listing	hostfs: fs(first|next).*
 phase5-dta	hostfs: dta.*
 phase5-many	hostfs: many.*
+phase5-exec	(hostfs: exec .*|prg: .*)	exec
 phase5-vvfat	vblk: .*	vvfat
 "
 
@@ -82,7 +90,7 @@ fi
 # and for the same shape of reason. The guest's host-folder write
 # self-test is armed by a WTEST directory in the served folder, which
 # THIS folder must never have: the writes would land in the fixture the
-# thirteen goldens assert over. tools/check-hostfs-write.py builds a
+# other goldens assert over. tools/check-hostfs-write.py builds a
 # disposable folder that has one, checks that golden itself, and then
 # checks the only thing that actually proves a write -- the host folder,
 # by size and sha256.
@@ -163,6 +171,9 @@ while IFS='	' read -r name pattern flags; do
         *,vvfat,*)
             GOLDEN_SORTED="$sorted" \
                 "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER" "$VVFAT" ;;
+        *,exec,*)
+            GOLDEN_SORTED="$sorted" \
+                "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$EXECFOLDER" ;;
         *)
             GOLDEN_SORTED="$sorted" \
                 "$ROOT/tools/run-golden.sh" "$name" "$pattern" "$FOLDER" ;;

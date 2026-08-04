@@ -6,7 +6,9 @@
 #
 #   <name>         tests/golden/<name>.expected holds the expected lines
 #   <grep-ere>     extended regex selecting the lines to compare
-#   <host-folder>  exported over 9P as drive C
+#   <host-folder>  served as drive C by tools/hostfsd over a
+#                  virtio-serial port, and ALSO exported over 9P for
+#                  the goldens that still test the 9P transport
 #   <vvfat-folder> exported as a virtio-blk device via QEMU's vvfat
 #                  driver, if given; omitted, no block device is
 #                  attached at all
@@ -56,6 +58,15 @@ WORK="${TMPDIR:-/tmp}/run-golden-$NAME"
 BOOT_WAIT="${BOOT_WAIT:-25}"
 GOLDEN_SORTED="${GOLDEN_SORTED:-0}"
 
+# The host-folder helper and the socket QEMU offers it.
+#
+# The socket lives under $WORK so concurrent goldens cannot collide on
+# it, and the name is short: a Unix socket path is limited to about 100
+# bytes by sockaddr_un, which is far less than a path is generally
+# allowed and is a limit a long TMPDIR really can reach.
+HOSTFSD="$ROOT/tools/hostfsd/shinogi-hostfsd"
+SOCK="$WORK/hostfs.sock"
+
 [ -f "$ELF" ]    || { echo "no guest image at $ELF" >&2; exit 2; }
 [ -f "$GOLDEN" ] || { echo "no golden file at $GOLDEN" >&2; exit 2; }
 [ -s "$GOLDEN" ] || { echo "golden file $GOLDEN is empty" >&2; exit 2; }
@@ -91,7 +102,15 @@ extract() {
 
 mkdir -p "$WORK" "$FOLDER"
 LOG="$WORK/serial.log"
-rm -f "$LOG"
+rm -f "$LOG" "$SOCK"
+
+# The host-folder helper has to exist before QEMU is told to expect one.
+# Building it here rather than requiring a separate step keeps a golden
+# run a single command; it needs nothing beyond a C compiler and libc.
+if [ ! -x "$HOSTFSD" ]; then
+    make -s -C "$ROOT/tools/hostfsd" >/dev/null 2>&1 || true
+fi
+[ -x "$HOSTFSD" ] || { echo "cannot build $HOSTFSD" >&2; exit 2; }
 
 # The drive is attached READ-ONLY, matching the default guest build,
 # whose driver refuses writes (CONF_WITH_VIRTIO_BLK_WRITE is 0).
@@ -123,17 +142,74 @@ else
     set --
 fi
 
+# The virtio-serial port drive C is served over, and the 9P device that
+# preceded it.
+#
+# BOTH are attached. The 9P device is what tests/golden/phase5-attach,
+# -walk and -readdir are about, and it is not retired until the serial
+# transport is proven on all three platforms; drive C itself comes from
+# the serial port.
+#
+# ORDER ON THE COMMAND LINE IS LOAD-BEARING. QEMU fills the virtio-mmio
+# transport slots from the top down, so the first device listed lands in
+# the highest slot. phase5-attach pins the 9P device's slot by NUMBER,
+# so anything added has to be added AFTER it -- appending here leaves
+# the gpu at 127 and 9P at 126 exactly as before.
+#
+# QEMU is the listener (server=on) and the helper connects, which is
+# what the shipped launchers will do too: it means QEMU can be started
+# without waiting for anything, and wait=off means it does not block on
+# the helper either.
+set -- "$@" \
+    -chardev "socket,id=hostfs,path=$SOCK,server=on,wait=off" \
+    -device virtio-serial-device \
+    -device virtserialport,chardev=hostfs,name=shinogi.hostfs
+
 qemu-system-m68k \
     -M virt -m 128 \
     -kernel "$ELF" \
     -device virtio-gpu-device \
-    -fsdev "local,id=hostfs,path=$FOLDER,security_model=mapped-xattr" \
-    -device virtio-9p-device,fsdev=hostfs,mount_tag=shinogi \
+    -fsdev "local,id=hostfs9p,path=$FOLDER,security_model=mapped-xattr" \
+    -device virtio-9p-device,fsdev=hostfs9p,mount_tag=shinogi \
     "$@" \
     -display none \
     -serial "file:$LOG" \
     -d guest_errors -D "$WORK/guest-errors.log" &
 QPID=$!
+
+# Start the helper once QEMU has created the socket.
+#
+# It cannot be started first: QEMU is the listener, so there is nothing
+# to connect to until it has bound the socket. The guest waits a bounded
+# moment for the port to open and then gives up, so this must not dawdle
+# -- but a fixed sleep would be both slower than necessary and still
+# occasionally too short, hence the poll.
+HPID=""
+w=0
+while [ "$w" -lt 100 ]; do
+    [ -S "$SOCK" ] && break
+    kill -0 "$QPID" 2>/dev/null || break
+    sleep 0.05
+    w=$((w + 1))
+done
+
+if [ -S "$SOCK" ]; then
+    "$HOSTFSD" --root "$FOLDER" --connect "$SOCK" \
+        > "$WORK/hostfsd.log" 2>&1 &
+    HPID=$!
+else
+    echo "qemu never created $SOCK - drive C will be absent" >&2
+fi
+
+# Both children are ours to stop, and the helper outlives QEMU if it is
+# not killed: it holds the folder open and the next golden would find
+# two of them serving the same socket path.
+cleanup() {
+    [ -n "$HPID" ] && kill "$HPID" 2>/dev/null
+    kill "$QPID" 2>/dev/null
+    return 0
+}
+trap 'cleanup; exit 2' INT TERM
 
 # The guest never exits on its own, so it has to be stopped from here.
 #
@@ -173,12 +249,17 @@ while [ "$i" -lt "$BOOT_WAIT" ]; do
     sleep 1
     i=$((i + 1))
 done
+if [ -n "$HPID" ]; then
+    kill "$HPID" 2>/dev/null || true
+    wait "$HPID" 2>/dev/null || true
+fi
 kill "$QPID" 2>/dev/null || true
 
 set +e
 wait "$QPID"
 QSTATUS=$?
 set -e
+rm -f "$SOCK"
 
 # A clean SIGTERM shutdown (our own kill above) reports 143; anything
 # else non-zero means QEMU exited on its own, almost certainly with an

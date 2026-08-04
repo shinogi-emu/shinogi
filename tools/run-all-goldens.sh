@@ -77,6 +77,24 @@ fi
 # needs a write-enabled build and a disposable folder, since what it is
 # measuring is whether vvfat damages one. It does -- see the note in
 # emutos include/config.h.
+# The wire header is shared VERBATIM by the host helper and the guest
+# transport, and the guest keeps its own copy because EmuTOS builds from
+# its own tree. A copy that drifts is the worst kind of protocol bug --
+# both sides compile, and the frames disagree by a field -- so the two
+# are compared here rather than trusted to stay in step.
+PROTO_HOST="$ROOT/tools/hostfsd/shinogi-hostfs-proto.h"
+PROTO_GUEST="${SHINOGI_EMUTOS:-$HOME/git/emutos}/bios/hostfs_proto.h"
+if [ -f "$PROTO_GUEST" ]; then
+    if ! cmp -s "$PROTO_HOST" "$PROTO_GUEST"; then
+        echo "the guest and host copies of the wire header differ:" >&2
+        diff -u "$PROTO_HOST" "$PROTO_GUEST" >&2 || true
+        exit 2
+    fi
+else
+    echo "no guest copy of the wire header at $PROTO_GUEST" >&2
+    exit 2
+fi
+
 python3 - "$ROOT" <<'EOF' || exit 2
 import sys, os
 sys.dont_write_bytecode = True      # no __pycache__ in the source tree

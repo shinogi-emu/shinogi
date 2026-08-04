@@ -153,8 +153,11 @@ jobs:
           name: guest
           path: guest
 
-      - name: Install QEMU
-        run: brew install qemu
+      - name: Install QEMU and the bundling tool
+        # dylibbundler rewrites QEMU's dylib references to
+        # @executable_path so the app runs on a machine without
+        # Homebrew. It is not preinstalled on the runner.
+        run: brew install qemu dylibbundler
 
       - name: Build the app bundle
         env:

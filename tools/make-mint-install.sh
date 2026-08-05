@@ -209,6 +209,7 @@ need "$XA/example.cnf"
 sed -e 's|^#setenv AVSERVER   "DESKTOP "|setenv AVSERVER   "DESKTOP "|' \
     -e 's|^#setenv FONTSELECT "DESKTOP "|setenv FONTSELECT "DESKTOP "|' \
     -e 's|^\(launchpath[[:space:]]*=\).*|\1  c:\\|' \
+    -e 's|^#shell = c:.teradesk.desktop.prg|shell = c:\\teradesk\\desktop.prg|' \
     "$XA/example.cnf" > "$XAAESDIR/xaaes.cnf"
 
 # --- fonts and keyboard tables -----------------------------------------
@@ -264,6 +265,33 @@ PY
 
 echo "FreeMiNT install tree: $OUT"
 echo "kernel: AUTO/MINT.PRG ($(stat -c %s "$OUT/AUTO/MINT.PRG") bytes, target $KERNEL_TARGET)"
+# --- desktop -----------------------------------------------------------
+#
+# XaAES is the AES; it is not a desktop. Upstream's ready-to-go snapshot
+# bundles TeraDesk for this, but the FreeMiNT source tree does not carry
+# it, so a build from source comes up with XaAES running and nothing to
+# launch. Ship TeraDesk and point XaAES's "shell =" at it -- the line its
+# own example config already carries, commented out.
+TERADESK="${TERADESK_DIR:-$HOME/git/atari-docs/teradesk}"
+if [ -f "$TERADESK/desktop.prg" ]; then
+    DESKDIR="$OUT/teradesk"
+    mkdir -p "$DESKDIR"
+    cp "$TERADESK/desktop.prg" "$DESKDIR/"
+    # Resources loaded at runtime. Prefer the English set under rsc/en
+    # over the build-root copies, which are whatever the last build left.
+    for f in desktop.rsc desktop.hrd; do
+        if [ -f "$TERADESK/rsc/en/$f" ]; then
+            cp "$TERADESK/rsc/en/$f" "$DESKDIR/"
+        else
+            cp "$TERADESK/$f" "$DESKDIR/"
+        fi
+    done
+    cp "$TERADESK/icons.rsc" "$TERADESK/cicons.rsc" "$DESKDIR/"
+    echo "desktop: teradesk/desktop.prg ($(stat -c%s "$DESKDIR/desktop.prg") bytes)"
+else
+    echo "note: no TeraDesk at $TERADESK - XaAES will have no desktop" >&2
+fi
+
 # Also drop it on the LAN share, which is how it reaches the Windows box.
 # Without this the tree only ever exists on the build machine.
 SHARE="${SHINOGI_SHARE:-$HOME/git/Aranym/lan-share}"

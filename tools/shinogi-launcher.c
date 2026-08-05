@@ -109,6 +109,7 @@ int main(int argc, char *argv[])
     char logerr[PATH_MAX + 8];
     char serial[PATH_MAX + 8];
     char display[128];
+    char gpudev[64];
     const char *want;
     const char *home = getenv("HOME");
     struct stat st;
@@ -122,6 +123,28 @@ int main(int argc, char *argv[])
     snprintf(qemu, sizeof(qemu), "%s/qemu/bin/qemu-system-m68k", dir);
     if (stat(qemu, &st) != 0)
         snprintf(qemu, sizeof(qemu), "qemu-system-m68k");
+
+    /*
+     * Screen size. GEM draws with fixed-size bitmap fonts and icons, so
+     * a big screen makes everything small rather than roomy; 1024x768 is
+     * the compromise. Override with SHINOGI_RES=WIDTHxHEIGHT.
+     *
+     * Always passed: QEMU's own virtio-gpu default is 1280x800 and would
+     * apply otherwise. The guest asks the host for this size at boot and
+     * rounds the width down to a multiple of 8.
+     */
+    {
+        const char *res = getenv("SHINOGI_RES");
+        int rw = 1024, rh = 768, w, h;
+
+        if (res && sscanf(res, "%dx%d", &w, &h) == 2 &&
+            w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
+            rw = w;
+            rh = h;
+        }
+        snprintf(gpudev, sizeof(gpudev),
+                 "virtio-gpu-device,xres=%d,yres=%d", rw, rh);
+    }
 
     /* The host folder the guest sees as drive C:. */
     if (getenv("SHINOGI_HOSTFS"))
@@ -190,7 +213,7 @@ int main(int argc, char *argv[])
            "-M", "virt",
            "-m", "128",
            "-kernel", elf,
-           "-device", "virtio-gpu-device",
+           "-device", gpudev,
            "-device", "virtio-keyboard-device",
            "-device", "virtio-tablet-device",
            "-fsdev", fsdev,

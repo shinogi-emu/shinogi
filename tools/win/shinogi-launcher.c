@@ -253,7 +253,8 @@ static void stop_helper(HANDLE helper, const char *sock, const char *ready)
  * caller tells "failed to start" from "started and was closed".
  */
 static DWORD run_qemu(const char *dir, const char *logs, const char *display,
-                      const char *hostfs, const char *kernel, DWORD *elapsed,
+                      const char *hostfs, const char *kernel,
+                      int res_w, int res_h, DWORD *elapsed,
                       char *cmdout, size_t cmdoutlen)
 {
     char cmd[4096];
@@ -274,14 +275,14 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
               " -M virt"
               " -m 128"
               " -kernel \"%s\""
-              " -device virtio-gpu-device"
+              " -device virtio-gpu-device,xres=%d,yres=%d"
               " -device virtio-keyboard-device"
               " -device virtio-tablet-device"
               "%s"
               " -display %s"
               " -serial \"file:%s\\shinogi-serial.log\""
               " -d guest_errors -D \"%s\\shinogi-guest-errors.log\"",
-              dir, kernel, hostfs, display, logs, logs);
+              dir, kernel, res_w, res_h, hostfs, display, logs, logs);
     cmd[sizeof(cmd) - 1] = '\0';
 
     lstrcpynA(cmdout, cmd, (int)cmdoutlen);
@@ -311,6 +312,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     char exe[MAX_PATH], dir[MAX_PATH], logs[MAX_PATH];
     char drivec[MAX_PATH], sock[MAX_PATH], ready[MAX_PATH];
     char kernel[MAX_PATH];
+    int res_w, res_h;
     char hostfs[1024], lastcmd[4096];
     const char *display;
     HANDLE helper = NULL;
@@ -340,6 +342,29 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
      * size GTK chose; scale enlarges it afterwards. SDL has neither
      * option, so it is passed through untouched.
      */
+    /*
+     * Screen size. GEM draws with fixed-size bitmap fonts and icons, so a
+     * big screen makes everything small rather than roomy -- 1024x768 is
+     * the compromise. Anything else is given as WIDTHxHEIGHT on the
+     * command line, e.g. "shinogi.exe 1920x1080".
+     *
+     * The width is rounded down to a multiple of 8 by the guest, which
+     * computes its stride from it. QEMU's own default is 1280x800 and
+     * would apply if we passed nothing, so it is always passed.
+     */
+    res_w = 1024;
+    res_h = 768;
+    if (cmdline && *cmdline) {
+        int w = 0, h = 0;
+
+        if (sscanf(cmdline, "%dx%d", &w, &h) == 2 &&
+            w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
+            res_w = w;
+            res_h = h;
+            cmdline = "";       /* consumed; not a display backend */
+        }
+    }
+
     if (!cmdline || !*cmdline) {
         display = "sdl";
     } else if (lstrcmpiA(cmdline, "gtk") == 0) {
@@ -423,7 +448,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         }
     }
 
-    code = run_qemu(dir, logs, display, hostfs, kernel, &elapsed,
+    code = run_qemu(dir, logs, display, hostfs, kernel, res_w, res_h, &elapsed,
                     lastcmd, sizeof(lastcmd));
 
     /*
@@ -440,7 +465,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
              "The emulator is starting again without it. Everything else\n"
              "works; see shinogi-guest-errors.log in:\n"
              "%LOCALAPPDATA%\\shinogi");
-        code = run_qemu(dir, logs, display, hostfs, kernel, &elapsed,
+        code = run_qemu(dir, logs, display, hostfs, kernel, res_w, res_h, &elapsed,
                         lastcmd, sizeof(lastcmd));
     }
 

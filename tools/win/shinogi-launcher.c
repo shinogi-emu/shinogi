@@ -167,9 +167,21 @@ static HANDLE start_helper(const char *dir, const char *drivec,
                        FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
+    /*
+     * --once: serve this QEMU and then exit.
+     *
+     * Without it the helper goes back to accepting after the guest
+     * disconnects, and there is nothing left to connect to it -- one
+     * run of QEMU is exactly one connection. It then outlives the
+     * session, and if this launcher was killed rather than closed it is
+     * never told to stop, so it keeps running and keeps
+     * shinogi-hostfsd.exe open. The next installer cannot overwrite the
+     * file and fails with "Error opening file for writing".
+     */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\shinogi-hostfsd.exe\""
-              " --root \"%s\" --listen \"%s\" --ready-file \"%s\"",
+              " --root \"%s\" --listen \"%s\" --ready-file \"%s\""
+              " --once",
               dir, drivec, sock, ready);
     cmd[sizeof(cmd) - 1] = '\0';
 

@@ -60,6 +60,16 @@ ShowInstDetails show
 
 Section "shinogi" SecMain
   SectionIn RO
+  ; Clear a helper left over from a previous session before writing any
+  ; files. Up to b8 the helper kept listening after the guest went away,
+  ; so a launcher that was killed rather than closed left it running and
+  ; holding shinogi-hostfsd.exe open -- the installer then stopped with
+  ; "Error opening file for writing". The launcher now passes --once so
+  ; it exits with the guest, but an older orphan can still be running on
+  ; a machine being upgraded, and it is our own process to end.
+  nsExec::Exec 'taskkill /F /IM shinogi-hostfsd.exe'
+  Pop $0
+
   SetOutPath "$INSTDIR"
 
   File "${BUNDLE}\shinogi.exe"

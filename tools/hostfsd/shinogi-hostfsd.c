@@ -1403,8 +1403,10 @@ static int send_all(conn_t c, const unsigned char *buf, unsigned n)
  * EDRIVE, which is diagnosable, and the helper stays up for the next
  * connection.
  */
-static void serve_client(conn_t c)
+static long serve_client(conn_t c)
 {
+    long served = 0;
+
     unsigned char req[HOSTFS_MAX_FRAME];
     unsigned char rep[HOSTFS_MAX_FRAME];
 
@@ -1417,6 +1419,8 @@ static void serve_client(conn_t c)
 
         if (r <= 0)
             break;              /* clean close, or a truncated header */
+
+        served++;
 
         len = get16(req);
         if (len < HOSTFS_REQ_HDR || len > HOSTFS_MAX_FRAME)
@@ -1440,8 +1444,9 @@ static void serve_client(conn_t c)
     }
 
     handles_reset();
-}
 
+    return served;
+}
 /*
  * ===========================================================================
  * Startup
@@ -1611,6 +1616,7 @@ int main(int argc, char **argv)
     for (;;)
     {
         conn_t c = listener_accept(&l);
+        long served;
 
         if (c == CONN_NONE)
         {
@@ -1622,9 +1628,16 @@ int main(int argc, char **argv)
 #endif
             break;
         }
-        serve_client(c);
+        /*
+         * --once must not be spent on a connection that carried nothing.
+         * A probe, a reset, or a client that connects and goes away again
+         * would otherwise consume the single session and leave the guest
+         * with no helper -- intermittently, depending on what else touched
+         * the socket first.
+         */
+        served = serve_client(c);
         conn_close(c);
-        if (once)
+        if (once && served > 0)
             break;
     }
 

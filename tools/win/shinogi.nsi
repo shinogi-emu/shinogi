@@ -33,17 +33,20 @@ ShowInstDetails show
 !include "MUI2.nsh"
 
 !define MUI_ABORTWARNING
-; Launch through Explorer rather than directly.
+; NO MUI_FINISHPAGE_RUN.
 ;
-; The installer runs elevated (RequestExecutionLevel admin), and anything
-; MUI_FINISHPAGE_RUN starts directly inherits that elevated token. QEMU
-; started that way misbehaves, and %LOCALAPPDATA% then resolves to the
-; administrator's profile, so the logs land somewhere the user will not
-; think to look. Handing the path to Explorer makes the shell start it as
-; the logged-in desktop user instead, which is what a shortcut would do.
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_FUNCTION LaunchAsUser
-!define MUI_FINISHPAGE_RUN_TEXT "Launch shinogi now"
+; Launching the emulator from the finish page failed on two separate
+; releases, and the elevation workaround below it (handing the path to
+; Explorer so the app did not inherit the installer's admin token) did
+; not cure it. It is not reproducible off the user's machine, and all it
+; ever saved was one double-click on an icon that the installer has just
+; put on the desktop.
+;
+; An installer that reliably does nothing beats one that intermittently
+; hangs, because the hang is the product's first impression. Anything
+; started from an elevated installer inherits that whole class of
+; problem, so the drive C folder is offered as a SHORTCUT below rather
+; than as another thing to launch from here.
 
 !insertmacro MUI_PAGE_LICENSE "${BUNDLE}\qemu\COPYING"
 !insertmacro MUI_PAGE_DIRECTORY
@@ -54,10 +57,6 @@ ShowInstDetails show
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
-
-Function LaunchAsUser
-  Exec '"$WINDIR\explorer.exe" "$INSTDIR\shinogi.exe"'
-FunctionEnd
 
 Section "shinogi" SecMain
   SectionIn RO
@@ -77,11 +76,14 @@ Section "shinogi" SecMain
 
   CreateDirectory "$SMPROGRAMS\shinogi"
   CreateShortcut "$SMPROGRAMS\shinogi\shinogi.lnk" "$INSTDIR\shinogi.exe"
-  CreateShortcut "$SMPROGRAMS\shinogi\shinogi (GTK display).lnk" \
-                 "$INSTDIR\shinogi.exe" "gtk"
   CreateShortcut "$SMPROGRAMS\shinogi\Read me.lnk" "$INSTDIR\README.txt"
   CreateShortcut "$SMPROGRAMS\shinogi\Uninstall.lnk" "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\shinogi.lnk" "$INSTDIR\shinogi.exe"
+
+  CreateShortcut "$SMPROGRAMS\shinogi\shinogi drive C.lnk" \
+                 "$WINDIR\explorer.exe" "%USERPROFILE%\shinogi-drive-c"
+  CreateShortcut "$DESKTOP\shinogi drive C.lnk" \
+                 "$WINDIR\explorer.exe" "%USERPROFILE%\shinogi-drive-c"
 
   WriteRegStr HKLM "Software\shinogi" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\shinogi" "Version" "${VERSION}"
@@ -109,7 +111,10 @@ SectionEnd
 
 Section "Uninstall"
   Delete "$DESKTOP\shinogi.lnk"
+  Delete "$DESKTOP\shinogi drive C.lnk"
   Delete "$SMPROGRAMS\shinogi\shinogi.lnk"
+  Delete "$SMPROGRAMS\shinogi\shinogi drive C.lnk"
+  ; Left behind by installs up to b7, which offered a GTK display entry.
   Delete "$SMPROGRAMS\shinogi\shinogi (GTK display).lnk"
   Delete "$SMPROGRAMS\shinogi\Read me.lnk"
   Delete "$SMPROGRAMS\shinogi\Uninstall.lnk"

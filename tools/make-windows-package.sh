@@ -31,7 +31,7 @@ VERSION=$(cat "$ROOT/VERSION")
 OUTDIR="${1:-$HOME/git/Aranym/lan-share}"
 
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
-QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64}"
+QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64-patched}"
 SDL2="${SDL2_MINGW:-$HOME/mingw-sdl2/x86_64-w64-mingw32}"
 BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$VERSION"
 
@@ -48,16 +48,23 @@ command -v makensis >/dev/null || { echo "makensis missing" >&2; exit 2; }
 
 echo "shinogi $VERSION -> $OUTDIR"
 
-# Assemble the bundle. Only the m68k target is kept: the upstream tree is
-# 1.2GB, most of it other architectures and firmware this machine never
-# loads. All 114 DLLs are kept deliberately rather than computing the
-# import closure -- a missing DLL fails on the user's desktop, where it
-# cannot be diagnosed, and the compressed cost of the extras is small.
+# Assemble the bundle from OUR QEMU, cross-built with the patches in
+# patches/ -- notably the control-register fix, without which any guest
+# that probes the 68060 PCR kills the emulator outright. The stock
+# download from qemu.weilnetz.de carries neither patch.
+#
+# That build is configured for this one job (m68k, SDL, no gtk/vnc/tools),
+# so its DLL set is the 13-entry import closure rather than the stock
+# tree's 114, and share/ carries only what the guest can reach.
 mkdir -p "$BUNDLE/qemu/share" "$BUNDLE/qemu/lib"
 cp "$QEMU_WIN/qemu-system-m68k.exe" "$QEMU_WIN/qemu-system-m68kw.exe" "$BUNDLE/qemu/"
 cp "$QEMU_WIN"/*.dll "$BUNDLE/qemu/"
-cp -r "$QEMU_WIN/share/keymaps" "$QEMU_WIN/share/icons" "$QEMU_WIN/share/locale" \
-      "$BUNDLE/qemu/share/"
+# Only what the guest can actually reach. locale/ exists in the stock
+# download but not in our own build, which is configured without the
+# pieces that would use it, so its absence is not an error.
+for d in keymaps icons locale; do
+    [ -d "$QEMU_WIN/share/$d" ] && cp -r "$QEMU_WIN/share/$d" "$BUNDLE/qemu/share/"
+done
 cp -r "$QEMU_WIN/lib/." "$BUNDLE/qemu/lib/"
 cp "$QEMU_WIN/COPYING" "$QEMU_WIN/COPYING.LIB" "$QEMU_WIN/VERSION" "$BUNDLE/qemu/"
 

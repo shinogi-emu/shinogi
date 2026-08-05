@@ -153,12 +153,13 @@ cp "$ALT" "$MINTDIR/$ALT_PRG"
 # --- kernel configuration ----------------------------------------------
 #
 # The kernel looks for \mint\1-19-cur\ on the boot drive and reads
-# mint.cnf from it. The stock example already points GEM= at
-# xaaes/xaloader.prg, which is what we want.
+# mint.cnf from it. The stock example starts XaAES; we start MyAES
+# instead, from where its readme puts it.
 need "$FREEMINT/doc/examples/mint.cnf"
 sed -e 's|^#setenv LOGNAME root|setenv LOGNAME root|' \
     -e 's|^#setenv USER    root|setenv USER    root|' \
     -e 's|^#setenv HOME    /root|setenv HOME    /root|' \
+    -e "s|^GEM=.*|GEM=c:\\\\gemsys\\\\myaes\\\\myaes020.prg|" \
     "$FREEMINT/doc/examples/mint.cnf" > "$MINTDIR/mint.cnf"
 
 # --- loadable modules ---------------------------------------------------
@@ -223,6 +224,75 @@ mv "$FONTSDIR/pl/ISO-8859-2.fnt" "$FONTSDIR/pl/iso88592.fnt"
 
 cp -r "$FREEMINT/sys/tbl"/* "$TBLDIR/"
 
+# --- desktop: Thing ----------------------------------------------------
+#
+# MyAES is an AES, not a desktop, and refuses to start without one --
+# its own desktop.cnf points at c:\thing\thing.app and says so. Thing
+# was shareware and has since been released as open source, so it can be
+# shipped; MyAES already expects it at that path.
+THING="${THING_DIR:-$HOME/tmp/thing}"
+if [ -f "$THING/THING/THING.APP" ]; then
+    mkdir -p "$OUT/thing"
+    find "$THING/THING" -maxdepth 1 \( -name '*.APP' -o -name '*.RSC' \) \
+         -exec cp {} "$OUT/thing/" \;
+    [ -d "$THING/THING/LANG" ] && cp -r "$THING/THING/LANG" "$OUT/thing/"
+    echo "desktop: thing/THING.APP"
+else
+    echo "note: no Thing at $THING - MyAES will have no desktop to start" >&2
+fi
+
+# --- AES: MyAES --------------------------------------------------------
+#
+# Replaces XaAES. Installed where its readme says -- C:\GEMSYS\MYAES --
+# and mint.cnf is pointed at its kernel instead of xaloader.prg.
+MYAES="${MYAES_DIR:-$HOME/git/Aranym/lan-share/C-drive/myaes099final}"
+MYAES_CPU="${MYAES_CPU:-68020}"
+if [ -d "$MYAES/config/$MYAES_CPU/myaes" ]; then
+    mkdir -p "$OUT/gemsys"
+    cp -r "$MYAES/config/$MYAES_CPU/myaes" "$OUT/gemsys/"
+    # Its shell: Thing, which is what the stock config already selects.
+    if [ -f "$OUT/gemsys/myaes/desktop.cnf" ]; then
+        sed -i 's|^shell .*|shell c:\\thing\\thing.app|' \
+            "$OUT/gemsys/myaes/desktop.cnf"
+    fi
+    # Olivier's extras: a taskbar, a resolution switcher, network setup.
+    # A glob that matches nothing makes cp fail, and set -e would end the
+    # build over an optional extra, so each is copied only if it is there.
+    for g in yopla yoprez yopnet; do
+        if [ -d "$MYAES/config/goodies/$g" ]; then
+            mkdir -p "$OUT/gemsys/myaes/$g"
+            find "$MYAES/config/goodies/$g" -maxdepth 1 \
+                 \( -name '*.prg' -o -name '*.cnf' -o -name '*.rsc' \) \
+                 -exec cp {} "$OUT/gemsys/myaes/$g/" \;
+        fi
+    done
+    # MyAES ships colour-icon sets and keyboard tables whose names cannot
+    # exist on a GEMDOS drive -- MYSTART48.PNG, TRASHEMPTY.PNG and the
+    # like. Drop them rather than fail the build: they are decoration, and
+    # a name that cannot be spelled in 8.3 cannot be asked for either.
+    # Counted and reported, because a silent drop reads as "shipped".
+    dropped=$(python3 - "$OUT/gemsys/myaes" <<'PYX'
+import os, re, shutil, sys
+ok = re.compile(r"^[A-Za-z0-9_~%^&@!(){}'`#$-]{1,8}(\.[A-Za-z0-9_~%^&@!(){}'`#$-]{1,3})?$")
+n = 0
+for dirpath, dirnames, filenames in os.walk(sys.argv[1], topdown=False):
+    for name in filenames:
+        if not ok.match(name):
+            os.remove(os.path.join(dirpath, name)); n += 1
+    for name in dirnames:
+        p = os.path.join(dirpath, name)
+        if not ok.match(name):
+            # Whole subtree: a directory that cannot be named cannot be
+            # entered either, so its contents are unreachable regardless.
+            shutil.rmtree(p, ignore_errors=True); n += 1
+print(n)
+PYX
+)
+    echo "aes: gemsys/myaes ($MYAES_CPU), $dropped file(s) dropped as un-8.3"
+else
+    echo "note: no MyAES at $MYAES/config/$MYAES_CPU - keeping XaAES" >&2
+fi
+
 # ------------------------------------------------- uppercase + 8.3 check
 #
 # Drive C is an 8.3 GEMDOS world, and the shinogi drive C folder is
@@ -272,26 +342,6 @@ echo "kernel: AUTO/MINT.PRG ($(stat -c %s "$OUT/AUTO/MINT.PRG") bytes, target $K
 # it, so a build from source comes up with XaAES running and nothing to
 # launch. Ship TeraDesk and point XaAES's "shell =" at it -- the line its
 # own example config already carries, commented out.
-TERADESK="${TERADESK_DIR:-$HOME/git/atari-docs/teradesk}"
-if [ -f "$TERADESK/desktop.prg" ]; then
-    DESKDIR="$OUT/teradesk"
-    mkdir -p "$DESKDIR"
-    cp "$TERADESK/desktop.prg" "$DESKDIR/"
-    # Resources loaded at runtime. Prefer the English set under rsc/en
-    # over the build-root copies, which are whatever the last build left.
-    for f in desktop.rsc desktop.hrd; do
-        if [ -f "$TERADESK/rsc/en/$f" ]; then
-            cp "$TERADESK/rsc/en/$f" "$DESKDIR/"
-        else
-            cp "$TERADESK/$f" "$DESKDIR/"
-        fi
-    done
-    cp "$TERADESK/icons.rsc" "$TERADESK/cicons.rsc" "$DESKDIR/"
-    echo "desktop: teradesk/desktop.prg ($(stat -c%s "$DESKDIR/desktop.prg") bytes)"
-else
-    echo "note: no TeraDesk at $TERADESK - XaAES will have no desktop" >&2
-fi
-
 # Also drop it on the LAN share, which is how it reaches the Windows box.
 # Without this the tree only ever exists on the build machine.
 SHARE="${SHINOGI_SHARE:-$HOME/git/Aranym/lan-share}"

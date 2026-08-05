@@ -186,7 +186,7 @@ int main(int argc, char *argv[])
     fflush(stdout);
 
     execlp(qemu, qemu,
-           "-name", "shinogi " SHINOGI_VERSION,
+           "-name", "Shinogi (" SHINOGI_VERSION ")",
            "-M", "virt",
            "-m", "128",
            "-kernel", elf,

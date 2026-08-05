@@ -258,7 +258,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
      */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
-              " -name \"shinogi " SHINOGI_VERSION "\""
+              " -name \"Shinogi (" SHINOGI_VERSION ")\""
               " -M virt"
               " -m 128"
               " -kernel \"%s\""

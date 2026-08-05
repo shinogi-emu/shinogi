@@ -264,6 +264,19 @@ PY
 
 echo "FreeMiNT install tree: $OUT"
 echo "kernel: AUTO/MINT.PRG ($(stat -c %s "$OUT/AUTO/MINT.PRG") bytes, target $KERNEL_TARGET)"
+# Also drop it on the LAN share, which is how it reaches the Windows box.
+# Without this the tree only ever exists on the build machine.
+SHARE="${SHINOGI_SHARE:-$HOME/git/Aranym/lan-share}"
+if [ -d "$SHARE" ]; then
+    python3 -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" \
+        "$SHARE/freemint-install"
+    cp -r "$OUT" "$SHARE/freemint-install"
+    ( cd "$SHARE" &&
+      python3 -c "import os; os.path.exists('freemint-install.zip') and os.remove('freemint-install.zip')" &&
+      zip -qr freemint-install.zip freemint-install )
+    echo "also copied to $SHARE/freemint-install (+ .zip)"
+fi
+
 echo
 echo "Copy into the shinogi drive C folder, e.g.:"
 echo "  cp -r \"$OUT\"/* \"\${SHINOGI_HOSTFS:-\$HOME/shinogi-drive-c}\"/"

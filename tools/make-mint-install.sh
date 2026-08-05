@@ -199,8 +199,16 @@ cp -r "$XA/pal" "$XAAESDIR/"
 # which we do not ship; leaving it commented out lets XaAES fall back to
 # its built-in desktop.
 need "$XA/example.cnf"
+#
+# launchpath: the stock example points at u:\opt\GEM, which belongs to a
+# full distribution we do not ship -- with it, XaAES's built-in desktop
+# offers an empty launcher and there is no way to start anything. Point
+# it at the boot drive instead, which is the host folder the user
+# actually puts programs in. doc/install.txt asks for exactly this kind
+# of path adaptation when the layout differs from the stock snapshot.
 sed -e 's|^#setenv AVSERVER   "DESKTOP "|setenv AVSERVER   "DESKTOP "|' \
     -e 's|^#setenv FONTSELECT "DESKTOP "|setenv FONTSELECT "DESKTOP "|' \
+    -e 's|^\(launchpath[[:space:]]*=\).*|\1  c:\\|' \
     "$XA/example.cnf" > "$XAAESDIR/xaaes.cnf"
 
 # --- fonts and keyboard tables -----------------------------------------

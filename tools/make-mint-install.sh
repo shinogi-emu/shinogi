@@ -171,10 +171,20 @@ cp_mod() { need "$1"; cp "$1" "$2"; }
 cp_mod "$FREEMINT/sys/xdd/xconout2/.compile_$MOD_TARGET/xconout2.xdd" "$MINTDIR/xconout2.xdd"
 cp_mod "$FREEMINT/sys/xfs/ext2fs/.compile_$MOD_TARGET/ext2.xfs"       "$MINTDIR/ext2.xfs"
 cp_mod "$FREEMINT/sys/xfs/minixfs/.compile_$MOD_TARGET/minix.xfs"     "$MINTDIR/minix.xfx"
-# No FreeMiNT network driver exists for virtio-net, so the IP stack and
-# the NFS client have nothing to bind to: shipped disabled.
-cp_mod "$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd"         "$MINTDIR/inet4.xdx"
+# The IP stack, enabled: it is also what scans for and loads the .xif
+# network drivers, so nothing networking happens without it.
+cp_mod "$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd"         "$MINTDIR/inet4.xdd"
 cp_mod "$FREEMINT/sys/xfs/nfs/.compile_$MOD_TARGET/nfs.xfs"           "$MINTDIR/nfs.xfx"
+
+# The virtio-net driver, if it has been built. Loaded by inet4 above --
+# only .xif is scanned, and only from the sysdir.
+VNET="$FREEMINT/sys/sockets/xif/virtio_net/.compile_$MOD_TARGET/virtio_net.xif"
+if [ -f "$VNET" ]; then
+    cp "$VNET" "$MINTDIR/virtione.xif"
+    echo "network: virtione.xif"
+else
+    echo "note: no virtio-net driver built - no networking" >&2
+fi
 # nfstderr routes kernel debug output through ARAnyM native features,
 # which QEMU virt does not provide: shipped disabled.
 cp_mod "$FREEMINT/sys/xdd/nfstderr/.compile_$MOD_TARGET/nfstderr.xdd" "$MINTDIR/nfstderr.xdx"

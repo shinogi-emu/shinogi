@@ -224,19 +224,57 @@ mv "$FONTSDIR/pl/ISO-8859-2.fnt" "$FONTSDIR/pl/iso88592.fnt"
 
 cp -r "$FREEMINT/sys/tbl"/* "$TBLDIR/"
 
+# Drop names that cannot exist on an 8.3 GEMDOS drive.
+#
+# Used for the third-party trees, which carry documentation and icon sets
+# with modern names -- gpl-3.0.txt, MYSTART48.PNG. A name that cannot be
+# spelled in 8.3 cannot be asked for either, so the file is unreachable
+# whether or not it is copied. Dropping is reported rather than silent,
+# because a silent drop reads as though the file shipped.
+prune_non_83()
+{
+    python3 - "$1" <<'PYX'
+import os, re, shutil, sys
+ok = re.compile(r"^[A-Za-z0-9_~%^&@!(){}'`#$-]{1,8}(\.[A-Za-z0-9_~%^&@!(){}'`#$-]{1,3})?$")
+n = 0
+for dirpath, dirnames, filenames in os.walk(sys.argv[1], topdown=False):
+    for name in filenames:
+        if not ok.match(name):
+            os.remove(os.path.join(dirpath, name)); n += 1
+    for name in dirnames:
+        if not ok.match(name):
+            shutil.rmtree(os.path.join(dirpath, name), ignore_errors=True); n += 1
+print(n)
+PYX
+}
+
 # --- desktop: Thing ----------------------------------------------------
 #
-# MyAES is an AES, not a desktop, and refuses to start without one --
-# its own desktop.cnf points at c:\thing\thing.app and says so. Thing
-# was shareware and has since been released as open source, so it can be
-# shipped; MyAES already expects it at that path.
-THING="${THING_DIR:-$HOME/tmp/thing}"
-if [ -f "$THING/THING/THING.APP" ]; then
+# MyAES is an AES, not a desktop, and refuses to start without one -- its
+# own desktop.cnf points at c:\thing\thing.app and says so.
+#
+# This is Thing Neo, the current line: Arno Welzel, then Thomas Binder,
+# then Gerhard Stoll, and Olivier Landemarre since 2023 -- the same
+# author as MyAES, which is why the two fit together. GPL, so shipping it
+# is fine. Prebuilt, because the source needs PureC and our toolchain is
+# gcc.
+#
+# The archive carries a 68000 build alongside the default; we take the
+# default, matching the 68020 MyAES and the 68040 kernel.
+THING="${THING_DIR:-$HOME/tmp/thingneo/thing}"
+if [ -f "$THING/thing.app" ]; then
     mkdir -p "$OUT/thing"
-    find "$THING/THING" -maxdepth 1 \( -name '*.APP' -o -name '*.RSC' \) \
-         -exec cp {} "$OUT/thing/" \;
-    [ -d "$THING/THING/LANG" ] && cp -r "$THING/THING/LANG" "$OUT/thing/"
-    echo "desktop: thing/THING.APP"
+    # Everything except the 68000 variant and the licence texts, whose
+    # names (gpl-3.0.txt) cannot exist on an 8.3 drive anyway.
+    for f in "$THING"/*; do
+        b=$(basename "$f")
+        case "$b" in
+            68000|LICENSE) continue ;;
+        esac
+        cp -r "$f" "$OUT/thing/"
+    done
+    dropped=$(prune_non_83 "$OUT/thing")
+    echo "desktop: thing/thing.app (Thing Neo), $dropped file(s) dropped as un-8.3"
 else
     echo "note: no Thing at $THING - MyAES will have no desktop to start" >&2
 fi
@@ -271,23 +309,7 @@ if [ -d "$MYAES/config/$MYAES_CPU/myaes" ]; then
     # like. Drop them rather than fail the build: they are decoration, and
     # a name that cannot be spelled in 8.3 cannot be asked for either.
     # Counted and reported, because a silent drop reads as "shipped".
-    dropped=$(python3 - "$OUT/gemsys/myaes" <<'PYX'
-import os, re, shutil, sys
-ok = re.compile(r"^[A-Za-z0-9_~%^&@!(){}'`#$-]{1,8}(\.[A-Za-z0-9_~%^&@!(){}'`#$-]{1,3})?$")
-n = 0
-for dirpath, dirnames, filenames in os.walk(sys.argv[1], topdown=False):
-    for name in filenames:
-        if not ok.match(name):
-            os.remove(os.path.join(dirpath, name)); n += 1
-    for name in dirnames:
-        p = os.path.join(dirpath, name)
-        if not ok.match(name):
-            # Whole subtree: a directory that cannot be named cannot be
-            # entered either, so its contents are unreachable regardless.
-            shutil.rmtree(p, ignore_errors=True); n += 1
-print(n)
-PYX
-)
+    dropped=$(prune_non_83 "$OUT/gemsys/myaes")
     echo "aes: gemsys/myaes ($MYAES_CPU), $dropped file(s) dropped as un-8.3"
 else
     echo "note: no MyAES at $MYAES/config/$MYAES_CPU - keeping XaAES" >&2

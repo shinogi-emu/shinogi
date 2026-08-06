@@ -213,6 +213,9 @@ int main(int argc, char *argv[])
            "-M", "virt",
            "-m", "128",
            "-kernel", elf,
+           /* slirp: NAT with no setup, see the Windows launcher. */
+           "-netdev", "user,id=net0",
+           "-device", "virtio-net-device,netdev=net0",
            "-device", gpudev,
            "-device", "virtio-keyboard-device",
            "-device", "virtio-tablet-device",

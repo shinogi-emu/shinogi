@@ -286,6 +286,16 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
               " -M virt,audiodev=snd0"
               " -m 128"
               " -kernel \"%s\""
+              /*
+               * Networking. slirp gives the guest a NAT'd connection
+               * with no setup and no privileges -- it is not a host on
+               * the LAN and nothing can reach in, but name resolution
+               * and outbound connections work anywhere, which a TAP
+               * device would not without the user installing a driver
+               * first.
+               */
+              " -netdev user,id=net0"
+              " -device virtio-net-device,netdev=net0"
               " -device virtio-gpu-device,xres=%d,yres=%d"
               " -device virtio-keyboard-device"
               " -device virtio-tablet-device"

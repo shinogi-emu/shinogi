@@ -325,6 +325,26 @@ else
     echo "note: no MyAES at $MYAES/config/$MYAES_CPU - keeping XaAES" >&2
 fi
 
+# --- applications ------------------------------------------------------
+#
+# The rest of the base system: a text editor, a control panel and a
+# terminal. Each is a "latest" build from the share, unpacked so that
+# <name>/<name>/ is the program directory.
+#
+# ToswIn2 matters beyond being a terminal -- MyAES's own config points
+# TOSRUN at tw-call.app, which is how a TOS program gets a window
+# instead of taking over the screen.
+APPSRC="${APPS_DIR:-$HOME/tmp/newapps}"
+for a in qed cops toswin2; do
+    if [ -d "$APPSRC/$a/$a" ]; then
+        cp -r "$APPSRC/$a/$a" "$OUT/$a"
+        dropped=$(prune_non_83 "$OUT/$a")
+        echo "app: $a ($dropped file(s) dropped as un-8.3)"
+    else
+        echo "note: no $a at $APPSRC/$a/$a" >&2
+    fi
+done
+
 # ------------------------------------------------- uppercase + 8.3 check
 #
 # Drive C is an 8.3 GEMDOS world, and the shinogi drive C folder is

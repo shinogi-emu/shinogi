@@ -272,7 +272,18 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
               " -name \"Shinogi (" SHINOGI_VERSION ")\""
-              " -M virt"
+              /*
+               * Sound. The DMA sound device is only created when the
+               * machine is given an audiodev, and it answers the guest's
+               * probe only when it exists -- so with no audiodev the
+               * guest correctly reports no sound rather than a device
+               * that stays silent.
+               *
+               * dsound is the native Windows backend and QEMU's default
+               * there.
+               */
+              " -audiodev dsound,id=snd0"
+              " -M virt,audiodev=snd0"
               " -m 128"
               " -kernel \"%s\""
               " -device virtio-gpu-device,xres=%d,yres=%d"

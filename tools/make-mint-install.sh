@@ -5,7 +5,10 @@
 # Produces the directory layout that EmuTOS/FreeMiNT expect on the boot
 # drive (drive C), ready to be copied into the shinogi drive C folder:
 #
+#   AUTO/FVDI.PRG               fVDI, ahead of the kernel so it is resident
+#                               before anything draws through the VDI
 #   AUTO/MINT.PRG               the 68040 kernel, launched from AUTO by EmuTOS
+#   FVDI.SYS                    fVDI's config; driver lives in GEMSYS/
 #   MINT/1-19-CUR/              the kernel "sysdir": config + loadable modules
 #   MINT/1-19-CUR/XAAES/        XaAES (the AES/GEM layer) and its resources
 #
@@ -130,6 +133,46 @@ need() {
                      echo "(run with --build, or build FreeMiNT first)" >&2
                      exit 1; }
 }
+
+# --- fVDI ---------------------------------------------------------------
+#
+# fVDI replaces the ROM VDI and has to be resident before anything draws
+# through it, so it is written into AUTO *ahead of* the kernel: EmuTOS
+# runs \AUTO in directory order, and FVDI.PRG also sorts before MINT.PRG
+# on any host that hands them back alphabetically. This block therefore
+# stays above the kernel block -- moving it below would reverse the two.
+#
+# The fVDI tree is stock; we carry no patch to it. The 16-bit driver
+# suits this machine as-is, taking the screen from the Line-A variables
+# and Physbase(), which is exactly the state EmuTOS leaves behind.
+FVDI="${FVDI_DIR:-$HOME/git/fvdi/fvdi}"
+if [ -f "$FVDI/engine/fvdi_gnu.prg" ] && [ -f "$FVDI/drivers/16_bit/16_bit.sys" ]; then
+    cp "$FVDI/engine/fvdi_gnu.prg" "$AUTODIR/fvdi.prg"
+    mkdir -p "$OUT/gemsys"
+    cp "$FVDI/drivers/16_bit/16_bit.sys" "$OUT/gemsys/16_bit.sys"
+    # fVDI's config, read from the boot drive root.
+    #
+    # "booted" is required when starting from AUTO. The driver line names
+    # a driver looked for in gemsys\ beside this file. The NVDI cookie is
+    # not set at all unless the config asks for one, and the VALUE
+    # matters: a bare "cookie nvdi" yields 0x0250, below the bar
+    # applications test against -- HighWire wants NVDI >= 3. "$" is hex
+    # to fVDI's atol().
+    #
+    # Deliberately no "debug"/"debugout" line: those are diagnostics and
+    # a release should not emit them. To make fVDI talk again put
+    # "debugout 1" as the FIRST line; it reaches the host serial log.
+    # Note that "debug" takes NO argument -- a stray token after it is
+    # taken for a font name and abandons the rest of the parse.
+    cat > "$OUT/fvdi.sys" <<'FVDICFG'
+booted
+cookie nvdi = $0501
+01r 16_bit.sys
+FVDICFG
+    echo "vdi: auto/fvdi.prg + gemsys/16_bit.sys + fvdi.sys"
+else
+    echo "note: no fVDI at $FVDI - the ROM VDI will be used" >&2
+fi
 
 # --- the kernel ---------------------------------------------------------
 #

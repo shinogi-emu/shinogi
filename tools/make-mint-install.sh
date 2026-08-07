@@ -386,6 +386,60 @@ if [ -d "$MYAES/config/$MYAES_CPU/myaes" ]; then
                  -exec cp {} "$OUT/gemsys/myaes/$g/" \;
         fi
     done
+    # MyAES's stock config is written for a full Atari installation and
+    # names several paths that do not exist in this tree. Left alone they
+    # fail quietly at every boot, so they are corrected here rather than
+    # shipped broken. Done in Python because these are Windows-style paths
+    # full of backslashes and the files are latin-1 French.
+    python3 - "$OUT/gemsys/myaes" <<'PYCFG'
+import os, sys
+
+d = sys.argv[1]
+
+def edit(name, subs):
+    p = os.path.join(d, name)
+    if not os.path.isfile(p):
+        return
+    s = open(p, encoding='latin-1').read()
+    for old, new, why in subs:
+        if old in s:
+            s = s.replace(old, new)
+            print("  %s: %s" % (name, why))
+    open(p, 'w', encoding='latin-1').write(s)
+
+edit('myaes.cnf', [
+    # Shutdown. SDMASTER names the program MyAES runs when Shutdown is
+    # chosen from the menu -- without it the menu item has nothing to
+    # launch. gemhalt.prg ships with MyAES and is already beside this file.
+    # NOTE THE TRAILING SPACE in the stock line -- it is matched and
+    # dropped deliberately. Left in place the path becomes
+    # "...gemhalt.prg " with a space, which does not open, and choosing
+    # Shut down reports that the shutdown app was not found. Uncommenting
+    # this line without stripping it looks right and does not work.
+    ('#export SDMASTER=C:\\gemsys\\myaes\\gemhalt.prg \n',
+     'export SDMASTER=C:\\gemsys\\myaes\\gemhalt.prg\n',
+     'SDMASTER enabled, trailing space stripped'),
+    # ...and make shutdown actually shut down. The stock value reboots.
+    # "poweroff" is supported by MyAES, and the whole chain behind it
+    # exists here: EmuTOS's qemuvirt_shutdown() writes CMD_HALT to the
+    # virt control device, and QEMU turns that into a shutdown request,
+    # so the emulator really does exit.
+    ('\nshutdown=reboot', '\nshutdown=poweroff',
+     'shutdown=poweroff (was reboot)'),
+    # TOSRUN is how a TOS program gets a window instead of taking over the
+    # screen. The stock path is a full-installation one; ours is C:\TOSWIN2.
+    ('export TOSRUN=C:\\mint\\toswin2\\toswin2.app',
+     'export TOSRUN=C:\\toswin2\\toswin2.app',
+     'TOSRUN repointed at C:\\toswin2'),
+])
+
+# synctime is not shipped, so this line only ever fails.
+edit('autorun.cnf', [
+    ('run C:\\programs\\synctime\\synctime.prg',
+     '#run C:\\programs\\synctime\\synctime.prg',
+     'synctime disabled (not shipped)'),
+])
+PYCFG
     # MyAES ships colour-icon sets and keyboard tables whose names cannot
     # exist on a GEMDOS drive -- MYSTART48.PNG, TRASHEMPTY.PNG and the
     # like. Drop them rather than fail the build: they are decoration, and

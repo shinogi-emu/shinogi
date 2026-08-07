@@ -115,6 +115,32 @@ if [ "$DO_BUILD" = yes ]; then
              sys/xfs/minixfs sys/xfs/nfs sys/sockets; do
         make -C "$FREEMINT/$d" "$MOD_TARGET"
     done
+
+    # Everything else that goes into the driver library below. Without
+    # this a clean build produces a LIBRARY WITH HOLES IN IT and says
+    # nothing about it, because the collector below simply ships whatever
+    # happens to be lying around already built.
+    #
+    # Failures are tolerated on purpose: several of these are for hardware
+    # or a CPU we do not target, and one of them not building is not a
+    # reason to abandon the tree. They are counted and reported instead --
+    # 'uart' is the expected one, having only 'deb' and 'mil' targets
+    # because it is the Milan serial driver.
+    skipped=
+    for d in "$FREEMINT"/sys/xdd/*/ "$FREEMINT"/sys/xfs/*/; do
+        b=$(basename "$d")
+        [ "$b" = skeleton ] && continue
+        make -C "$d" "$MOD_TARGET" >/dev/null 2>&1 || skipped="$skipped $b"
+    done
+    # The xif Makefiles use their own target names, and 'make 02060' there
+    # succeeds while building NOTHING. The default target builds every CPU
+    # variant, which is what we want.
+    make -C "$FREEMINT/sys/sockets/xif" >/dev/null 2>&1 || skipped="$skipped xif"
+    for d in "$FREEMINT"/sys/sockets/xif/*/; do
+        [ -f "$d/Makefile" ] || continue
+        make -C "$d" >/dev/null 2>&1 || skipped="$skipped $(basename "$d")"
+    done
+    [ -n "$skipped" ] && echo "note: driver(s) not built:$skipped" >&2
 fi
 
 # ---------------------------------------------------------------- layout

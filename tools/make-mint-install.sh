@@ -261,6 +261,74 @@ fi
 # which QEMU virt does not provide: shipped disabled.
 cp_mod "$FREEMINT/sys/xdd/nfstderr/.compile_$MOD_TARGET/nfstderr.xdd" "$MINTDIR/nfstderr.xdx"
 
+# --- the driver library -------------------------------------------------
+#
+# The FreeMiNT release lays its loadable modules out as
+# driver/{xdd,xfs,xif}, one .txt beside each. We ship the same shape.
+#
+# THIS IS A LIBRARY, NOT A RUNTIME PATH, and the distinction matters:
+# sys/module.c:200 calls load_modules(sysdir, ...), so the kernel scans
+# ONLY the sysdir. Nothing here is loaded from where it sits. It is the
+# menu -- the modules actually in use were copied into the sysdir above,
+# and enabling another one means copying it there too.
+#
+# The BINARIES are built from our own tree rather than lifted from the
+# 1.18 release, because a module is tied to the kernel it was compiled
+# against and ours is 1-19-cur. Taking 1.18 binaries would put modules
+# from one kernel beside another, and the sysdir they belong in
+# (mint/1-18-0) is not even the one our kernel reads. DOCUMENTATION has
+# no such tie, so the .txt files come from the release where our tree
+# has none of its own.
+DRVDIR="$OUT/driver"
+# The unpacked FreeMiNT release, used ONLY for its .txt documentation.
+# freemint-1.18.0.zip is on the LAN share; unpack it here and the docs are
+# picked up automatically. Its absence is reported rather than passed over,
+# because a tree that silently loses its documentation looks complete.
+FMREL="${FREEMINT_RELEASE:-$HOME/tmp/freemint-1.18.0/freemint}"
+mkdir -p "$DRVDIR/xdd" "$DRVDIR/xfs" "$DRVDIR/xif"
+
+collect() {                             # <glob-root> <ext> <destdir>
+    n=0
+    for f in $(find "$1" -path "*.compile_$MOD_TARGET*" -name "*.$2" 2>/dev/null | sort); do
+        b=$(basename "$f")
+        # 8.3: virtio_net is ten characters and would be pruned silently
+        # later. It is the same driver the sysdir carries as virtione.xif,
+        # so give it the same name here rather than lose it.
+        [ "$b" = "virtio_net.xif" ] && b=virtione.xif
+        cp "$f" "$3/$b"
+        n=$((n+1))
+    done
+    echo $n
+}
+
+nxdd=$(collect "$FREEMINT/sys/xdd" xdd "$DRVDIR/xdd")
+nxfs=$(collect "$FREEMINT/sys/xfs" xfs "$DRVDIR/xfs")
+nxif=$(collect "$FREEMINT/sys/sockets/xif" xif "$DRVDIR/xif")
+# inet4 is built under sys/sockets rather than with the drivers, but it
+# belongs in the library beside them: it is what loads every .xif.
+if [ -f "$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd" ]; then
+    cp "$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd" "$DRVDIR/xdd/"
+    nxdd=$((nxdd+1))
+fi
+
+# Our own driver docs, then the release's for anything we do not document.
+for t in "$FREEMINT/sys/sockets/xif"/*.txt; do
+    [ -f "$t" ] && cp "$t" "$DRVDIR/xif/"
+done
+ndoc=0
+if [ -d "$FMREL/driver" ]; then
+    for k in xdd xfs xif; do
+        for t in "$FMREL/driver/$k"/*.txt; do
+            [ -f "$t" ] || continue
+            [ -f "$DRVDIR/$k/$(basename "$t")" ] || { cp "$t" "$DRVDIR/$k/"; ndoc=$((ndoc+1)); }
+        done
+    done
+else
+    echo "note: no FreeMiNT release at $FMREL - driver docs will be incomplete" >&2
+    echo "      (unpack freemint-1.18.0.zip from the LAN share there)" >&2
+fi
+echo "driver library: $nxdd xdd, $nxfs xfs, $nxif xif (+$ndoc docs from the release)"
+
 # --- XaAES --------------------------------------------------------------
 cp_mod "$XA/xaloader/.compile_$MOD_TARGET/xaloader.prg" "$XAAESDIR/xaloader.prg"
 cp_mod "$XA/.compile_$MOD_TARGET/xaaes020.km"           "$XAAESDIR/xaaes.km"
@@ -416,9 +484,16 @@ edit('myaes.cnf', [
     # "...gemhalt.prg " with a space, which does not open, and choosing
     # Shut down reports that the shutdown app was not found. Uncommenting
     # this line without stripping it looks right and does not work.
+    #
+    # RSMASTER is the same idea for resolution: Thing looks it up, falls
+    # back to chgres.prg / CHGRES.PRG, and we ship no chgres.prg either.
+    # MyAES does not set it at all, so it is added here rather than
+    # uncommented. yoprez.prg is MyAES's own resolution switcher, from the
+    # goodies copied below.
     ('#export SDMASTER=C:\\gemsys\\myaes\\gemhalt.prg \n',
-     'export SDMASTER=C:\\gemsys\\myaes\\gemhalt.prg\n',
-     'SDMASTER enabled, trailing space stripped'),
+     'export SDMASTER=C:\\gemsys\\myaes\\gemhalt.prg\n'
+     'export RSMASTER=C:\\gemsys\\myaes\\yoprez\\yoprez.prg\n',
+     'SDMASTER enabled (trailing space stripped) and RSMASTER added'),
     # ...and make shutdown actually shut down. The stock value reboots.
     # "poweroff" is supported by MyAES, and the whole chain behind it
     # exists here: EmuTOS's qemuvirt_shutdown() writes CMD_HALT to the

@@ -172,6 +172,30 @@ need() {
                      exit 1; }
 }
 
+# Drop names that cannot exist on an 8.3 GEMDOS drive.
+#
+# Used for the third-party trees, which carry documentation and icon sets
+# with modern names -- gpl-3.0.txt, MYSTART48.PNG. A name that cannot be
+# spelled in 8.3 cannot be asked for either, so the file is unreachable
+# whether or not it is copied. Dropping is reported rather than silent,
+# because a silent drop reads as though the file shipped.
+prune_non_83()
+{
+    python3 - "$1" <<'PYX'
+import os, re, shutil, sys
+ok = re.compile(r"^[A-Za-z0-9_~%^&@!(){}'`#$-]{1,8}(\.[A-Za-z0-9_~%^&@!(){}'`#$-]{1,3})?$")
+n = 0
+for dirpath, dirnames, filenames in os.walk(sys.argv[1], topdown=False):
+    for name in filenames:
+        if not ok.match(name):
+            os.remove(os.path.join(dirpath, name)); n += 1
+    for name in dirnames:
+        if not ok.match(name):
+            shutil.rmtree(os.path.join(dirpath, name), ignore_errors=True); n += 1
+print(n)
+PYX
+}
+
 # --- EmuTOS -------------------------------------------------------------
 #
 # EmuTOS is the firmware: QEMU loads it with -kernel, off the HOST
@@ -258,6 +282,39 @@ ALT="$FREEMINT/sys/.compile_$ALT_TARGET/$ALT_PRG"
 need "$ALT"
 cp "$ALT" "$MINTDIR/$ALT_PRG"
 
+# --- the userland (sys-root) --------------------------------------------
+#
+# bash, ping, ifconfig, route, arp, netstat, the ext2/minix tools and the
+# rest. The stock mint.cnf already links u:/bin, u:/etc and friends into
+# sys-root, so without this the tree boots to a system with nothing in it.
+#
+# EVERY NAME HERE MUST BE 8.3. Drive C is a GEMDOS world, and a name that
+# cannot be spelled there cannot be opened either -- it appears in a
+# listing, truncated, and every access fails. The config files are the
+# ones that matter, so they are renamed rather than dropped, and the real
+# names are rebuilt at boot (see the /etc note further down). Anything
+# else that cannot be spelled is dropped and counted.
+SYSROOT="${SYSROOT_DIR:-$HOME/tmp/freemint-sysroot}"
+if [ -d "$SYSROOT/bin" ]; then
+    cp -r "$SYSROOT" "$MINTDIR/sys-root"
+    # Names GEMDOS cannot hold, renamed so the file survives and is
+    # reachable. The four-character extension is the usual offender.
+    for pair in "etc/resolv.conf:etc/resolv.cnf" \
+                "etc/host.conf:etc/hostconf" \
+                "etc/mke2fs.conf:etc/mke2fs.cnf" \
+                "bin/mount_nfs:bin/mountnfs" \
+                "bin/fsck.minix:bin/fsckminx"; do
+        from="$MINTDIR/sys-root/${pair%%:*}"
+        to="$MINTDIR/sys-root/${pair##*:}"
+        [ -f "$from" ] && { [ -f "$to" ] || cp "$from" "$to"; }
+        [ -f "$from" ] && python3 -c "import os,sys; os.remove(sys.argv[1])" "$from"
+    done
+    dropped=$(prune_non_83 "$MINTDIR/sys-root")
+    echo "userland: sys-root ($(du -sh "$MINTDIR/sys-root" | cut -f1), $dropped file(s) dropped as un-8.3)"
+else
+    echo "note: no sys-root at $SYSROOT - the tree will boot with no userland" >&2
+fi
+
 # --- kernel configuration ----------------------------------------------
 #
 # The kernel looks for \mint\1-19-cur\ on the boot drive and reads
@@ -269,6 +326,72 @@ sed -e 's|^#setenv LOGNAME root|setenv LOGNAME root|' \
     -e 's|^#setenv HOME    /root|setenv HOME    /root|' \
     -e "s|^GEM=.*|GEM=c:\\\\gemsys\\\\myaes\\\\myaes020.prg|" \
     "$FREEMINT/doc/examples/mint.cnf" > "$MINTDIR/mint.cnf"
+
+# /etc has to be built somewhere that takes long names.
+#
+# The resolver opens "/etc/resolv.conf" by that exact name, and drive C
+# cannot spell it: a four-character extension is truncated to three and
+# the file then cannot be opened at all. The resolver never reads it,
+# falls back to its compiled-in nameserver of 127.0.0.1, and every lookup
+# fails having put nothing on the wire -- which looks like a broken
+# network and is not one.
+#
+# u:/ram is the kernel's own ramfs and takes long names, so /etc is built
+# there at boot from the 8.3-named copies above. Redirection does the
+# copying rather than cp, which refuses these files, reporting them
+# "replaced while being copied" (see the hostfs stat bead).
+python3 - "$MINTDIR/mint.cnf" "$OUT/mketc.sh" <<'PYETC'
+import sys
+
+cnf, script = sys.argv[1], sys.argv[2]
+
+open(script, 'w').write(
+    "# Build /etc where long names are possible.  Run from mint.cnf.\n"
+    "# LEFT name is what drive C can spell, RIGHT name is what asks for it.\n"
+    "E=/ram/etc\n"
+    "S=/c/mint/1-19-cur/sys-root/etc\n"
+    "mkdir -p $E\n"
+    "cat $S/resolv.cnf > $E/resolv.conf\n"
+    "cat $S/hostconf   > $E/host.conf\n"
+    "cat $S/hosts      > $E/hosts\n"
+    "cat $S/passwd     > $E/passwd\n"
+    "cat $S/fstab      > $E/fstab\n"
+    "cat $S/profile    > $E/profile\n"
+)
+
+s = open(cnf, encoding='latin-1').read()
+old = 'sln ${SYSDIR}sys-root/etc      u:/etc\n'
+new = ('# NOT a link to the drive C directory: see mketc.sh -- names like\n'
+       '# resolv.conf cannot be spelled there, so /etc is built in the ram\n'
+       '# filesystem instead, which takes long names.\n'
+       'sln u:/ram/etc u:/etc\n')
+if old in s:
+    s = s.replace(old, new)
+    hdr = '# ---------------------- EXECUTE PROGRAMS -------------------------\n'
+    line = (
+        'exec u:/bin/bash u:/c/mketc.sh\n'
+        '\n'
+        '# Bring the network up. The launcher gives the guest a NAT link,\n'
+        '# where the addressing is fixed and known -- 10.0.2.15 for us,\n'
+        '# 10.0.2.2 the gateway, 10.0.2.3 the name server -- so there is\n'
+        '# nothing to discover and no DHCP client to run. Configuring it\n'
+        '# here is what makes the shipped ping, route and arp any use.\n'
+        '#\n'
+        '# THESE ADDRESSES ARE THE NAT ONES. If this is ever moved to a\n'
+        '# bridged or tap link, they are wrong, and so is the 10.0.2.3 in\n'
+        '# sys-root/etc/resolv.cnf.\n'
+        'exec u:/bin/ifconfig eth0 addr 10.0.2.15 netmask 255.255.255.0 up\n'
+        'exec u:/bin/route add default eth0 gw 10.0.2.2\n'
+    )
+    if hdr in s:
+        s = s.replace(hdr, hdr + '\n' + line, 1)
+    else:
+        raise SystemExit('mint.cnf: EXECUTE PROGRAMS header not found')
+    open(cnf, 'w', encoding='latin-1').write(s)
+    print("  mint.cnf: /etc built in u:/ram, populated by mketc.sh")
+else:
+    print("  WARNING: mint.cnf has no sys-root/etc link to replace", file=sys.stderr)
+PYETC
 
 # --- loadable modules ---------------------------------------------------
 #
@@ -365,6 +488,32 @@ else
 fi
 echo "driver library: $nxdd xdd, $nxfs xfs, $nxif xif (+$ndoc docs from the release)"
 
+# --- the release's own tools -------------------------------------------
+#
+# fsetter, gluestik, lpflush, mgw, mkfatfs, mktbl and sysctl, from the
+# FreeMiNT release. These are the GEM-side utilities; the Unix userland
+# (bash, ping, ifconfig and the rest) is NOT in the release at all and
+# comes from sys-root above -- worth stating, because "the tools" means
+# two different sets of things depending on which half you mean.
+#
+# toswin2 is deliberately skipped: a newer one is installed at C:\TOSWIN2
+# and MyAES's TOSRUN points there, so a second copy would only raise the
+# question of which one runs.
+if [ -d "$FMREL/tools" ]; then
+    mkdir -p "$OUT/tools"
+    ntool=0
+    for d in "$FMREL"/tools/*/; do
+        b=$(basename "$d")
+        [ "$b" = toswin2 ] && continue
+        cp -r "$d" "$OUT/tools/"
+        ntool=$((ntool+1))
+    done
+    dropped=$(prune_non_83 "$OUT/tools")
+    echo "release tools: $ntool ($dropped file(s) dropped as un-8.3)"
+else
+    echo "note: no release tools at $FMREL/tools" >&2
+fi
+
 # --- XaAES --------------------------------------------------------------
 cp_mod "$XA/xaloader/.compile_$MOD_TARGET/xaloader.prg" "$XAAESDIR/xaloader.prg"
 cp_mod "$XA/.compile_$MOD_TARGET/xaaes020.km"           "$XAAESDIR/xaaes.km"
@@ -410,29 +559,6 @@ mv "$FONTSDIR/pl/ISO-8859-2.fnt" "$FONTSDIR/pl/iso88592.fnt"
 
 cp -r "$FREEMINT/sys/tbl"/* "$TBLDIR/"
 
-# Drop names that cannot exist on an 8.3 GEMDOS drive.
-#
-# Used for the third-party trees, which carry documentation and icon sets
-# with modern names -- gpl-3.0.txt, MYSTART48.PNG. A name that cannot be
-# spelled in 8.3 cannot be asked for either, so the file is unreachable
-# whether or not it is copied. Dropping is reported rather than silent,
-# because a silent drop reads as though the file shipped.
-prune_non_83()
-{
-    python3 - "$1" <<'PYX'
-import os, re, shutil, sys
-ok = re.compile(r"^[A-Za-z0-9_~%^&@!(){}'`#$-]{1,8}(\.[A-Za-z0-9_~%^&@!(){}'`#$-]{1,3})?$")
-n = 0
-for dirpath, dirnames, filenames in os.walk(sys.argv[1], topdown=False):
-    for name in filenames:
-        if not ok.match(name):
-            os.remove(os.path.join(dirpath, name)); n += 1
-    for name in dirnames:
-        if not ok.match(name):
-            shutil.rmtree(os.path.join(dirpath, name), ignore_errors=True); n += 1
-print(n)
-PYX
-}
 
 # --- desktop: Thing ----------------------------------------------------
 #

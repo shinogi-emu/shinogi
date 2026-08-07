@@ -5,6 +5,8 @@
 # Produces the directory layout that EmuTOS/FreeMiNT expect on the boot
 # drive (drive C), ready to be copied into the shinogi drive C folder:
 #
+#   EMUTOS.ELF                  the firmware; the launcher passes it to
+#                               QEMU's -kernel, so a user can swap it
 #   AUTO/FVDI.PRG               fVDI, ahead of the kernel so it is resident
 #                               before anything draws through the VDI
 #   AUTO/MINT.PRG               the 68040 kernel, launched from AUTO by EmuTOS
@@ -133,6 +135,33 @@ need() {
                      echo "(run with --build, or build FreeMiNT first)" >&2
                      exit 1; }
 }
+
+# --- EmuTOS -------------------------------------------------------------
+#
+# EmuTOS is the firmware: QEMU loads it with -kernel, off the HOST
+# filesystem, before any guest or any drive exists. It is put on drive C
+# anyway, because drive C *is* a host folder -- so the launcher can point
+# -kernel straight at it, and a user upgrading EmuTOS just drops a new
+# file in place. That removes the need for any separate update path for
+# it; it becomes an ordinary manifest entry like everything else here.
+#
+# The guest never reads it. It is visible in the C: root and is inert
+# there, which is why the name only has to satisfy our own 8.3 rule --
+# emutos-virt.elf does not (12-character stem), so it lands as
+# EMUTOS.ELF, which does.
+#
+# Consequence worth knowing: EmuTOS now sits in space the user can edit,
+# so a deleted or damaged EMUTOS.ELF means nothing boots at all, and the
+# failure appears at emulator start rather than anywhere in the guest.
+# The launcher should say so plainly, and the restore path should treat
+# this file as a first-class entry.
+EMUTOS_ELF="${EMUTOS_ELF:-$HOME/git/emutos/emutos-virt.elf}"
+if [ -f "$EMUTOS_ELF" ]; then
+    cp "$EMUTOS_ELF" "$OUT/emutos.elf"
+    echo "firmware: emutos.elf ($(stat -c %s "$EMUTOS_ELF") bytes) - launcher passes this to -kernel"
+else
+    echo "note: no EmuTOS at $EMUTOS_ELF - the bundle will not boot on its own" >&2
+fi
 
 # --- fVDI ---------------------------------------------------------------
 #

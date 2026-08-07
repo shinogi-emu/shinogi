@@ -59,13 +59,23 @@ done
 #                                 makes a GEMDOS-level emulated drive C
 #                                 (which is exactly what shinogi's hostfs
 #                                 is) reachable at all.
+#   -DMACHINE_QEMU_VIRT           lets hw_poweroff() reach this machine's
+#                                 control device, so Shut Down closes the
+#                                 emulator instead of leaving it running
+#                                 around a halted guest. FreeMiNT has no
+#                                 machine type for this box, and probing
+#                                 the address unguarded would fault on real
+#                                 hardware -- so it is a build flag, which
+#                                 is how EmuTOS spells the same thing and
+#                                 how FreeMiNT already builds per machine
+#                                 (mintmil.prg and friends).
 #
 # We deliberately leave out -DWITH_NATIVE_FEATURES: upstream's hat targets
 # enable it for ARAnyM/Hatari NatFeats, which QEMU virt does not provide.
 KERNEL_TARGET=hat040
 KERNEL_CPU=040
 KERNEL_PRG=mint040h.prg
-KERNEL_DEFS='-DCRYPTO_CODE -DSOFT_UNITABLE -DBUILTIN_SHELL -DM68040 -DOLDTOSFS -DWITH_MMU_SUPPORT'
+KERNEL_DEFS='-DCRYPTO_CODE -DSOFT_UNITABLE -DBUILTIN_SHELL -DM68040 -DOLDTOSFS -DWITH_MMU_SUPPORT -DMACHINE_QEMU_VIRT'
 
 # The stock 68040 kernel is built and shipped alongside it, unused, so
 # the FAT/XHDI path can be tried once shinogi grows a block device.

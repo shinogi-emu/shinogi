@@ -258,6 +258,33 @@ booted
 cookie nvdi = $0501
 01r 16_bit.sys
 FVDICFG
+
+    # Outline fonts, if we have any to ship.
+    #
+    # The engine only honours "fonts" when it was built with the ft2
+    # module -- check the banner for -FT- -- and the keyword is inert
+    # otherwise, so the line is only written when there is something to
+    # point it at.
+    #
+    # Syntax is not uniform and getting it wrong is not a warning: "path"
+    # and "fonts" REQUIRE an "=" (get_pathname, loader.c:497), while
+    # "filecache" and "preallocate" take a bare token.  A missing "=" here
+    # aborts the whole config and the driver line above never runs.
+    #
+    # load_font_dir() recurses, so naming the top directory picks up every
+    # family below it.  That recursion is also what exhausted EmuTOS's
+    # hostfs scan table and silently cancelled the AUTO scan before
+    # emutos c8558992 -- a guest older than that will not boot with this.
+    FONTS_SRC="${FONTS_DIR:-$HOME/git/Aranym/lan-share/C-drive/gemsys/fonts}"
+    if [ -d "$FONTS_SRC" ]; then
+        mkdir -p "$OUT/gemsys/fonts"
+        cp -r "$FONTS_SRC"/. "$OUT/gemsys/fonts/"
+        printf 'fonts = c:\\gemsys\\fonts\n' >> "$OUT/fvdi.sys"
+        echo "vdi: fonts from $FONTS_SRC ($(du -sh "$OUT/gemsys/fonts" | cut -f1))"
+    else
+        echo "note: no fonts at $FONTS_SRC - fVDI will have the system font only" >&2
+    fi
+
     echo "vdi: auto/fvdi.prg + gemsys/16_bit.sys + fvdi.sys"
 else
     echo "note: no fVDI at $FVDI - the ROM VDI will be used" >&2
@@ -593,7 +620,7 @@ if [ -f "$THING/thing.app" ]; then
     dropped=$(prune_non_83 "$OUT/thing")
     echo "desktop: thing/thing.app (Thing Neo), $dropped file(s) dropped as un-8.3"
 else
-    echo "note: no Thing at $THING - MyAES will have no desktop to start" >&2
+    echo "note: no Thing at $THING - the AES will have no desktop to start" >&2
 fi
 
 # --- AES: MyAES (opt-in) -----------------------------------------------
@@ -698,7 +725,11 @@ PYCFG
     dropped=$(prune_non_83 "$OUT/gemsys/myaes")
     echo "aes: gemsys/myaes ($MYAES_CPU), $dropped file(s) dropped as un-8.3"
 else
-    echo "note: no MyAES at $MYAES/config/$MYAES_CPU - keeping XaAES" >&2
+    if [ -z "${INSTALL_MYAES:-}" ]; then
+        : # not asked for; XaAES is the AES and nothing is missing
+    else
+        echo "note: INSTALL_MYAES set but no MyAES at $MYAES/config/$MYAES_CPU" >&2
+    fi
 fi
 
 # --- applications ------------------------------------------------------

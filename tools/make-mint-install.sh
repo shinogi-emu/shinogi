@@ -318,13 +318,15 @@ fi
 # --- kernel configuration ----------------------------------------------
 #
 # The kernel looks for \mint\1-19-cur\ on the boot drive and reads
-# mint.cnf from it. The stock example starts XaAES; we start MyAES
-# instead, from where its readme puts it.
+# mint.cnf from it. The stock example starts XaAES and so do we, which is
+# what the GEM= line below leaves in place; it is written out explicitly
+# anyway so the file says which AES runs rather than depending on what the
+# upstream example happens to ship.
 need "$FREEMINT/doc/examples/mint.cnf"
 sed -e 's|^#setenv LOGNAME root|setenv LOGNAME root|' \
     -e 's|^#setenv USER    root|setenv USER    root|' \
     -e 's|^#setenv HOME    /root|setenv HOME    /root|' \
-    -e "s|^GEM=.*|GEM=c:\\\\gemsys\\\\myaes\\\\myaes020.prg|" \
+    -e 's|^GEM=.*|GEM=${SYSDIR}xaaes/xaloader.prg|' \
     "$FREEMINT/doc/examples/mint.cnf" > "$MINTDIR/mint.cnf"
 
 # /etc has to be built somewhere that takes long names.
@@ -532,8 +534,11 @@ cp -r "$XA/img" "$XAAESDIR/"
 cp -r "$XA/pal" "$XAAESDIR/"
 
 # XaAES's own config. The stock example points "shell =" at TeraDesk,
-# which we do not ship; leaving it commented out lets XaAES fall back to
-# its built-in desktop.
+# which we do not ship -- and the rule below used to uncomment that line
+# anyway, so XaAES started with a shell that was not there. Nothing
+# reported it: the screen came up as a bare XaAES desktop with no way to
+# launch anything, which looks like a working AES until you try to use it.
+# Point it at Thing, which is the desktop this tree actually ships.
 need "$XA/example.cnf"
 #
 # launchpath: the stock example points at u:\opt\GEM, which belongs to a
@@ -545,7 +550,7 @@ need "$XA/example.cnf"
 sed -e 's|^#setenv AVSERVER   "DESKTOP "|setenv AVSERVER   "DESKTOP "|' \
     -e 's|^#setenv FONTSELECT "DESKTOP "|setenv FONTSELECT "DESKTOP "|' \
     -e 's|^\(launchpath[[:space:]]*=\).*|\1  c:\\|' \
-    -e 's|^#shell = c:.teradesk.desktop.prg|shell = c:\\teradesk\\desktop.prg|' \
+    -e 's|^#shell = c:.teradesk.desktop.prg|shell = c:\\thing\\thing.app|' \
     "$XA/example.cnf" > "$XAAESDIR/xaaes.cnf"
 
 # --- fonts and keyboard tables -----------------------------------------
@@ -591,13 +596,21 @@ else
     echo "note: no Thing at $THING - MyAES will have no desktop to start" >&2
 fi
 
-# --- AES: MyAES --------------------------------------------------------
+# --- AES: MyAES (opt-in) -----------------------------------------------
 #
-# Replaces XaAES. Installed where its readme says -- C:\GEMSYS\MYAES --
-# and mint.cnf is pointed at its kernel instead of xaloader.prg.
+# No longer the AES this tree boots -- XaAES is, and mint.cnf points at
+# xaloader.prg above.  The install is kept because it works and because
+# having the other AES to hand is worth something while the switch beds
+# in, but it is off unless asked for:
+#
+#     INSTALL_MYAES=1 tools/make-mint-install.sh
+#
+# Note that installing it does NOT select it.  Nothing here rewrites
+# GEM=, so a tree built with INSTALL_MYAES=1 still boots XaAES and simply
+# carries MyAES alongside; switching means editing mint.cnf by hand.
 MYAES="${MYAES_DIR:-$HOME/git/Aranym/lan-share/C-drive/myaes099final}"
 MYAES_CPU="${MYAES_CPU:-68020}"
-if [ -d "$MYAES/config/$MYAES_CPU/myaes" ]; then
+if [ -n "${INSTALL_MYAES:-}" ] && [ -d "$MYAES/config/$MYAES_CPU/myaes" ]; then
     mkdir -p "$OUT/gemsys"
     cp -r "$MYAES/config/$MYAES_CPU/myaes" "$OUT/gemsys/"
     # Its shell: Thing, which is what the stock config already selects.

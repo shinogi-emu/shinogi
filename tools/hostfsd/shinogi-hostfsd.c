@@ -1035,6 +1035,20 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             ;
         if (i == MAX_FILES)
         {
+            /*
+             * Say so.  This table is GLOBAL -- every process on drive C
+             * shares it -- so one program that holds handles open starves
+             * every other one, and the guest only ever sees "cannot open".
+             * That reads as a missing or corrupt file and sent a day into
+             * the wrong place once already: fVDI held a file open per
+             * cached font face, the table filled, and the visible symptoms
+             * were a font that would not load and applications that would
+             * not start.  An unexplained ENHNDL is not diagnosable from
+             * inside the guest, so it is reported here.
+             */
+            fprintf(stderr, "hostfsd: out of file handles (%d in use), "
+                            "refusing open\n", MAX_FILES);
+            fflush(stderr);
             status = HOSTFS_ENHNDL;
             break;
         }

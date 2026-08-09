@@ -275,10 +275,21 @@ FVDICFG
     # family below it.  That recursion is also what exhausted EmuTOS's
     # hostfs scan table and silently cancelled the AUTO scan before
     # emutos c8558992 -- a guest older than that will not boot with this.
+    # "filecache" is not optional on this machine.  It defaults to 0, and at
+    # 0 fc_find() gives up immediately (ft2_ftsystem.c:519) so every face
+    # lookup re-opens and re-reads the whole TTF through FT_New_Face.  Drive
+    # C is a host folder reached 4084 bytes at a time, and the Lato faces are
+    # ~700K each: one HighWire page produced about 8000 font-file opens and
+    # 34000 lines of hostfs traffic.  A file larger than the whole cache is
+    # never cached at all (the size guard at ft2_ftsystem.c:570), and the
+    # largest shipped face is didactgo.ttf at 849K, so the cache has to clear
+    # that comfortably.  8M covers it plus a full 15-entry working set
+    # (FC_ENTRIES).
     FONTS_SRC="${FONTS_DIR:-$HOME/git/Aranym/lan-share/C-drive/gemsys/fonts}"
     if [ -d "$FONTS_SRC" ]; then
         mkdir -p "$OUT/gemsys/fonts"
         cp -r "$FONTS_SRC"/. "$OUT/gemsys/fonts/"
+        printf 'filecache 8192\n' >> "$OUT/fvdi.sys"
         printf 'fonts = c:\\gemsys\\fonts\n' >> "$OUT/fvdi.sys"
         echo "vdi: fonts from $FONTS_SRC ($(du -sh "$OUT/gemsys/fonts" | cut -f1))"
     else

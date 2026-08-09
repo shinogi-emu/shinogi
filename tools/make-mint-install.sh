@@ -578,7 +578,20 @@ sed -e 's|^#setenv AVSERVER   "DESKTOP "|setenv AVSERVER   "DESKTOP "|' \
     -e 's|^#setenv FONTSELECT "DESKTOP "|setenv FONTSELECT "DESKTOP "|' \
     -e 's|^\(launchpath[[:space:]]*=\).*|\1  c:\\|' \
     -e 's|^#shell = c:.teradesk.desktop.prg|shell = c:\\thing\\thing.app|' \
+    -e 's|^#font_id=1|font_id=5693|' \
+    -e 's|^#standard_point=10|standard_point=10|' \
     "$XA/example.cnf" > "$XAAESDIR/xaaes.cnf"
+
+# 5693 is Liberation Sans Regular, and it is not an arbitrary number: fVDI
+# derives its font IDs by hashing FreeType's family_name + style_name, so the
+# ID follows from the font rather than from load order.  tools/fvdi-font-ids.py
+# recomputes the whole table on the host; rerun it if the shipped fonts change,
+# because a stale ID here silently falls back to the 6x6 system font.
+#
+# Worth knowing before touching this: an outline AES font means every string
+# the desktop draws goes through FreeType, which was unusable until fVDI kept
+# its font files open (patches/0008).  Without that fix this line turns one
+# desktop repaint into thousands of reads across the host folder.
 
 # --- fonts and keyboard tables -----------------------------------------
 cp -r "$FREEMINT/fonts"/* "$FONTSDIR/"

@@ -124,28 +124,6 @@ int main(int argc, char *argv[])
     if (stat(qemu, &st) != 0)
         snprintf(qemu, sizeof(qemu), "qemu-system-m68k");
 
-    /*
-     * Screen size. GEM draws with fixed-size bitmap fonts and icons, so
-     * a big screen makes everything small rather than roomy; 1024x768 is
-     * the compromise. Override with SHINOGI_RES=WIDTHxHEIGHT.
-     *
-     * Always passed: QEMU's own virtio-gpu default is 1280x800 and would
-     * apply otherwise. The guest asks the host for this size at boot and
-     * rounds the width down to a multiple of 8.
-     */
-    {
-        const char *res = getenv("SHINOGI_RES");
-        int rw = 1024, rh = 768, w, h;
-
-        if (res && sscanf(res, "%dx%d", &w, &h) == 2 &&
-            w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
-            rw = w;
-            rh = h;
-        }
-        snprintf(gpudev, sizeof(gpudev),
-                 "virtio-gpu-device,xres=%d,yres=%d", rw, rh);
-    }
-
     /* The host folder the guest sees as drive C:. */
     if (getenv("SHINOGI_HOSTFS"))
         snprintf(hostfs, sizeof(hostfs), "%s", getenv("SHINOGI_HOSTFS"));
@@ -153,6 +131,53 @@ int main(int argc, char *argv[])
         snprintf(hostfs, sizeof(hostfs), "%s/shinogi-drive-c",
                  home ? home : ".");
     mkdir(hostfs, 0755);
+
+    /*
+     * Screen size. GEM draws with fixed-size bitmap fonts and icons, so
+     * a big screen makes everything small rather than roomy; 1024x768 is
+     * the compromise.
+     *
+     * Read from SHINOGI.INI in the drive C folder, so the guest can change
+     * it: nothing inside the emulator can resize a virtio-gpu scanout that
+     * is already up, but the guest can write a file and ask to be shut
+     * down, and we read it on the way back in.  SHINOGI_RES overrides it
+     * for testing.
+     *
+     * Always passed: QEMU's own virtio-gpu default is 1280x800 and would
+     * apply otherwise. The guest asks the host for this size at boot and
+     * rounds the width down to a multiple of 8.
+     */
+    {
+        const char *res = getenv("SHINOGI_RES");
+        char line[256];
+        int rw = 1024, rh = 768, w, h;
+        FILE *ini;
+
+        if (!res) {
+            snprintf(line, sizeof(line), "%s/SHINOGI.INI", hostfs);
+            if ((ini = fopen(line, "r")) != NULL) {
+                while (fgets(line, sizeof(line), ini)) {
+                    /* "res = 1280x720", spaces optional, anything else ignored */
+                    if (sscanf(line, " res = %dx%d", &w, &h) == 2 ||
+                        sscanf(line, " res=%dx%d", &w, &h) == 2) {
+                        if (w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
+                            rw = w;
+                            rh = h;
+                        }
+                        break;
+                    }
+                }
+                fclose(ini);
+            }
+        } else if (sscanf(res, "%dx%d", &w, &h) == 2 &&
+                   w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
+            rw = w;
+            rh = h;
+        }
+        snprintf(gpudev, sizeof(gpudev),
+                 "virtio-gpu-device,xres=%d,yres=%d", rw, rh);
+    }
+
 
     /*
      * The guest image, which the user may replace without reinstalling.

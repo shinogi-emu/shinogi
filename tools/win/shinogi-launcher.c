@@ -333,7 +333,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     char exe[MAX_PATH], dir[MAX_PATH], logs[MAX_PATH];
     char drivec[MAX_PATH], sock[MAX_PATH], ready[MAX_PATH];
     char kernel[MAX_PATH];
-    int res_w, res_h;
+    int res_w, res_h, res_given;
     char hostfs[1024], lastcmd[4096];
     const char *display;
     HANDLE helper = NULL;
@@ -375,6 +375,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
      */
     res_w = 1024;
     res_h = 768;
+    res_given = 0;
     if (cmdline && *cmdline) {
         int w = 0, h = 0;
 
@@ -382,6 +383,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
             w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
             res_w = w;
             res_h = h;
+            res_given = 1;
             cmdline = "";       /* consumed; not a display backend */
         }
     }
@@ -403,6 +405,37 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
                   (profile && *profile) ? profile : dir);
         drivec[sizeof(drivec) - 1] = '\0';
         CreateDirectoryA(drivec, NULL);
+
+        /*
+         * Resolution from SHINOGI.INI in the drive C folder.
+         *
+         * Nothing inside the emulator can resize a virtio-gpu scanout that
+         * is already up, so the guest changes the mode by writing this file
+         * and asking to be shut down; we read it on the way back in.  A
+         * size on the command line still wins, for testing.
+         */
+        if (!res_given) {
+            char ini[MAX_PATH], line[256];
+            FILE *f;
+
+            _snprintf(ini, sizeof(ini), "%s\\SHINOGI.INI", drivec);
+            ini[sizeof(ini) - 1] = '\0';
+            if ((f = fopen(ini, "r")) != NULL) {
+                while (fgets(line, sizeof(line), f)) {
+                    int w = 0, h = 0;
+
+                    if (sscanf(line, " res = %dx%d", &w, &h) == 2 ||
+                        sscanf(line, " res=%dx%d", &w, &h) == 2) {
+                        if (w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
+                            res_w = w;
+                            res_h = h;
+                        }
+                        break;
+                    }
+                }
+                fclose(f);
+            }
+        }
     }
 
     /*

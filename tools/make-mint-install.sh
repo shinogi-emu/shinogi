@@ -543,6 +543,25 @@ else
     echo "note: no release tools at $FMREL/tools" >&2
 fi
 
+# Our own resolution picker.
+#
+# The screen size is fixed when QEMU starts -- the guest asks the host for
+# it at boot and nothing running here can resize a scanout that is already
+# up.  So SETRES writes the choice to C:\SHINOGI.INI and the launcher reads
+# it on the way back in; the round trip is "choose, shut down, start again".
+#
+# Built here rather than shipped prebuilt so it cannot drift from the
+# launcher that has to agree with it about the file format.
+GUEST_SRC="$(cd "$(dirname "$0")" && pwd)/guest/setres.c"
+if [ -f "$GUEST_SRC" ]; then
+    mkdir -p "$OUT/tools"
+    if m68k-atari-mint-gcc -O2 -o "$OUT/tools/setres.prg" "$GUEST_SRC" 2>/dev/null; then
+        echo "resolution picker: tools/setres.prg"
+    else
+        echo "note: could not build $GUEST_SRC - no resolution picker" >&2
+    fi
+fi
+
 # --- XaAES --------------------------------------------------------------
 cp_mod "$XA/xaloader/.compile_$MOD_TARGET/xaloader.prg" "$XAAESDIR/xaloader.prg"
 cp_mod "$XA/.compile_$MOD_TARGET/xaaes020.km"           "$XAAESDIR/xaaes.km"

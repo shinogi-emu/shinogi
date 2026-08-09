@@ -85,11 +85,27 @@ else
     echo "tree: reusing $TREE"
 fi
 
+# NET=1 adds the slirp link the shipped launchers give the guest.  Without
+# it this harness has no network device AT ALL, and that is not what the
+# user runs -- so an application that waits on the network at startup hangs
+# here and nowhere else.  That cost a wrong bug report: hw-dom.app was
+# filed as "never opens its window" when it opens fine on a machine that
+# has a link.  Turn this on before concluding anything about an app that
+# talks to the network.
+if [ -n "${NET:-}" ]; then
+    NETARGS="-netdev user,id=n0 -device virtio-net-device,netdev=n0"
+    echo "net: slirp (10.0.2.15/.2/.3)"
+else
+    NETARGS=""
+fi
+
+# shellcheck disable=SC2086
 "$QEMU" -M virt -m 128 \
     -kernel "$ELF" \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
+    $NETARGS \
     -chardev "socket,id=hostfs,path=$S,server=on,wait=off" \
     -device virtio-serial-device \
     -device virtserialport,chardev=hostfs,name=shinogi.hostfs \

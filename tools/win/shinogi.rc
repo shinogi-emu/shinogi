@@ -1,0 +1,31 @@
+/*
+ * Resources for shinogi.exe.
+ *
+ * Windows shows the LOWEST-numbered icon resource as the application icon,
+ * in Explorer, on the taskbar and on any shortcut pointing at the exe --
+ * so the Start Menu and desktop shortcuts the installer creates need no
+ * icon of their own, they inherit this one.
+ *
+ * shinogi.ico is generated from assets/shinogi_logo.svg by
+ * tools/make-icons.py and is committed, because this is compiled on hosts
+ * that have no rasterizer.
+ */
+
+1 ICON "shinogi.ico"
+
+/*
+ * Without a manifest Windows applies its compatibility shims by
+ * guesswork, and an unaware process is lied to about the DPI: the
+ * launcher's own window would be bitmap-scaled on any display above 100%.
+ */
+1 24 /* RT_MANIFEST */
+{
+"<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>\r\n"
+"<assembly xmlns=""urn:schemas-microsoft-com:asm.v1"" manifestVersion=""1.0"">\r\n"
+"  <application xmlns=""urn:schemas-microsoft-com:asm.v3"">\r\n"
+"    <windowsSettings>\r\n"
+"      <dpiAware xmlns=""http://schemas.microsoft.com/SMI/2005/WindowsSettings"">true</dpiAware>\r\n"
+"    </windowsSettings>\r\n"
+"  </application>\r\n"
+"</assembly>\r\n"
+}

@@ -71,9 +71,21 @@ cp "$QEMU_WIN/COPYING" "$QEMU_WIN/COPYING.LIB" "$QEMU_WIN/VERSION" "$BUNDLE/qemu
 cp "$ELF" "$BUNDLE/"
 cp "$SDL2/bin/SDL2.dll" "$BUNDLE/"
 
+# The icon and manifest. windres is run from tools/win so the .rc can name
+# shinogi.ico beside it; the icon is committed rather than generated here,
+# because this script also runs on hosts with no rasterizer.
+[ -f "$ROOT/tools/win/shinogi.ico" ] || {
+    echo "missing tools/win/shinogi.ico - run tools/make-icons.py" >&2
+    exit 2
+}
+( cd "$ROOT/tools/win" \
+  && x86_64-w64-mingw32-windres shinogi.rc -O coff -o "$BUNDLE/shinogi-res.o" )
+
 x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
+    "$BUNDLE/shinogi-res.o" \
     -DSHINOGI_VERSION="\"$VERSION\"" \
     -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra
+python3 -c "import os,sys; os.remove(sys.argv[1])" "$BUNDLE/shinogi-res.o"
 
 # The host end of drive C. Console subsystem, but the launcher starts it
 # with CREATE_NO_WINDOW so nothing flashes up; -lws2_32 is for the
@@ -87,8 +99,24 @@ x86_64-w64-mingw32-gcc "$ROOT/tools/sdl-grab-probe.c" \
     -lmingw32 -lSDL2main -lSDL2 -mconsole -O2 -Wall
 
 OUT="$OUTDIR/shinogi-$VERSION-win64-setup.exe"
+
+# Refuse to overwrite a released installer.
+#
+# The output name comes from VERSION, so building twice without bumping it
+# silently replaces the earlier binary -- and a released installer is the
+# one thing here that cannot be rebuilt byte-for-byte later.  That has
+# already destroyed one: the Aug-6 beta1 was overwritten by a rebuild that
+# still said "beta1", and the tested pairing of that exe with its tree is
+# no longer reproducible.  Bump VERSION, or pass FORCE=1 if you really do
+# mean to replace it.
+if [ -e "$OUT" ] && [ -z "${FORCE:-}" ]; then
+    echo "refusing to overwrite $OUT" >&2
+    echo "bump VERSION (currently $VERSION), or set FORCE=1" >&2
+    exit 2
+fi
 mkdir -p "$OUTDIR"
 makensis -DBUNDLE="$BUNDLE" -DOUTFILE="$OUT" -DVERSION="$VERSION" \
+         -DICON="$ROOT/tools/win/shinogi.ico" \
          "$ROOT/tools/win/shinogi.nsi" | tail -1
 
 ( cd "$OUTDIR" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )

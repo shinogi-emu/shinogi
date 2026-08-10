@@ -32,6 +32,16 @@ ShowInstDetails show
 
 !include "MUI2.nsh"
 
+; The mountain, from assets/shinogi_logo.svg via tools/make-icons.py.
+; ICON comes from make-windows-package.sh, like BUNDLE and VERSION, rather
+; than being reached for relative to NSISDIR -- that path is wherever the
+; build host keeps NSIS and is nothing to do with this repository.
+!ifndef ICON
+  !error "ICON not defined - build through tools/make-windows-package.sh"
+!endif
+!define MUI_ICON   "${ICON}"
+!define MUI_UNICON "${ICON}"
+
 !define MUI_ABORTWARNING
 ; NO MUI_FINISHPAGE_RUN.
 ;

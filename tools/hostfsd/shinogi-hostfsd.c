@@ -1507,6 +1507,98 @@ static void signal_ready(const char *path)
         fclose(f);
 }
 
+/*
+ * ===========================================================================
+ * Make the served folder writable
+ * ===========================================================================
+ *
+ * This folder IS the guest's hard disk.  A read-only file in it is almost
+ * never deliberate -- it arrives with the copy.  Unzipping with a tool that
+ * honours the archive's permissions does it, and so does copying the tree
+ * off a read-only network share, which is how the bundle is distributed.
+ *
+ * The consequence is out of all proportion to the cause.  attr_of() reports
+ * the file read-only, every write to it fails, and the ONLY thing the guest
+ * can say is that a file would not open.  A user sees "I cannot save any of
+ * my settings" with nothing to act on; here it presented as HighWire failing
+ * to flush its cache, and cost a long detour into fonts and caches before
+ * anyone thought to look at an attribute.
+ *
+ * So clear it, once, at startup, and say how many.  Doing it here rather
+ * than in the launcher means it holds for every platform and for the test
+ * harnesses too, and it happens before the guest has run a single
+ * instruction.
+ *
+ * A file the user genuinely wants read-only is not a case worth protecting
+ * against: this is a virtual disk, the guest has no way to express the
+ * distinction, and a disk you cannot write to is not one.
+ */
+static unsigned long ro_cleared;
+
+static void clear_readonly(const char *path)
+{
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(path);
+
+    if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_READONLY))
+    {
+        if (SetFileAttributesA(path, a & ~FILE_ATTRIBUTE_READONLY))
+            ro_cleared++;
+    }
+#else
+    struct stat st;
+
+    if (stat(path, &st) == 0 && !(st.st_mode & S_IWUSR))
+    {
+        if (chmod(path, st.st_mode | S_IWUSR) == 0)
+            ro_cleared++;
+    }
+#endif
+}
+
+static void make_writable(const char *dir, int depth)
+{
+    DIR *d;
+    struct dirent *e;
+    char child[FULLPATH_MAX];
+
+    /* Deep enough for any real tree, and it cannot be walked into a loop. */
+    if (depth > 32)
+        return;
+
+    clear_readonly(dir);
+
+    d = opendir(dir);
+    if (!d)
+        return;
+
+    while ((e = readdir(d)) != NULL)
+    {
+        struct stat st;
+
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+            continue;
+        /* '/' throughout, as everywhere else here: Win32 accepts it.
+         * snprintf and a truncation check rather than a length test the
+         * compiler cannot see through -- a silently clipped path would be
+         * a different file. */
+        if (snprintf(child, sizeof(child), "%s/%s", dir, e->d_name)
+                >= (int)sizeof(child))
+            continue;
+
+        /* lstat, not stat: a symlink out of the folder must not be
+         * followed, for the same reason path resolution refuses one. */
+        if (plat_lstat(child, &st) != 0)
+            continue;
+        if (S_ISDIR(st.st_mode))
+            make_writable(child, depth + 1);
+        else
+            clear_readonly(child);
+    }
+
+    closedir(d);
+}
+
 /* The folder's own name, for HELLO. The guest gets a label and never a
  * path: nothing above the transport has any use for the host's layout,
  * and a leaked path is a leaked username. */
@@ -1594,6 +1686,14 @@ int main(int argc, char **argv)
         root[--rootlen] = '\0';
 
     make_label(root);
+
+    /* Before the guest runs.  A read-only file here makes every write to it
+     * fail with nothing the guest can report beyond "will not open". */
+    make_writable(root, 0);
+    if (ro_cleared)
+        fprintf(stderr, "shinogi-hostfsd: cleared the read-only attribute "
+                        "on %lu file(s) under %s\n", ro_cleared, root);
+    fflush(stderr);
     if (plat_init() != 0)
     {
         fprintf(stderr, "shinogi-hostfsd: cannot initialise sockets\n");

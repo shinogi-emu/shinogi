@@ -6,7 +6,14 @@
 #   tools/install-linux.sh
 #
 # Everything lands under ~/.local, so no root is needed and uninstalling
-# is deleting four files. Uses the system QEMU.
+# is deleting four files.
+#
+# QEMU: the PATCHED build, not the system one.  The distribution
+# qemu-system-m68k aborts about six seconds in and the guest never reaches
+# MINT.PRG -- patches/0003 and 0006 are what make FreeMiNT boot here at
+# all.  This install used to take whatever was on PATH and produced a
+# machine that came up to a bare EmuTOS desktop and looked like an old
+# build.  SHINOGI_QEMU overrides the search.
 #
 set -eu
 
@@ -19,7 +26,17 @@ SHARE="$HOME/.local/share"
 LIBDIR="$SHARE/shinogi"
 
 [ -f "$ELF" ] || { echo "no guest image at $ELF - build it first" >&2; exit 2; }
-command -v qemu-system-m68k >/dev/null || { echo "qemu-system-m68k not on PATH" >&2; exit 2; }
+
+QEMU="${SHINOGI_QEMU:-$HOME/git/atari-docs/qemu-m68k/build-vvfat/qemu-system-m68k}"
+if [ ! -x "$QEMU" ]; then
+    echo "no patched QEMU at $QEMU" >&2
+    echo "" >&2
+    echo "The system qemu-system-m68k will NOT do: it aborts a few seconds" >&2
+    echo "into the boot and the guest never reaches MINT.PRG, which looks" >&2
+    echo "like an old build coming up to a bare EmuTOS desktop." >&2
+    echo "Build the patched tree, or point SHINOGI_QEMU at it." >&2
+    exit 2
+fi
 
 mkdir -p "$BIN" "$LIBDIR" "$SHARE/applications" \
          "$SHARE/icons/hicolor/256x256/apps" \
@@ -33,6 +50,14 @@ cc "$ROOT/tools/shinogi-launcher.c" \
    -DSHINOGI_VERSION="\"$VERSION\"" \
    -o "$LIBDIR/shinogi" -O2 -Wall
 cp "$ELF" "$LIBDIR/emutos-virt.elf"
+
+# The launcher prefers qemu/bin/qemu-system-m68k beside itself and only
+# falls back to PATH, so putting the patched build here is what stops the
+# fallback ever being reached. A symlink, not a copy: this is a local
+# install pointing at a local build, and a stale copy of a QEMU that is
+# still being patched would be worse than none.
+mkdir -p "$LIBDIR/qemu/bin"
+ln -sf "$QEMU" "$LIBDIR/qemu/bin/qemu-system-m68k"
 ln -sf "$LIBDIR/shinogi" "$BIN/shinogi"
 
 cp "$ROOT/tools/linux/shinogi.png"     "$SHARE/icons/hicolor/256x256/apps/shinogi.png"

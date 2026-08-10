@@ -94,7 +94,12 @@ fi
 # talks to the network.
 if [ -n "${NET:-}" ]; then
     NETARGS="-netdev user,id=n0 -device virtio-net-device,netdev=n0"
-    echo "net: slirp (10.0.2.15/.2/.3)"
+    # Count frames on the HOST, never ask the guest whether it has a
+    # network.  An empty capture is 24 bytes, and that is what turns "the
+    # app did nothing" into "nothing reached the wire" -- the distinction
+    # that made the virtio-net bug diagnosable in the first place.
+    NETARGS="$NETARGS -object filter-dump,id=dump0,netdev=n0,file=$OUT/$TAG.pcap"
+    echo "net: slirp (10.0.2.15/.2/.3), pcap -> $OUT/$TAG.pcap"
 else
     NETARGS=""
 fi

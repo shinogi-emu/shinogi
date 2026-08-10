@@ -27,7 +27,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
+#include <errno.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -105,14 +108,17 @@ static int self_dir(char *out, size_t n)
 int main(int argc, char *argv[])
 {
     char dir[PATH_MAX], qemu[PATH_MAX + 32], elf[PATH_MAX + 32];
-    char hostfs[PATH_MAX], fsdev[PATH_MAX + 64], log[PATH_MAX];
+    char hostfs[PATH_MAX], log[PATH_MAX];
     char logerr[PATH_MAX + 8];
     char serial[PATH_MAX + 8];
+    char sock[PATH_MAX + 32], ready[PATH_MAX + 40];
+    char chardev[PATH_MAX + 64], hostfsd[PATH_MAX + 32];
     char display[128];
     char gpudev[64];
     const char *want;
     const char *home = getenv("HOME");
     struct stat st;
+    pid_t hostfsd_pid, qemu_pid;
 
     if (self_dir(dir, sizeof(dir)) != 0) {
         fprintf(stderr, "shinogi: cannot determine my own location\n");
@@ -225,31 +231,115 @@ int main(int argc, char *argv[])
              getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
     snprintf(logerr, sizeof(logerr), "%s.err", log);
     snprintf(serial, sizeof(serial), "file:%s", log);
-    snprintf(fsdev, sizeof(fsdev),
-             "local,id=hostfs,path=%s,security_model=mapped-xattr", hostfs);
+
+    /*
+     * Drive C is served by shinogi-hostfsd over virtio-serial, NOT by 9p.
+     *
+     * This used to pass -fsdev/-virtio-9p-device, and stayed that way
+     * after the guest moved to the hostfs link.  The result was a machine
+     * with no drive C at all: bios.c refuses to register one unless
+     * hostfs_link_present(), so there was no AUTO folder, MINT.PRG never
+     * ran, and what came up was the bare EmuTOS desktop -- which reads as
+     * a broken or ancient build rather than as a missing helper.
+     *
+     * The helper LISTENS and QEMU connects (server=off).  That way round
+     * on purpose: QEMU discards a guest write to a port whose far end is
+     * absent, so if QEMU listened, the guest could probe the port before
+     * the helper arrived and lose the drive silently for the whole
+     * session.  With the helper up first there is no window at all.
+     */
+    snprintf(sock, sizeof(sock), "%s/shinogi-hostfs-%d.sock",
+             getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (int)getpid());
+    snprintf(ready, sizeof(ready), "%s.ready", sock);
+    snprintf(chardev, sizeof(chardev),
+             "socket,id=hostfs,path=%s,server=off", sock);
+
+    snprintf(hostfsd, sizeof(hostfsd), "%s/shinogi-hostfsd", dir);
+    if (stat(hostfsd, &st) != 0)
+        snprintf(hostfsd, sizeof(hostfsd), "shinogi-hostfsd");
+
+    unlink(sock);
+    unlink(ready);
+
+    hostfsd_pid = fork();
+    if (hostfsd_pid == 0) {
+        execlp(hostfsd, hostfsd,
+               "--root", hostfs,
+               "--listen", sock,
+               "--ready-file", ready,
+               (char *)NULL);
+        fprintf(stderr, "shinogi: could not start %s\n", hostfsd);
+        _exit(127);
+    }
+    if (hostfsd_pid < 0) {
+        fprintf(stderr, "shinogi: cannot fork for the drive C helper\n");
+        return 1;
+    }
+
+    /* Wait for it to be listening. Without drive C there is no point
+     * starting the emulator: it would boot to a bare desktop. */
+    {
+        int waited = 0;
+
+        while (stat(ready, &st) != 0) {
+            int status;
+
+            if (waitpid(hostfsd_pid, &status, WNOHANG) == hostfsd_pid) {
+                fprintf(stderr, "shinogi: the drive C helper exited "
+                                "before it was ready\n");
+                return 1;
+            }
+            if (++waited > 200) {        /* 10 seconds */
+                fprintf(stderr, "shinogi: the drive C helper never became "
+                                "ready\n");
+                kill(hostfsd_pid, SIGTERM);
+                return 1;
+            }
+            usleep(50000);
+        }
+    }
 
     printf("shinogi " SHINOGI_VERSION "\n");
     printf("drive C: %s\n", hostfs);
     printf("display: %s\n", display);
     fflush(stdout);
 
-    execlp(qemu, qemu,
-           "-name", "Shinogi (" SHINOGI_VERSION ")",
-           "-M", "virt",
-           "-m", "128",
-           "-kernel", elf,
-           /* slirp: NAT with no setup, see the Windows launcher. */
-           "-netdev", "user,id=net0",
-           "-device", "virtio-net-device,netdev=net0",
-           "-device", gpudev,
-           "-device", "virtio-keyboard-device",
-           "-device", "virtio-tablet-device",
-           "-fsdev", fsdev,
-           "-device", "virtio-9p-device,fsdev=hostfs,mount_tag=shinogi",
-           "-display", display,
-           "-serial", serial,
-           "-d", "guest_errors", "-D", logerr,
-           (char *)NULL);
+    /* Not execlp: the helper has to be cleaned up when QEMU exits, and a
+     * replaced process image cannot do that. */
+    qemu_pid = fork();
+    if (qemu_pid == 0) {
+        execlp(qemu, qemu,
+               "-name", "Shinogi (" SHINOGI_VERSION ")",
+               "-M", "virt",
+               "-m", "128",
+               "-kernel", elf,
+               /* slirp: NAT with no setup, see the Windows launcher. */
+               "-netdev", "user,id=net0",
+               "-device", "virtio-net-device,netdev=net0",
+               "-device", gpudev,
+               "-device", "virtio-keyboard-device",
+               "-device", "virtio-tablet-device",
+               "-chardev", chardev,
+               "-device", "virtio-serial-device",
+               "-device", "virtserialport,chardev=hostfs,name=shinogi.hostfs",
+               "-display", display,
+               "-serial", serial,
+               "-d", "guest_errors", "-D", logerr,
+               (char *)NULL);
+        fprintf(stderr, "shinogi: could not start %s\n", qemu);
+        _exit(127);
+    }
+    if (qemu_pid > 0) {
+        int status;
+
+        while (waitpid(qemu_pid, &status, 0) < 0 && errno == EINTR)
+            ;
+        kill(hostfsd_pid, SIGTERM);
+        waitpid(hostfsd_pid, NULL, 0);
+        unlink(sock);
+        unlink(ready);
+        return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    }
 
     fprintf(stderr, "shinogi: could not start %s\n", qemu);
     return 1;

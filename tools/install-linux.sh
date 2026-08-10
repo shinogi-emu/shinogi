@@ -27,16 +27,45 @@ LIBDIR="$SHARE/shinogi"
 
 [ -f "$ELF" ] || { echo "no guest image at $ELF - build it first" >&2; exit 2; }
 
-QEMU="${SHINOGI_QEMU:-$HOME/git/atari-docs/qemu-m68k/build-vvfat/qemu-system-m68k}"
-if [ ! -x "$QEMU" ]; then
-    echo "no patched QEMU at $QEMU" >&2
+# The QEMU must satisfy BOTH conditions, and each has already been got
+# wrong once:
+#
+#   patched  - the distribution qemu-system-m68k aborts a few seconds into
+#              the boot, so the guest never reaches MINT.PRG and comes up
+#              to a bare EmuTOS desktop.
+#   windowed - build-vvfat is the HEADLESS harness build; its only display
+#              backends are none and dbus, so the launcher's -display sdl
+#              is rejected and nothing ever appears on screen.
+#
+# Being patched cannot be probed, so the search is over known build dirs,
+# most capable first.  Having a display can be probed, and is.
+qemu_has_display() {
+    "$1" -display help 2>/dev/null | grep -qE '^[[:space:]]*(sdl|gtk)$'
+}
+
+QEMU=""
+for cand in "${SHINOGI_QEMU:-}" \
+            "$HOME/git/atari-docs/qemu-m68k/build-gui/qemu-system-m68k" \
+            "$HOME/git/atari-docs/qemu-m68k/build-vvfat/qemu-system-m68k"; do
+    [ -n "$cand" ] && [ -x "$cand" ] || continue
+    if qemu_has_display "$cand"; then
+        QEMU="$cand"
+        break
+    fi
+    echo "note: $cand has no sdl/gtk display, skipping" >&2
+done
+
+if [ -z "$QEMU" ]; then
+    echo "no patched QEMU with a display backend found" >&2
     echo "" >&2
-    echo "The system qemu-system-m68k will NOT do: it aborts a few seconds" >&2
-    echo "into the boot and the guest never reaches MINT.PRG, which looks" >&2
-    echo "like an old build coming up to a bare EmuTOS desktop." >&2
-    echo "Build the patched tree, or point SHINOGI_QEMU at it." >&2
+    echo "The system qemu-system-m68k will NOT do: it lacks the patches and" >&2
+    echo "aborts a few seconds into the boot.  The harness build at" >&2
+    echo "build-vvfat has the patches but is headless." >&2
+    echo "Configure one with --enable-sdl --enable-slirp, or point" >&2
+    echo "SHINOGI_QEMU at a build that has both." >&2
     exit 2
 fi
+echo "qemu: $QEMU"
 
 mkdir -p "$BIN" "$LIBDIR" "$SHARE/applications" \
          "$SHARE/icons/hicolor/256x256/apps" \
@@ -50,6 +79,12 @@ cc "$ROOT/tools/shinogi-launcher.c" \
    -DSHINOGI_VERSION="\"$VERSION\"" \
    -o "$LIBDIR/shinogi" -O2 -Wall
 cp "$ELF" "$LIBDIR/emutos-virt.elf"
+
+# The host end of drive C. The launcher starts it and looks for it beside
+# itself first, so without this there is no C:, no AUTO folder and no
+# MINT.PRG -- the guest comes up to a bare EmuTOS desktop.
+cc "$ROOT/tools/hostfsd/shinogi-hostfsd.c" \
+   -o "$LIBDIR/shinogi-hostfsd" -O2 -Wall
 
 # The launcher prefers qemu/bin/qemu-system-m68k beside itself and only
 # falls back to PATH, so putting the patched build here is what stops the

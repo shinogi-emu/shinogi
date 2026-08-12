@@ -1574,6 +1574,7 @@ static void make_writable(const char *dir, int depth)
 
     while ((e = readdir(d)) != NULL)
     {
+        char resolved[FULLPATH_MAX];
         struct stat st;
 
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
@@ -1586,18 +1587,62 @@ static void make_writable(const char *dir, int depth)
                 >= (int)sizeof(child))
             continue;
 
-        /* lstat, not stat: a symlink out of the folder must not be
-         * followed, for the same reason path resolution refuses one. */
+        /* Resolve before changing an attribute or descending. On Windows,
+         * stat() follows directory junctions, and a drive C tree may contain
+         * one that points elsewhere. The writable pass must obey the same
+         * containment boundary as a guest request. */
+        if (!plat_realpath(child, resolved) || !under_root(resolved))
+            continue;
         if (plat_lstat(child, &st) != 0)
             continue;
         if (S_ISDIR(st.st_mode))
-            make_writable(child, depth + 1);
+            make_writable(resolved, depth + 1);
         else
-            clear_readonly(child);
+            clear_readonly(resolved);
     }
 
     closedir(d);
 }
+
+static void report_writable_result(void)
+{
+    if (ro_cleared)
+        fprintf(stderr, "shinogi-hostfsd: cleared the read-only attribute "
+                        "on %lu file(s) under %s\n", ro_cleared, root);
+    fflush(stderr);
+}
+
+#ifdef _WIN32
+/*
+ * Walking a populated FreeMiNT tree can take longer than the launcher's
+ * readiness deadline when Windows Defender examines each file. Do it in the
+ * background on Windows: the socket becomes available immediately, while the
+ * one-time attribute cleanup proceeds independently. The process owns ROOT
+ * for its whole lifetime, so the worker needs no copied argument.
+ */
+static DWORD WINAPI make_writable_worker(LPVOID unused)
+{
+    (void)unused;
+    make_writable(root, 0);
+    report_writable_result();
+    return 0;
+}
+
+static void start_writable_worker(void)
+{
+    HANDLE thread = CreateThread(NULL, 0, make_writable_worker, NULL, 0, NULL);
+
+    if (thread)
+        CloseHandle(thread);
+    else
+    {
+        fprintf(stderr, "shinogi-hostfsd: could not start writable-folder "
+                        "worker (Windows error %lu)\n",
+                        (unsigned long)GetLastError());
+        fflush(stderr);
+    }
+}
+#endif
 
 /* The folder's own name, for HELLO. The guest gets a label and never a
  * path: nothing above the transport has any use for the host's layout,
@@ -1687,13 +1732,13 @@ int main(int argc, char **argv)
 
     make_label(root);
 
-    /* Before the guest runs.  A read-only file here makes every write to it
-     * fail with nothing the guest can report beyond "will not open". */
+    /* POSIX trees are fast enough to prepare before the channel comes up.
+     * Windows does the same work after readiness on a worker thread, because
+     * antivirus scanning can otherwise exceed the launcher's deadline. */
+#ifndef _WIN32
     make_writable(root, 0);
-    if (ro_cleared)
-        fprintf(stderr, "shinogi-hostfsd: cleared the read-only attribute "
-                        "on %lu file(s) under %s\n", ro_cleared, root);
-    fflush(stderr);
+    report_writable_result();
+#endif
     if (plat_init() != 0)
     {
         fprintf(stderr, "shinogi-hostfsd: cannot initialise sockets\n");
@@ -1711,6 +1756,9 @@ int main(int argc, char **argv)
             return 1;
         }
         signal_ready(readyfile);
+#ifdef _WIN32
+        start_writable_worker();
+#endif
         dbg("hostfsd: serving %s to %s\n", label, sockpath);
         serve_client(c);
         conn_close(c);
@@ -1725,6 +1773,9 @@ int main(int argc, char **argv)
     }
 
     signal_ready(readyfile);
+#ifdef _WIN32
+    start_writable_worker();
+#endif
     dbg("hostfsd: serving %s on %s\n", label, sockpath);
 
     for (;;)

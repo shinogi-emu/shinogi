@@ -86,6 +86,7 @@
 
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Supplied by the build; see tools/make-windows-package.sh. Kept out of
  * the source so the version lives in exactly one file, VERSION. */
@@ -119,6 +120,36 @@ static void note(const char *text)
     MessageBoxA(NULL, text, "shinogi", MB_ICONWARNING);
 }
 
+static void helper_log_line(HANDLE log, const char *text)
+{
+    DWORD written;
+
+    if (log != INVALID_HANDLE_VALUE)
+        WriteFile(log, text, (DWORD)strlen(text), &written, NULL);
+}
+
+static void helper_win32_failure(char *out, size_t n, const char *phase,
+                                 DWORD error)
+{
+    char detail[512];
+    DWORD got;
+
+    detail[0] = '\0';
+    got = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM |
+                         FORMAT_MESSAGE_IGNORE_INSERTS,
+                         NULL, error, 0, detail, sizeof(detail), NULL);
+    while (got && (detail[got - 1] == '\r' || detail[got - 1] == '\n'))
+        detail[--got] = '\0';
+
+    if (got)
+        _snprintf(out, n, "%s (Windows error %lu: %s)\r\n",
+                  phase, (unsigned long)error, detail);
+    else
+        _snprintf(out, n, "%s (Windows error %lu)\r\n",
+                  phase, (unsigned long)error);
+    out[n - 1] = '\0';
+}
+
 /* Logs go beside the guest image only if that is writable; a bundle
  * installed under Program Files is not, so use LOCALAPPDATA instead. */
 static void log_dir(char *out, size_t n)
@@ -147,14 +178,17 @@ static void log_dir(char *out, size_t n)
  */
 static HANDLE start_helper(const char *dir, const char *drivec,
                            const char *sock, const char *ready,
-                           const char *logs)
+                           const char *logs, char *failure,
+                           size_t failure_len)
 {
-    char cmd[2048], logpath[MAX_PATH];
+    char cmd[2048], logpath[MAX_PATH], line[768];
     SECURITY_ATTRIBUTES sa;
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     HANDLE hlog;
     DWORD waited;
+
+    failure[0] = '\0';
 
     /* A leftover ready file from a previous run would be believed. */
     DeleteFileA(ready);
@@ -201,15 +235,17 @@ static HANDLE start_helper(const char *dir, const char *drivec,
     if (!CreateProcessA(NULL, cmd, NULL, NULL,
                         hlog != INVALID_HANDLE_VALUE, CREATE_NO_WINDOW,
                         NULL, dir, &si, &pi)) {
+        DWORD error = GetLastError();
+
+        helper_win32_failure(failure, failure_len,
+                             "Could not start shinogi-hostfsd.exe", error);
+        helper_log_line(hlog, failure);
         if (hlog != INVALID_HANDLE_VALUE) {
             CloseHandle(hlog);
         }
         return NULL;
     }
     CloseHandle(pi.hThread);
-    if (hlog != INVALID_HANDLE_VALUE) {
-        CloseHandle(hlog);      /* the child holds its own copy */
-    }
 
     /*
      * Poll rather than sleep. The helper is ready in a millisecond or
@@ -220,15 +256,37 @@ static HANDLE start_helper(const char *dir, const char *drivec,
         DWORD code = 0;
 
         if (GetFileAttributesA(ready) != INVALID_FILE_ATTRIBUTES) {
+            if (hlog != INVALID_HANDLE_VALUE) {
+                CloseHandle(hlog);  /* the child holds its own copy */
+            }
             return pi.hProcess;
         }
         if (GetExitCodeProcess(pi.hProcess, &code) && code != STILL_ACTIVE) {
-            break;              /* it gave up; waiting longer is pointless */
+            _snprintf(failure, failure_len,
+                      "shinogi-hostfsd.exe exited before its socket was ready "
+                      "(exit code %lu).\r\n", (unsigned long)code);
+            failure[failure_len - 1] = '\0';
+            helper_log_line(hlog, failure);
+            if (hlog != INVALID_HANDLE_VALUE) {
+                CloseHandle(hlog);
+            }
+            CloseHandle(pi.hProcess);
+            return NULL;        /* waiting longer is pointless */
         }
         Sleep(READY_POLL_MS);
     }
 
+    _snprintf(line, sizeof(line),
+              "shinogi-hostfsd.exe did not make its socket ready within "
+              "%lu ms and was stopped.\r\n", (unsigned long)READY_TIMEOUT_MS);
+    line[sizeof(line) - 1] = '\0';
+    lstrcpynA(failure, line, (int)failure_len);
+    helper_log_line(hlog, line);
     TerminateProcess(pi.hProcess, 1);
+    WaitForSingleObject(pi.hProcess, 1000);
+    if (hlog != INVALID_HANDLE_VALUE) {
+        CloseHandle(hlog);
+    }
     CloseHandle(pi.hProcess);
     return NULL;
 }
@@ -339,6 +397,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     char exe[MAX_PATH], dir[MAX_PATH], logs[MAX_PATH];
     char drivec[MAX_PATH], sock[MAX_PATH], ready[MAX_PATH];
     char kernel[MAX_PATH];
+    char helper_failure[768];
     int res_w, res_h, res_given;
     char hostfs[1024], lastcmd[4096];
     const char *display;
@@ -484,13 +543,21 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
              "application data is too long for a socket name.\n\n"
              "Everything else works; only the host folder is missing.");
     } else {
-        helper = start_helper(dir, drivec, sock, ready, logs);
+        helper = start_helper(dir, drivec, sock, ready, logs,
+                              helper_failure, sizeof(helper_failure));
         if (!helper) {
-            note("Drive C is not available: the helper that serves the\n"
-                 "host folder did not start.\n\n"
-                 "See shinogi-hostfsd.log in:\n"
-                 "%LOCALAPPDATA%\\shinogi\n\n"
-                 "Everything else works; only the host folder is missing.");
+            char msg[1400];
+
+            _snprintf(msg, sizeof(msg),
+                      "Drive C is not available: the helper that serves the\n"
+                      "host folder did not start.\n\n%s\n"
+                      "See shinogi-hostfsd.log in:\n"
+                      "%%LOCALAPPDATA%%\\shinogi\n\n"
+                      "Everything else works; only the host folder is missing.",
+                      helper_failure[0] ? helper_failure :
+                      "No diagnostic was returned by the helper.");
+            msg[sizeof(msg) - 1] = '\0';
+            note(msg);
         } else {
             /*
              * server=off: QEMU is the CLIENT and the helper above is

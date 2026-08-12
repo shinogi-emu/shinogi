@@ -73,16 +73,26 @@ ShowInstDetails show
 
 Section "shinogi" SecMain
   SectionIn RO
-  ; Clear a helper left over from a previous session before writing any
-  ; files. Up to b8 the helper kept listening after the guest went away,
-  ; so a launcher that was killed rather than closed left it running and
-  ; holding shinogi-hostfsd.exe open -- the installer then stopped with
-  ; "Error opening file for writing". The launcher now passes --once so
-  ; it exits with the guest, but an older orphan can still be running on
-  ; a machine being upgraded, and it is our own process to end.
+  ; Stop an installed copy before replacing it. Ending the launcher alone
+  ; does not end its QEMU child, and either process can keep files open.
+  nsExec::Exec 'taskkill /F /IM shinogi.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM qemu-system-m68kw.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM qemu-system-m68k.exe'
+  Pop $0
   nsExec::Exec 'taskkill /F /IM shinogi-hostfsd.exe'
   Pop $0
 
+  ; Replace the application as one coherent tree so DLLs and QEMU data from
+  ; an older build cannot survive an upgrade. Require two Shinogi-specific
+  ; files before deleting recursively: $INSTDIR is user-selectable, and a
+  ; mistaken broad directory must never be treated as our private tree.
+  IfFileExists "$INSTDIR\shinogi.exe" 0 install_files
+  IfFileExists "$INSTDIR\qemu\qemu-system-m68kw.exe" 0 install_files
+  RMDir /r "$INSTDIR"
+
+install_files:
   SetOutPath "$INSTDIR"
 
   File "${BUNDLE}\shinogi.exe"

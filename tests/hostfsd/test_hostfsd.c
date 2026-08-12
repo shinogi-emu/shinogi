@@ -268,7 +268,7 @@ static int nuke(const char *path, const struct stat *st, int flag,
 
 static void scratch_make(void)
 {
-    char p[512];
+    char p[512], link[512];
 
     strcpy(tmproot, "/tmp/hostfsd-test-XXXXXX");
     if (!mkdtemp(tmproot))
@@ -290,13 +290,44 @@ static void scratch_make(void)
         fclose(f);
     }
 
+    /* Present before the helper starts: its writable-folder preparation
+     * must not follow a symlink and chmod something outside the served
+     * root. This specifically covers the startup pass, not request-time
+     * containment tested below. */
+    snprintf(link, sizeof(link), "%s/startup-escape", servedir);
+    if (symlink(p, link) != 0)
+        die("symlink startup-escape");
+    if (chmod(p, 0444) != 0)
+        die("chmod outside.txt");
+
     host_write("hello.txt", "hello world");
     host_write("empty.txt", "");
+    host_write("startup-ro.txt", "read only before helper startup");
+    host_path(p, sizeof(p), "startup-ro.txt");
+    if (chmod(p, 0444) != 0)
+        die("chmod startup-ro.txt");
 
     host_path(p, sizeof(p), "sub");
     if (mkdir(p, 0777) != 0)
         die("mkdir sub");
     host_write("sub/inner.txt", "inner");
+}
+
+static void test_startup_containment(void)
+{
+    char p[512];
+    struct stat st;
+
+    host_path(p, sizeof(p), "startup-ro.txt");
+    check(stat(p, &st) == 0 && (st.st_mode & S_IWUSR),
+          "startup did not make a served file writable");
+
+    snprintf(p, sizeof(p), "%s/outside.txt", tmproot);
+    check(stat(p, &st) == 0, "startup destroyed the file outside the root");
+    check(!(st.st_mode & S_IWUSR),
+          "startup writable pass followed a symlink outside the root");
+    if (chmod(p, 0666) != 0)
+        die("restore outside.txt mode");
 }
 
 static void scratch_remove(void)
@@ -1584,6 +1615,7 @@ int main(void)
     helper_start();
     t_connect();
 
+    test_startup_containment();
     test_hello();
     test_stat();
     test_file_roundtrip();

@@ -25,8 +25,11 @@ OUT="${STACK_OUT:-$HOME/shinogi-build/stackout}"
 TAG="${TAG:-stack}"
 BOOT="${BOOT_WAIT:-160}"
 QEMU="${SHINOGI_QEMU:-$HOME/git/atari-docs/qemu-m68k/build-vvfat/qemu-system-m68k}"
+CPU="${SHINOGI_CPU:-m68040}"
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 HOSTFSD="${SHINOGI_HOSTFSD:-$HOME/git/shinogi/tools/hostfsd/shinogi-hostfsd}"
+SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
+QEMU_EXTRA="${SHINOGI_QEMU_EXTRA:-}"
 
 for f in "$QEMU" "$ELF" "$HOSTFSD"; do
     [ -x "$f" ] || [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }
@@ -35,6 +38,10 @@ done
     echo "no install tree at $INSTALL - run tools/make-mint-install.sh first" >&2
     exit 2
 }
+if [ "$CPU" = m68060 ] && [ ! -f "$SP060" ]; then
+    echo "missing 68060 software package: $SP060" >&2
+    exit 2
+fi
 
 S="$OUT/$TAG.sock"
 L="$OUT/$TAG-serial.log"
@@ -67,6 +74,11 @@ PYX
         echo "tree: $INSTALL (no extra apps at $EXTRA)"
     fi
 
+    if [ "$CPU" = m68060 ]; then
+        cp -f "$SP060" "$TREE/AUTO/060SP.PRG"
+        echo "cpu: m68060 with 060SP.PRG compatibility handler"
+    fi
+
     # Headless means nothing can click, so anything past the desktop has to
     # start itself.  XaAES's "run" does that.  Without this the harness can
     # only prove the desktop comes up, which is not enough to exercise the
@@ -93,7 +105,7 @@ fi
 # has a link.  Turn this on before concluding anything about an app that
 # talks to the network.
 if [ -n "${NET:-}" ]; then
-    NETARGS="-netdev user,id=n0 -device virtio-net-device,netdev=n0"
+    NETARGS="-netdev user,id=n0,ipv6=off -device virtio-net-device,netdev=n0"
     # Count frames on the HOST, never ask the guest whether it has a
     # network.  An empty capture is 24 bytes, and that is what turns "the
     # app did nothing" into "nothing reached the wire" -- the distinction
@@ -104,8 +116,10 @@ else
     NETARGS=""
 fi
 
+# QEMU_EXTRA is a diagnostic-only list of QEMU arguments supplied by the
+# caller. Intentional splitting lets it contain more than one option.
 # shellcheck disable=SC2086
-"$QEMU" -M virt -m 128 \
+"$QEMU" -M virt -cpu "$CPU" -m 128 \
     -kernel "$ELF" \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
@@ -114,7 +128,8 @@ fi
     -chardev "socket,id=hostfs,path=$S,server=on,wait=off" \
     -device virtio-serial-device \
     -device virtserialport,chardev=hostfs,name=shinogi.hostfs \
-    -display none -serial "file:$L" -qmp "unix:$Q,server=on,wait=off" &
+    -display none -serial "file:$L" -qmp "unix:$Q,server=on,wait=off" \
+    $QEMU_EXTRA &
 QP=$!
 
 w=0

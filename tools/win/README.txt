@@ -7,7 +7,8 @@ launcher all ship together. Nothing else needs installing.
     shinogi.exe          launch it
     shinogi-hostfsd.exe  serves drive C, started for you
     emutos-virt.elf      the guest (EmuTOS), 1280x720 truecolor
-    qemu\                the bundled QEMU 11.0.92 for Windows
+    qemu\                the bundled QEMU for Windows
+    BUILD.txt            exact CPU and QEMU version in this build
     sdl-grab-probe.exe   diagnostic, see below
 
 
@@ -55,6 +56,32 @@ Logs are written to:
 
 (not next to the program, which may be read-only when installed under
 Program Files).
+
+
+Networking
+----------
+
+The guest uses an IPv4 NAT connection requiring no Windows network
+driver, administrator setup or firewall exception. Outbound TCP, UDP,
+DNS and ping to the virtual gateway work; other machines on the LAN
+cannot initiate connections to the guest.
+
+Both the 68040 and 68060 editions include an updated VIRTIONE.XIF. The
+installer puts it in the existing FreeMiNT tree under shinogi-drive-c
+automatically. Its 20 ms receive polling avoids the roughly one-second
+latency caused by FreeMiNT's generic slow network timer.
+
+Each installer also updates AUTO\MINT.PRG with the matching native
+FreeMiNT kernel. Installing the other edition switches the same drive C
+between the 68040 and 68060 kernels; personal files elsewhere in drive C
+are left alone.
+
+The 68060 edition also installs 060SP.PRG first in the AUTO folder. A
+real 68060 moved a small group of older integer and floating-point
+instructions into software; this package supplies that compatibility to
+existing Atari applications while the emulator retains strict 68060
+exception behaviour. The program contains the complete Motorola licence
+notice under which the software package may be redistributed.
 
 
 The display backend
@@ -120,18 +147,17 @@ ignores it. This has not been seen on Windows.
 Licensing / provenance
 ----------------------
 
-The qemu\ directory contains an unmodified QEMU 11.0.92 build for
-Windows, taken from the official binaries at:
-
-    https://qemu.weilnetz.de/w64/qemu-w64-setup-20260729.exe
-    sha256 f88141ccb5597ceb7bed58ffb6cd173d3fc14233772bc6edff6583c7b4bb816c
+The qemu\ directory contains the QEMU build selected when this package
+was assembled. BUILD.txt records its version and the emulated CPU. Some
+Shinogi builds carry the Atari DMA-sound device and m68k CPU correctness
+fixes required by the guest; development CPU editions can also contain
+unreleased CPU work and are marked as private test builds there.
 
 QEMU is free software under the GNU GPL version 2; its licence texts are
-in qemu\COPYING and qemu\COPYING.LIB, and its source is available from
-https://www.qemu.org/. It is redistributed here as-is - nothing in QEMU
-has been patched. Only the files needed for the m68k target are
-included; the other architecture binaries and firmware images from the
-upstream package are omitted.
+in qemu\COPYING and qemu\COPYING.LIB, and upstream source is available
+from https://www.qemu.org/. Only the files needed for the m68k target are
+included; the other architecture binaries and firmware images are
+omitted.
 
 EmuTOS is free software under the GNU GPL version 2, from
 https://emutos.sourceforge.io/.

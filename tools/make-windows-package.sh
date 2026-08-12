@@ -8,10 +8,11 @@
 # the running QEMU window -- and a build that had to be told the version
 # twice would eventually be told two different things.
 #
-#   tools/make-windows-package.sh [output-dir]
+#   SHINOGI_CPU=m68060 SHINOGI_ELF=<68060-emutos.elf> \
+#     SHINOGI_060SP=<060sp.prg> tools/make-windows-package.sh [output-dir]
 #
-# Output: <output-dir>/shinogi-<version>-win64-setup.exe and a .sha256
-# beside it. Default output-dir is the LAN share.
+# Output: <output-dir>/shinogi-<version>[-m68060]-win64-setup.exe and a
+# .sha256 beside it. Default output-dir is the LAN share.
 #
 # The bundle carries two programs of our own: shinogi.exe, the launcher,
 # and shinogi-hostfsd.exe, the helper that serves the host folder the
@@ -29,13 +30,41 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VERSION=$(cat "$ROOT/VERSION")
 OUTDIR="${1:-$HOME/git/Aranym/lan-share}"
+CPU="${SHINOGI_CPU:-m68040}"
+
+case "$CPU" in
+    m68040|m68060) ;;
+    *)
+        echo "unsupported SHINOGI_CPU: $CPU" >&2
+        echo "choose m68040 or m68060" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$CPU" = m68040 ]; then
+    PACKAGE_VERSION="$VERSION"
+else
+    PACKAGE_VERSION="$VERSION-$CPU"
+fi
 
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64-patched}"
 SDL2="${SDL2_MINGW:-$HOME/mingw-sdl2/x86_64-w64-mingw32}"
-BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$VERSION"
+NET_DRIVER="${SHINOGI_NET_DRIVER:-$HOME/git/freemint/sys/sockets/xif/virtio_net/.compile_02060/virtio_net.xif}"
+SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
+if [ "$CPU" = m68040 ]; then
+    DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat040/mint040h.prg"
+else
+    DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat060/mint060h.prg"
+fi
+KERNEL="${SHINOGI_MINT_KERNEL:-$DEFAULT_KERNEL}"
+BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$PACKAGE_VERSION"
 
 [ -n "$VERSION" ] || { echo "VERSION is empty" >&2; exit 2; }
+if [ "$CPU" = m68060 ] && [ -z "${SHINOGI_ELF:-}" ]; then
+    echo "SHINOGI_ELF must name an EmuTOS image compiled for m68060" >&2
+    exit 2
+fi
 [ -f "$ELF" ]     || { echo "no guest image at $ELF - build it first" >&2; exit 2; }
 [ -d "$QEMU_WIN" ] || {
     echo "no QEMU-for-Windows tree at $QEMU_WIN" >&2
@@ -45,8 +74,23 @@ BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$VERSION"
 }
 command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "mingw cross compiler missing" >&2; exit 2; }
 command -v makensis >/dev/null || { echo "makensis missing" >&2; exit 2; }
+[ -f "$NET_DRIVER" ] || {
+    echo "no guest network driver at $NET_DRIVER" >&2
+    echo "build FreeMiNT sys/sockets/xif/virtio_net, or set SHINOGI_NET_DRIVER=<file>" >&2
+    exit 2
+}
+[ -f "$KERNEL" ] || {
+    echo "no $CPU FreeMiNT kernel at $KERNEL" >&2
+    echo "build Shinogi's hat${CPU#m680} kernel, or set SHINOGI_MINT_KERNEL=<file>" >&2
+    exit 2
+}
+if [ "$CPU" = m68060 ] && [ ! -f "$SP060" ]; then
+    echo "no 68060 software package at $SP060" >&2
+    echo "build FreeMiNT sys/arch/060sp, or set SHINOGI_060SP=<file>" >&2
+    exit 2
+fi
 
-echo "shinogi $VERSION -> $OUTDIR"
+echo "shinogi $VERSION ($CPU) -> $OUTDIR"
 
 # Assemble the bundle from OUR QEMU, cross-built with the patches in
 # patches/ -- notably the control-register fix, without which any guest
@@ -57,19 +101,44 @@ echo "shinogi $VERSION -> $OUTDIR"
 # so its DLL set is the 13-entry import closure rather than the stock
 # tree's 114, and share/ carries only what the guest can reach.
 mkdir -p "$BUNDLE/qemu/share" "$BUNDLE/qemu/lib"
-cp "$QEMU_WIN/qemu-system-m68k.exe" "$QEMU_WIN/qemu-system-m68kw.exe" "$BUNDLE/qemu/"
-cp "$QEMU_WIN"/*.dll "$BUNDLE/qemu/"
+cp -f "$QEMU_WIN/qemu-system-m68k.exe" "$QEMU_WIN/qemu-system-m68kw.exe" "$BUNDLE/qemu/"
+cp -f "$QEMU_WIN"/*.dll "$BUNDLE/qemu/"
 # Only what the guest can actually reach. locale/ exists in the stock
 # download but not in our own build, which is configured without the
 # pieces that would use it, so its absence is not an error.
 for d in keymaps icons locale; do
-    [ -d "$QEMU_WIN/share/$d" ] && cp -r "$QEMU_WIN/share/$d" "$BUNDLE/qemu/share/"
+    [ -d "$QEMU_WIN/share/$d" ] && cp -rf "$QEMU_WIN/share/$d" "$BUNDLE/qemu/share/"
 done
-cp -r "$QEMU_WIN/lib/." "$BUNDLE/qemu/lib/"
-cp "$QEMU_WIN/COPYING" "$QEMU_WIN/COPYING.LIB" "$QEMU_WIN/VERSION" "$BUNDLE/qemu/"
+cp -rf "$QEMU_WIN/lib/." "$BUNDLE/qemu/lib/"
+cp -f "$QEMU_WIN/COPYING" "$QEMU_WIN/COPYING.LIB" "$QEMU_WIN/VERSION" "$BUNDLE/qemu/"
 
-cp "$ELF" "$BUNDLE/"
-cp "$SDL2/bin/SDL2.dll" "$BUNDLE/"
+cp -f "$ELF" "$BUNDLE/emutos-virt.elf"
+cp -f "$SDL2/bin/SDL2.dll" "$BUNDLE/"
+cp -f "$ROOT/tools/win/README.txt" "$BUNDLE/README.txt"
+
+cp -f "$NET_DRIVER" "$BUNDLE/VIRTIONE.XIF"
+cp -f "$KERNEL" "$BUNDLE/MINT.PRG"
+
+SP060_DEFINE=
+if [ "$CPU" = m68060 ]; then
+    cp -f "$SP060" "$BUNDLE/060SP.PRG"
+    SP060_DEFINE=-DINCLUDE_060SP
+fi
+
+{
+    printf 'Shinogi %s\r\n' "$VERSION"
+    printf 'CPU: %s\r\n' "$CPU"
+    printf 'QEMU: %s\r\n' "$(cat "$QEMU_WIN/VERSION")"
+    if [ "$CPU" != m68040 ]; then
+        printf 'Edition: private development build; do not redistribute\r\n'
+    fi
+    if [ "$CPU" = m68060 ]; then
+        printf 'Guest image: 68060-native EmuTOS\r\n'
+        printf 'Compatibility: FreeMiNT/Motorola 68060 software package\r\n'
+    fi
+    printf 'FreeMiNT kernel: %s-native OLDTOSFS build\r\n' "$CPU"
+    printf 'Network driver: bundled 20 ms receive-poll build\r\n'
+} > "$BUNDLE/BUILD.txt"
 
 # The icon and manifest. windres is run from tools/win so the .rc can name
 # shinogi.ico beside it; the icon is committed rather than generated here,
@@ -84,6 +153,7 @@ cp "$SDL2/bin/SDL2.dll" "$BUNDLE/"
 x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
     "$BUNDLE/shinogi-res.o" \
     -DSHINOGI_VERSION="\"$VERSION\"" \
+    -DSHINOGI_CPU="\"$CPU\"" \
     -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$BUNDLE/shinogi-res.o"
 
@@ -98,7 +168,7 @@ x86_64-w64-mingw32-gcc "$ROOT/tools/sdl-grab-probe.c" \
     -o "$BUNDLE/sdl-grab-probe.exe" \
     -lmingw32 -lSDL2main -lSDL2 -mconsole -O2 -Wall
 
-OUT="$OUTDIR/shinogi-$VERSION-win64-setup.exe"
+OUT="$OUTDIR/shinogi-$PACKAGE_VERSION-win64-setup.exe"
 
 # Refuse to overwrite a released installer.
 #
@@ -115,7 +185,13 @@ if [ -e "$OUT" ] && [ -z "${FORCE:-}" ]; then
     exit 2
 fi
 mkdir -p "$OUTDIR"
+# SP060_DEFINE is a flag with no path in it, so intentional word splitting
+# here adds either one argument or none.
+# shellcheck disable=SC2086
 makensis -DBUNDLE="$BUNDLE" -DOUTFILE="$OUT" -DVERSION="$VERSION" \
+         -DCPU="$CPU" \
+         -DINCLUDE_NET_DRIVER \
+         $SP060_DEFINE \
          -DICON="$ROOT/tools/win/shinogi.ico" \
          "$ROOT/tools/win/shinogi.nsi" | tail -1
 

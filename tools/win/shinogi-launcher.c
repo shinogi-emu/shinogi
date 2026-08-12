@@ -92,6 +92,9 @@
 #ifndef SHINOGI_VERSION
 #error "SHINOGI_VERSION not defined - build through tools/make-windows-package.sh"
 #endif
+#ifndef SHINOGI_CPU
+#error "SHINOGI_CPU not defined - build through tools/make-windows-package.sh"
+#endif
 
 /* How long to wait for the helper before giving up on drive C, and how
  * often to look. The wait is bounded because a helper that never
@@ -271,7 +274,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
      */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
-              " -name \"Shinogi (" SHINOGI_VERSION ")\""
+              " -name \"Shinogi (" SHINOGI_VERSION ", " SHINOGI_CPU ")\""
               /*
                * Sound. The DMA sound device is only created when the
                * machine is given an audiodev, and it answers the guest's
@@ -284,6 +287,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
                */
               " -audiodev dsound,id=snd0"
               " -M virt,audiodev=snd0"
+              " -cpu " SHINOGI_CPU
               " -m 128"
               " -kernel \"%s\""
               /*
@@ -292,9 +296,11 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
                * the LAN and nothing can reach in, but name resolution
                * and outbound connections work anywhere, which a TAP
                * device would not without the user installing a driver
-               * first.
+               * first. The guest configuration is IPv4-only, so keeping
+               * slirp's unused IPv6 stack enabled can only add work and
+               * misleading IPv6 DNS/address results.
                */
-              " -netdev user,id=net0"
+              " -netdev user,id=net0,ipv6=off"
               " -device virtio-net-device,netdev=net0"
               " -device virtio-gpu-device,xres=%d,yres=%d"
               " -device virtio-keyboard-device"

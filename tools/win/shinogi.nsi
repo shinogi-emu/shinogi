@@ -20,8 +20,11 @@
 !ifndef VERSION
   !error "VERSION not defined - build through tools/make-windows-package.sh"
 !endif
+!ifndef CPU
+  !error "CPU not defined - build through tools/make-windows-package.sh"
+!endif
 
-Name "shinogi ${VERSION}"
+Name "shinogi ${VERSION} (${CPU})"
 OutFile "${OUTFILE}"
 Unicode True
 InstallDir "$PROGRAMFILES64\shinogi"
@@ -87,7 +90,37 @@ Section "shinogi" SecMain
   File "${BUNDLE}\emutos-virt.elf"
   File "${BUNDLE}\sdl-grab-probe.exe"
   File "${BUNDLE}\SDL2.dll"
-  File "README.txt"
+  File "${BUNDLE}\README.txt"
+  File "${BUNDLE}\BUILD.txt"
+
+  ; Both CPU editions carry the updated virtio-net driver. Put it where
+  ; the existing FreeMiNT tree loads it so neither edition is left using
+  ; the older one-second receive poll.
+  !ifdef INCLUDE_NET_DRIVER
+    SetOutPath "$PROFILE\shinogi-drive-c\MINT\1-19-CUR"
+    File /oname=VIRTIONE.XIF "${BUNDLE}\VIRTIONE.XIF"
+    SetOutPath "$INSTDIR"
+  !endif
+
+  ; Keep the FreeMiNT kernel paired with the CPU selected by this edition.
+  ; The 060 compiler can emit instructions removed from the 040, while a 040
+  ; build needlessly exercises the 060 compatibility package.
+  SetOutPath "$PROFILE\shinogi-drive-c\AUTO"
+  File /oname=MINT.PRG "${BUNDLE}\MINT.PRG"
+  SetOutPath "$INSTDIR"
+
+  ; A stock 68060 traps instructions that were implemented by earlier
+  ; processors. Install the standard software package before fVDI and
+  ; FreeMiNT so existing 68040 applications retain their semantics.
+  !ifdef INCLUDE_060SP
+    SetOutPath "$PROFILE\shinogi-drive-c\AUTO"
+    File /oname=060SP.PRG "${BUNDLE}\060SP.PRG"
+    SetOutPath "$INSTDIR"
+  !else
+    ; This is a package-managed file. Remove it when switching an existing
+    ; drive C back from the 060 edition to the 040 edition.
+    Delete "$PROFILE\shinogi-drive-c\AUTO\060SP.PRG"
+  !endif
 
   SetOutPath "$INSTDIR\qemu"
   File /r "${BUNDLE}\qemu\*.*"
@@ -146,6 +179,7 @@ Section "Uninstall"
   Delete "$INSTDIR\sdl-grab-probe.exe"
   Delete "$INSTDIR\SDL2.dll"
   Delete "$INSTDIR\README.txt"
+  Delete "$INSTDIR\BUILD.txt"
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\qemu"
   RMDir "$INSTDIR"

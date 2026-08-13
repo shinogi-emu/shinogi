@@ -12,6 +12,7 @@
 #   ./run-stack.sh                  assemble and boot, tag "stack"
 #   TAG=fonts BOOT_WAIT=200 ./run-stack.sh
 #   KEEP_TREE=1 ./run-stack.sh      reuse the tree from the last run
+#   PROFILE=1 ./run-stack.sh        rank executed opcodes and hot TCG blocks
 #
 # Output lands in $OUT (default ~/shinogi-build/stackout).  Read the .ppm
 # with a CROP, never a resize: small bitmap text aliases into garbage when
@@ -30,6 +31,24 @@ ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 HOSTFSD="${SHINOGI_HOSTFSD:-$HOME/git/shinogi/tools/hostfsd/shinogi-hostfsd}"
 SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
 QEMU_EXTRA="${SHINOGI_QEMU_EXTRA:-}"
+
+if [ -n "${PROFILE:-}" ]; then
+    QEMU_BUILD=$(dirname "$QEMU")
+    HOWVEC="$QEMU_BUILD/contrib/plugins/libhowvec.so"
+    HOTBLOCKS="$QEMU_BUILD/contrib/plugins/libhotblocks.so"
+    PROFILE_LOG="$OUT/$TAG-cpu-profile.log"
+
+    for f in "$HOWVEC" "$HOTBLOCKS"; do
+        [ -f "$f" ] || {
+            echo "missing QEMU profiling plugin: $f" >&2
+            exit 2
+        }
+    done
+    QEMU_EXTRA="$QEMU_EXTRA -plugin $HOWVEC,inline=true"
+    QEMU_EXTRA="$QEMU_EXTRA -plugin $HOTBLOCKS,inline=true,limit=100"
+    QEMU_EXTRA="$QEMU_EXTRA -d plugin -D $PROFILE_LOG"
+    echo "cpu profile: opcode histogram + hot blocks -> $PROFILE_LOG"
+fi
 
 for f in "$QEMU" "$ELF" "$HOSTFSD"; do
     [ -x "$f" ] || [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }

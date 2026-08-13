@@ -11,7 +11,8 @@
 #   SHINOGI_CPU=m68060 SHINOGI_ELF=<68060-emutos.elf> \
 #     SHINOGI_060SP=<060sp.prg> tools/make-windows-package.sh [output-dir]
 #
-# Output: <output-dir>/shinogi-<version>[-m68060]-win64-setup.exe and a
+# Output: <output-dir>/Shinogi-040-<version>-win64-setup.exe or
+# Shinogi-060-<version>-win64-setup.exe and a
 # .sha256 beside it. Default output-dir is the LAN share.
 #
 # The bundle carries two programs of our own: shinogi.exe, the launcher,
@@ -41,11 +42,10 @@ case "$CPU" in
         ;;
 esac
 
-if [ "$CPU" = m68040 ]; then
-    PACKAGE_VERSION="$VERSION"
-else
-    PACKAGE_VERSION="$VERSION-$CPU"
-fi
+case "$CPU" in
+    m68040) EDITION=Shinogi-040 ;;
+    m68060) EDITION=Shinogi-060 ;;
+esac
 
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64-patched}"
@@ -58,7 +58,7 @@ else
     DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat060/mint060h.prg"
 fi
 KERNEL="${SHINOGI_MINT_KERNEL:-$DEFAULT_KERNEL}"
-BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$PACKAGE_VERSION"
+BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$EDITION-$VERSION"
 
 [ -n "$VERSION" ] || { echo "VERSION is empty" >&2; exit 2; }
 if [ "$CPU" = m68060 ] && [ -z "${SHINOGI_ELF:-}" ]; then
@@ -90,7 +90,7 @@ if [ "$CPU" = m68060 ] && [ ! -f "$SP060" ]; then
     exit 2
 fi
 
-echo "shinogi $VERSION ($CPU) -> $OUTDIR"
+echo "$EDITION $VERSION ($CPU) -> $OUTDIR"
 
 # Assemble the bundle from OUR QEMU, cross-built with the patches in
 # patches/ -- notably the control-register fix, without which any guest
@@ -126,11 +126,12 @@ if [ "$CPU" = m68060 ]; then
 fi
 
 {
-    printf 'Shinogi %s\r\n' "$VERSION"
+    printf '%s %s\r\n' "$EDITION" "$VERSION"
+    printf 'Edition: %s\r\n' "$EDITION"
     printf 'CPU: %s\r\n' "$CPU"
     printf 'QEMU: %s\r\n' "$(cat "$QEMU_WIN/VERSION")"
     if [ "$CPU" != m68040 ]; then
-        printf 'Edition: private development build; do not redistribute\r\n'
+        printf 'Distribution: private development build; do not redistribute\r\n'
     fi
     if [ "$CPU" = m68060 ]; then
         printf 'Guest image: 68060-native EmuTOS\r\n'
@@ -153,13 +154,14 @@ fi
 x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
     "$BUNDLE/shinogi-res.o" \
     -DSHINOGI_VERSION="\"$VERSION\"" \
+    -DSHINOGI_EDITION="\"$EDITION\"" \
     -DSHINOGI_CPU="\"$CPU\"" \
     -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$BUNDLE/shinogi-res.o"
 
 # The host end of drive C. Console subsystem, but the launcher starts it
 # with CREATE_NO_WINDOW so nothing flashes up; -lws2_32 is for the
-# AF_UNIX socket it listens on, which Windows serves through Winsock.
+# loopback TCP listener it uses on Windows.
 x86_64-w64-mingw32-gcc "$ROOT/tools/hostfsd/shinogi-hostfsd.c" \
     -o "$BUNDLE/shinogi-hostfsd.exe" -mconsole -O2 -Wall -Wextra -lws2_32
 
@@ -168,7 +170,7 @@ x86_64-w64-mingw32-gcc "$ROOT/tools/sdl-grab-probe.c" \
     -o "$BUNDLE/sdl-grab-probe.exe" \
     -lmingw32 -lSDL2main -lSDL2 -mconsole -O2 -Wall
 
-OUT="$OUTDIR/shinogi-$PACKAGE_VERSION-win64-setup.exe"
+OUT="$OUTDIR/$EDITION-$VERSION-win64-setup.exe"
 
 # Refuse to overwrite a released installer.
 #
@@ -189,6 +191,7 @@ mkdir -p "$OUTDIR"
 # here adds either one argument or none.
 # shellcheck disable=SC2086
 makensis -DBUNDLE="$BUNDLE" -DOUTFILE="$OUT" -DVERSION="$VERSION" \
+         -DEDITION="$EDITION" \
          -DCPU="$CPU" \
          -DINCLUDE_NET_DRIVER \
          $SP060_DEFINE \

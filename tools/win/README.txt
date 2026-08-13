@@ -4,6 +4,10 @@ shinogi - Atari GEM on QEMU (Windows)
 A complete, self-contained package: the guest, the emulator and the
 launcher all ship together. Nothing else needs installing.
 
+The two CPU editions are named Shinogi-040 and Shinogi-060. Installing one
+switches the shared program tree and drive C to that edition; it does not
+remove personal files or settings in drive C.
+
     shinogi.exe          launch it
     shinogi-hostfsd.exe  serves drive C, started for you
     emutos-virt.elf      the guest (EmuTOS), 1280x720 truecolor

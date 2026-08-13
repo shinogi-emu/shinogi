@@ -93,6 +93,9 @@
 #ifndef SHINOGI_VERSION
 #error "SHINOGI_VERSION not defined - build through tools/make-windows-package.sh"
 #endif
+#ifndef SHINOGI_EDITION
+#error "SHINOGI_EDITION not defined - build through tools/make-windows-package.sh"
+#endif
 #ifndef SHINOGI_CPU
 #error "SHINOGI_CPU not defined - build through tools/make-windows-package.sh"
 #endif
@@ -313,9 +316,11 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
                       int res_w, int res_h, DWORD *elapsed,
                       char *cmdout, size_t cmdoutlen)
 {
-    char cmd[4096];
+    char cmd[4096], logpath[MAX_PATH];
+    SECURITY_ATTRIBUTES sa;
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
+    HANDLE hlog;
     DWORD start, code = 0;
 
     /*
@@ -327,7 +332,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
      */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
-              " -name \"Shinogi (" SHINOGI_VERSION ", " SHINOGI_CPU ")\""
+              " -name \"" SHINOGI_EDITION " " SHINOGI_VERSION "\""
               /*
                * Sound. The DMA sound device is only created when the
                * machine is given an audiodev, and it answers the guest's
@@ -369,13 +374,35 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
 
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
+    _snprintf(logpath, sizeof(logpath), "%s\\shinogi-qemu.log", logs);
+    logpath[sizeof(logpath) - 1] = '\0';
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    hlog = CreateFileA(logpath, GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hlog != INVALID_HANDLE_VALUE) {
+        SetFilePointer(hlog, 0, NULL, FILE_END);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = NULL;
+        si.hStdOutput = hlog;
+        si.hStdError = hlog;
+    }
     ZeroMemory(&pi, sizeof(pi));
 
     start = GetTickCount();
-    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
+    if (!CreateProcessA(NULL, cmd, NULL, NULL,
+                        hlog != INVALID_HANDLE_VALUE,
                         0, NULL, dir, &si, &pi)) {
+        if (hlog != INVALID_HANDLE_VALUE) {
+            CloseHandle(hlog);
+        }
         *elapsed = 0;
         return (DWORD)-1;
+    }
+    if (hlog != INVALID_HANDLE_VALUE) {
+        CloseHandle(hlog);
     }
 
     WaitForSingleObject(pi.hProcess, INFINITE);
@@ -558,7 +585,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
          */
         _snprintf(hostfs, sizeof(hostfs),
                   " -chardev \"socket,id=hostfs,host=127.0.0.1,port=%s,"
-                  "server=off,wait=off\""
+                  "server=off\""
                   " -device virtio-serial-device"
                   " -device virtserialport,chardev=hostfs,"
                   "name=shinogi.hostfs",

@@ -23,8 +23,11 @@
 !ifndef CPU
   !error "CPU not defined - build through tools/make-windows-package.sh"
 !endif
+!ifndef EDITION
+  !error "EDITION not defined - build through tools/make-windows-package.sh"
+!endif
 
-Name "shinogi ${VERSION} (${CPU})"
+Name "${EDITION} ${VERSION}"
 OutFile "${OUTFILE}"
 Unicode True
 InstallDir "$PROGRAMFILES64\shinogi"
@@ -138,10 +141,19 @@ install_files:
   SetOutPath "$INSTDIR"
 
   CreateDirectory "$SMPROGRAMS\shinogi"
-  CreateShortcut "$SMPROGRAMS\shinogi\shinogi.lnk" "$INSTDIR\shinogi.exe"
+  ; One shared program tree means installing the other CPU edition switches
+  ; it in place. Remove the previous edition's launch links before creating
+  ; the current clearly named one.
+  Delete "$SMPROGRAMS\shinogi\Shinogi-040.lnk"
+  Delete "$SMPROGRAMS\shinogi\Shinogi-060.lnk"
+  Delete "$DESKTOP\Shinogi-040.lnk"
+  Delete "$DESKTOP\Shinogi-060.lnk"
+  Delete "$SMPROGRAMS\shinogi\shinogi.lnk"
+  Delete "$DESKTOP\shinogi.lnk"
+  CreateShortcut "$SMPROGRAMS\shinogi\${EDITION}.lnk" "$INSTDIR\shinogi.exe"
   CreateShortcut "$SMPROGRAMS\shinogi\Read me.lnk" "$INSTDIR\README.txt"
   CreateShortcut "$SMPROGRAMS\shinogi\Uninstall.lnk" "$INSTDIR\uninstall.exe"
-  CreateShortcut "$DESKTOP\shinogi.lnk" "$INSTDIR\shinogi.exe"
+  CreateShortcut "$DESKTOP\${EDITION}.lnk" "$INSTDIR\shinogi.exe"
 
   CreateShortcut "$SMPROGRAMS\shinogi\shinogi drive C.lnk" \
                  "$WINDIR\explorer.exe" "%USERPROFILE%\shinogi-drive-c"
@@ -152,7 +164,7 @@ install_files:
   WriteRegStr HKLM "Software\shinogi" "Version" "${VERSION}"
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
-    "DisplayName" "shinogi ${VERSION} - Atari GEM on QEMU"
+    "DisplayName" "${EDITION} ${VERSION} - Atari GEM on QEMU"
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
     "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
@@ -174,8 +186,12 @@ SectionEnd
 
 Section "Uninstall"
   Delete "$DESKTOP\shinogi.lnk"
+  Delete "$DESKTOP\Shinogi-040.lnk"
+  Delete "$DESKTOP\Shinogi-060.lnk"
   Delete "$DESKTOP\shinogi drive C.lnk"
   Delete "$SMPROGRAMS\shinogi\shinogi.lnk"
+  Delete "$SMPROGRAMS\shinogi\Shinogi-040.lnk"
+  Delete "$SMPROGRAMS\shinogi\Shinogi-060.lnk"
   Delete "$SMPROGRAMS\shinogi\shinogi drive C.lnk"
   ; Left behind by installs up to b7, which offered a GTK display entry.
   Delete "$SMPROGRAMS\shinogi\shinogi (GTK display).lnk"

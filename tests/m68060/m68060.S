@@ -110,6 +110,54 @@ _start:
         cmpil   #1,unimp_ea_count
         bne     fail19
 
+        /* Native arithmetic updates FPSR condition codes from its result. */
+        .word   0xf23c,0x4000          /* fmove.l #1,FP0 */
+        .long   1
+        .word   0xf200,0x0022          /* fadd FP0,FP0 */
+        .word   0xf200,0xa800          /* fmove.l FPSR,D0 */
+        andil   #0x0f000000,%d0
+        bne     fail21
+
+        .word   0xf23c,0x4000          /* fmove.l #-1,FP0 */
+        .long   -1
+        .word   0xf200,0x0023          /* fmul FP0,FP0 */
+        .word   0xf200,0x0028          /* fsub FP0,FP0 */
+        .word   0xf200,0xa800          /* fmove.l FPSR,D0 */
+        andil   #0x0f000000,%d0
+        cmpil   #0x04000000,%d0        /* Z */
+        bne     fail22
+
+        .word   0xf23c,0x4000          /* fmove.l #-1,FP0 */
+        .long   -1
+        .word   0xf200,0x0004          /* fsqrt FP0,FP0 */
+        .word   0xf200,0xa800          /* fmove.l FPSR,D0 */
+        andil   #0x0f000000,%d0
+        cmpil   #0x01000000,%d0        /* A (NaN) */
+        bne     fail23
+
+        .word   0xf23c,0x4000          /* fmove.l #-2,FP0 */
+        .long   -2
+        .word   0xf200,0x0018          /* fabs FP0,FP0 */
+        .word   0xf200,0x001a          /* fneg FP0,FP0 */
+        .word   0xf200,0xa800          /* fmove.l FPSR,D0 */
+        andil   #0x0f000000,%d0
+        cmpil   #0x08000000,%d0        /* N */
+        bne     fail24
+
+        .word   0xf23c,0x4000          /* fmove.l #-2,FP0 */
+        .long   -2
+        .word   0xf201,0x6400          /* fmove.s FP0,D1 */
+        .word   0xf200,0xa800          /* fmove.l FPSR,D0 */
+        andil   #0x0f000000,%d0
+        cmpil   #0x08000000,%d0        /* N */
+        bne     fail25
+
+        movel   #0x3f800000,%d1
+        .word   0xf201,0x4400          /* fmove.s D1,FP0 */
+        .word   0xf200,0xa800          /* fmove.l FPSR,D0 */
+        andil   #0x0f000000,%d0
+        bne     fail26
+
         /* MMUSR does not exist on the 68060. */
         movel   #4,skip_bytes
         .word   0x4e7a,0x0805          /* movec MMUSR,D0 */
@@ -219,6 +267,12 @@ fail17: lea f17_msg,%a6; bra fail
 fail18: lea f18_msg,%a6; bra fail
 fail19: lea f19_msg,%a6; bra fail
 fail20: lea f20_msg,%a6; bra fail
+fail21: lea f21_msg,%a6; bra fail
+fail22: lea f22_msg,%a6; bra fail
+fail23: lea f23_msg,%a6; bra fail
+fail24: lea f24_msg,%a6; bra fail
+fail25: lea f25_msg,%a6; bra fail
+fail26: lea f26_msg,%a6; bra fail
 
 fail:
         moveal  %a6,%a0
@@ -278,3 +332,9 @@ f17_msg: .asciz "FAIL 17 LSL.B FLAGS\n"
 f18_msg: .asciz "FAIL 18 FSGL NATIVE\n"
 f19_msg: .asciz "FAIL 19 VECTOR60 PC\n"
 f20_msg: .asciz "FAIL 20 BUSCR SHADOW\n"
+f21_msg: .asciz "FAIL 21 FADD FPSR\n"
+f22_msg: .asciz "FAIL 22 FMUL/FSUB FPSR\n"
+f23_msg: .asciz "FAIL 23 FSQRT FPSR\n"
+f24_msg: .asciz "FAIL 24 FABS/FNEG FPSR\n"
+f25_msg: .asciz "FAIL 25 FMOVE OUT FPSR\n"
+f26_msg: .asciz "FAIL 26 FMOVE IN FPSR\n"

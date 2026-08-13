@@ -52,11 +52,7 @@ QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64-patched}"
 SDL2="${SDL2_MINGW:-$HOME/mingw-sdl2/x86_64-w64-mingw32}"
 NET_DRIVER="${SHINOGI_NET_DRIVER:-$HOME/git/freemint/sys/sockets/xif/virtio_net/.compile_02060/virtio_net.xif}"
 SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
-if [ "$CPU" = m68040 ]; then
-    DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat040/mint040h.prg"
-else
-    DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat060/mint060h.prg"
-fi
+DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat02060/mint0206h.prg"
 KERNEL="${SHINOGI_MINT_KERNEL:-$DEFAULT_KERNEL}"
 BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$EDITION-$VERSION"
 
@@ -80,8 +76,8 @@ command -v makensis >/dev/null || { echo "makensis missing" >&2; exit 2; }
     exit 2
 }
 [ -f "$KERNEL" ] || {
-    echo "no $CPU FreeMiNT kernel at $KERNEL" >&2
-    echo "build Shinogi's hat${CPU#m680} kernel, or set SHINOGI_MINT_KERNEL=<file>" >&2
+    echo "no shared 020-060 FreeMiNT kernel at $KERNEL" >&2
+    echo "build Shinogi's hat02060 kernel, or set SHINOGI_MINT_KERNEL=<file>" >&2
     exit 2
 }
 if [ "$CPU" = m68060 ] && [ ! -f "$SP060" ]; then
@@ -134,10 +130,10 @@ fi
         printf 'Distribution: private development build; do not redistribute\r\n'
     fi
     if [ "$CPU" = m68060 ]; then
-        printf 'Guest image: 68060-native EmuTOS\r\n'
+        printf 'Guest image: 020-060 EmuTOS on m68060\r\n'
         printf 'Compatibility: FreeMiNT/Motorola 68060 software package\r\n'
     fi
-    printf 'FreeMiNT kernel: %s-native OLDTOSFS build\r\n' "$CPU"
+    printf 'FreeMiNT kernel: shared 020-060 OLDTOSFS build\r\n'
     printf 'Network driver: bundled 20 ms receive-poll build\r\n'
 } > "$BUNDLE/BUILD.txt"
 

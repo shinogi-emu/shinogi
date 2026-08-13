@@ -60,14 +60,12 @@
  * connection and never touches a descriptor or a SOCKET, so porting is
  * this section and nothing else.
  *
- * The transport is a Unix-domain socket on EVERY platform, Windows
- * included. Windows has had AF_UNIX since Windows 10 1803 and QEMU's
- * `socket` chardev uses it there like anywhere else; the QEMU builds
- * this project ships require a newer Windows than that, so there is no
- * host it can run on where the socket is unavailable. The alternative,
- * a named pipe through QEMU's `pipe` chardev, was rejected because that
- * chardev can only ever be the SERVER, which forces the startup race
- * described below rather than removing it.
+ * POSIX builds use a Unix-domain socket. Windows supports that API, but
+ * QEMU's Windows socket chardev does not reliably interoperate with every
+ * Windows AF_UNIX provider, so the Windows launcher uses a TCP listener
+ * bound strictly to 127.0.0.1. A named pipe through QEMU's `pipe` chardev
+ * was rejected because that chardev can only ever be the SERVER, which
+ * forces the startup race described below rather than removing it.
  *
  * The helper can be either end of the connection because the launcher
  * may want either: QEMU with `server=on` listens and the helper connects
@@ -129,6 +127,39 @@ static int listener_open(listener_t *l, const char *path)
      * previous run's leftover has to go first. */
     DeleteFileA(path);
 
+    if (bind(l->fd, (struct sockaddr *)&sa, sizeof(sa)) == SOCKET_ERROR
+     || listen(l->fd, 1) == SOCKET_ERROR)
+    {
+        closesocket(l->fd);
+        l->fd = INVALID_SOCKET;
+        return -1;
+    }
+    return 0;
+}
+
+/* QEMU's Windows socket chardev is reliable with TCP, whereas AF_UNIX
+ * support varies with the QEMU build and the Windows socket provider. The
+ * Windows launcher uses this loopback-only listener; it never exposes drive
+ * C beyond the local machine. */
+static int listener_open_tcp(listener_t *l, const char *port_text)
+{
+    struct sockaddr_in sa;
+    char *end;
+    unsigned long port;
+
+    errno = 0;
+    port = strtoul(port_text, &end, 10);
+    if (errno || !*port_text || *end || port == 0 || port > 65535)
+        return -1;
+
+    l->fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (l->fd == INVALID_SOCKET)
+        return -1;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = htons((u_short)port);
     if (bind(l->fd, (struct sockaddr *)&sa, sizeof(sa)) == SOCKET_ERROR
      || listen(l->fd, 1) == SOCKET_ERROR)
     {
@@ -1471,11 +1502,17 @@ static void usage(void)
 {
     fprintf(stderr,
         "usage: shinogi-hostfsd --root DIR (--listen PATH | --connect PATH)\n"
+#ifdef _WIN32
+        "                       [--listen-tcp PORT]\n"
+#endif
         "                       [--once] [--verbose]\n"
         "\n"
         "  --root DIR      the folder served as the guest's drive C\n"
-        "  --listen PATH   listen on PATH (a unix socket, on Windows\n"
-        "                  too) and serve each client in turn\n"
+        "  --listen PATH   listen on a Unix socket and serve each client\n"
+        "                  in turn\n"
+#ifdef _WIN32
+        "  --listen-tcp P  listen on 127.0.0.1:P for QEMU on Windows\n"
+#endif
         "  --connect PATH  connect to PATH instead -- QEMU's chardev with\n"
         "                  server=on is the listener in that arrangement\n"
         "  --once          exit after the first client disconnects\n"
@@ -1674,6 +1711,9 @@ int main(int argc, char **argv)
     const char *sockpath = NULL;
     const char *readyfile = NULL;
     int do_listen = 0, once = 0;
+#ifdef _WIN32
+    int tcp_listen = 0;
+#endif
     struct stat st;
     listener_t l;
     int i;
@@ -1692,6 +1732,14 @@ int main(int argc, char **argv)
             sockpath = argv[++i];
             do_listen = 0;
         }
+#ifdef _WIN32
+        else if (!strcmp(argv[i], "--listen-tcp") && i + 1 < argc)
+        {
+            sockpath = argv[++i];
+            do_listen = 1;
+            tcp_listen = 1;
+        }
+#endif
         else if (!strcmp(argv[i], "--ready-file") && i + 1 < argc)
             readyfile = argv[++i];
         else if (!strcmp(argv[i], "--once"))
@@ -1765,7 +1813,12 @@ int main(int argc, char **argv)
         return 0;
     }
 
+#ifdef _WIN32
+    if ((tcp_listen ? listener_open_tcp(&l, sockpath)
+                    : listener_open(&l, sockpath)) < 0)
+#else
     if (listener_open(&l, sockpath) < 0)
+#endif
     {
         fprintf(stderr, "shinogi-hostfsd: cannot listen on %s: %s\n",
                 sockpath, strerror(errno));

@@ -107,13 +107,10 @@
  * quit, which is the signal to retry without the drive. */
 #define EARLY_EXIT_MS     10000
 
-/*
- * A Unix-domain socket path is limited to 107 bytes by sockaddr_un, on
- * Windows exactly as on everything else, and that is far shorter than a
- * Windows path is allowed to be. A user whose profile directory is long
- * enough to break it gets no drive C rather than a puzzling failure.
- */
-#define SOCKPATH_MAX 100
+/* Dynamic/private Windows ports live in the IANA private range. The launcher
+ * derives one from its PID; this avoids a filesystem socket path entirely. */
+#define HOSTFS_PORT_BASE 49152
+#define HOSTFS_PORT_COUNT 16384
 
 static void note(const char *text)
 {
@@ -177,7 +174,7 @@ static void log_dir(char *out, size_t n)
  * the write handle to be inheritable and named in STARTUPINFO.
  */
 static HANDLE start_helper(const char *dir, const char *drivec,
-                           const char *sock, const char *ready,
+                           const char *port, const char *ready,
                            const char *logs, char *failure,
                            size_t failure_len)
 {
@@ -192,7 +189,6 @@ static HANDLE start_helper(const char *dir, const char *drivec,
 
     /* A leftover ready file from a previous run would be believed. */
     DeleteFileA(ready);
-    DeleteFileA(sock);
 
     _snprintf(logpath, sizeof(logpath), "%s\\shinogi-hostfsd.log", logs);
     logpath[sizeof(logpath) - 1] = '\0';
@@ -217,9 +213,9 @@ static HANDLE start_helper(const char *dir, const char *drivec,
      */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\shinogi-hostfsd.exe\""
-              " --root \"%s\" --listen \"%s\" --ready-file \"%s\""
+              " --root \"%s\" --listen-tcp %s --ready-file \"%s\""
               " --once",
-              dir, drivec, sock, ready);
+              dir, drivec, port, ready);
     cmd[sizeof(cmd) - 1] = '\0';
 
     ZeroMemory(&si, sizeof(si));
@@ -291,7 +287,7 @@ static HANDLE start_helper(const char *dir, const char *drivec,
     return NULL;
 }
 
-static void stop_helper(HANDLE helper, const char *sock, const char *ready)
+static void stop_helper(HANDLE helper, const char *ready)
 {
     DWORD code = 0;
 
@@ -303,7 +299,6 @@ static void stop_helper(HANDLE helper, const char *sock, const char *ready)
     }
     CloseHandle(helper);
     DeleteFileA(ready);
-    DeleteFileA(sock);
 }
 
 /*
@@ -395,7 +390,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 {
     char exe[MAX_PATH], dir[MAX_PATH], logs[MAX_PATH];
-    char drivec[MAX_PATH], sock[MAX_PATH], ready[MAX_PATH];
+    char drivec[MAX_PATH], ready[MAX_PATH], port[16];
     char kernel[MAX_PATH];
     char helper_failure[768];
     int res_w, res_h, res_given;
@@ -532,47 +527,43 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         }
     }
 
-    _snprintf(sock, sizeof(sock), "%s\\hostfs.sock", logs);
-    sock[sizeof(sock) - 1] = '\0';
     _snprintf(ready, sizeof(ready), "%s\\hostfs.ready", logs);
     ready[sizeof(ready) - 1] = '\0';
+    _snprintf(port, sizeof(port), "%u",
+              HOSTFS_PORT_BASE +
+              (unsigned)(GetCurrentProcessId() % HOSTFS_PORT_COUNT));
+    port[sizeof(port) - 1] = '\0';
 
     hostfs[0] = '\0';
-    if (lstrlenA(sock) >= SOCKPATH_MAX) {
-        note("Drive C is not available: the path to this account's local\n"
-             "application data is too long for a socket name.\n\n"
-             "Everything else works; only the host folder is missing.");
-    } else {
-        helper = start_helper(dir, drivec, sock, ready, logs,
-                              helper_failure, sizeof(helper_failure));
-        if (!helper) {
-            char msg[1400];
+    helper = start_helper(dir, drivec, port, ready, logs,
+                          helper_failure, sizeof(helper_failure));
+    if (!helper) {
+        char msg[1400];
 
-            _snprintf(msg, sizeof(msg),
-                      "Drive C is not available: the helper that serves the\n"
-                      "host folder did not start.\n\n%s\n"
-                      "See shinogi-hostfsd.log in:\n"
-                      "%%LOCALAPPDATA%%\\shinogi\n\n"
-                      "Everything else works; only the host folder is missing.",
-                      helper_failure[0] ? helper_failure :
-                      "No diagnostic was returned by the helper.");
-            msg[sizeof(msg) - 1] = '\0';
-            note(msg);
-        } else {
-            /*
-             * server=off: QEMU is the CLIENT and the helper above is
-             * already listening, so the connection is made now rather
-             * than racing the guest's first probe. See the top of this
-             * file for what happens when it does race.
-             */
-            _snprintf(hostfs, sizeof(hostfs),
-                      " -chardev \"socket,id=hostfs,path=%s,server=off\""
-                      " -device virtio-serial-device"
-                      " -device virtserialport,chardev=hostfs,"
-                      "name=shinogi.hostfs",
-                      sock);
-            hostfs[sizeof(hostfs) - 1] = '\0';
-        }
+        _snprintf(msg, sizeof(msg),
+                  "Drive C is not available: the helper that serves the\n"
+                  "host folder did not start.\n\n%s\n"
+                  "See shinogi-hostfsd.log in:\n"
+                  "%%LOCALAPPDATA%%\\shinogi\n\n"
+                  "Everything else works; only the host folder is missing.",
+                  helper_failure[0] ? helper_failure :
+                  "No diagnostic was returned by the helper.");
+        msg[sizeof(msg) - 1] = '\0';
+        note(msg);
+    } else {
+        /*
+         * server=off: QEMU is the CLIENT and the helper above is already
+         * listening on loopback, so the connection is made while QEMU parses
+         * its command line, before the guest can probe the port.
+         */
+        _snprintf(hostfs, sizeof(hostfs),
+                  " -chardev \"socket,id=hostfs,host=127.0.0.1,port=%s,"
+                  "server=off,wait=off\""
+                  " -device virtio-serial-device"
+                  " -device virtserialport,chardev=hostfs,"
+                  "name=shinogi.hostfs",
+                  port);
+        hostfs[sizeof(hostfs) - 1] = '\0';
     }
 
     code = run_qemu(dir, logs, display, hostfs, kernel, res_w, res_h, &elapsed,
@@ -581,11 +572,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     /*
      * A QEMU that died almost at once, on a run that asked for the
      * drive, most likely could not make the connection at all -- a
-     * Windows too old for AF_UNIX would fail exactly there. Try again
-     * without the drive rather than leaving the user with nothing.
+     * socket connection. Try again without the drive rather than leaving
+     * the user with nothing.
      */
     if (code != 0 && hostfs[0] && elapsed < EARLY_EXIT_MS) {
-        stop_helper(helper, sock, ready);
+        stop_helper(helper, ready);
         helper = NULL;
         hostfs[0] = '\0';
         note("Drive C could not be attached, so it has been left out.\n\n"
@@ -596,7 +587,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
                         lastcmd, sizeof(lastcmd));
     }
 
-    stop_helper(helper, sock, ready);
+    stop_helper(helper, ready);
 
     if (code == (DWORD)-1) {
         char msg[4608];

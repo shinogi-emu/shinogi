@@ -27,6 +27,9 @@ TAG="${TAG:-stack}"
 BOOT="${BOOT_WAIT:-160}"
 QEMU="${SHINOGI_QEMU:-$HOME/git/atari-docs/qemu-m68k/build-vvfat/qemu-system-m68k}"
 CPU="${SHINOGI_CPU:-m68040}"
+# Overridable so a harness can point the same tree at another machine
+# type.  The shipping default stays virt.
+MACHINE="${SHINOGI_MACHINE:-virt}"
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 HOSTFSD="${SHINOGI_HOSTFSD:-$HOME/git/shinogi/tools/hostfsd/shinogi-hostfsd}"
 SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
@@ -138,9 +141,9 @@ fi
 # QEMU_EXTRA is a diagnostic-only list of QEMU arguments supplied by the
 # caller. Intentional splitting lets it contain more than one option.
 # shellcheck disable=SC2086
-"$QEMU" -M virt -cpu "$CPU" -m 128 \
+"$QEMU" -M "$MACHINE" -cpu "$CPU" -m 128 \
     -kernel "$ELF" \
-    -device virtio-gpu-device \
+    -device virtio-gpu-device,id=vgpu \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
     $NETARGS \
@@ -177,7 +180,13 @@ import json, socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
 f = s.makefile('rw'); f.readline()
 f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n"); f.flush(); f.readline()
-f.write(json.dumps({"execute": "screendump", "arguments": {"filename": sys.argv[2]}}) + "\n"); f.flush()
+# Name the console explicitly.  A machine carrying a second display device
+# registers it as console 0, and it stays black until a guest driver programs
+# it, so a screendump without a device silently captures that instead of the
+# desktop.
+f.write(json.dumps({"execute": "screendump",
+                    "arguments": {"filename": sys.argv[2],
+                                  "device": "vgpu"}}) + "\n"); f.flush()
 while True:
     l = json.loads(f.readline())
     if "return" in l or "error" in l:

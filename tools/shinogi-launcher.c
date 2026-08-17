@@ -187,17 +187,28 @@ int main(int argc, char *argv[])
 
     /*
      * The guest image, which the user may replace without reinstalling.
-     * Drop a newer EmuTOS into the drive C folder as EMUTOS.ELF and it is
+     * Drop a newer EmuTOS into the drive C folder as EMUTOS.IMG and it is
      * used instead of the bundled one; remove it and the bundled one comes
      * back. The guest cannot load this itself -- drive C only exists once
      * EmuTOS is running -- but nothing stops US from reading it, and the
      * drive C folder is the one directory the user already knows.
      *
+     * EMUTOS.IMG, not EMUTOS.ELF, because .IMG is the name every EmuTOS
+     * release already uses. The extension is cosmetic: this target's
+     * emutos.img keeps its ELF wrapper and emutos-virt.elf is a copy of
+     * it, so the two names have always held identical bytes.
+     *
+     * EMUTOS.ELF is deliberately no longer honoured. The install tree used
+     * to ship one, so any drive C snapshot carried an override that
+     * silently outranked a newer installer -- fatal on 68060, where an
+     * EmuTOS built before the 64-bit DIVU workaround panics with exception
+     * 61 during boot.
+     *
      * Only a REGULAR file counts: a directory of that name would be handed
      * to -kernel, and QEMU would fail to start for a reason the user has
      * no way to guess.
      */
-    snprintf(elf, sizeof(elf), "%s/EMUTOS.ELF", hostfs);
+    snprintf(elf, sizeof(elf), "%s/EMUTOS.IMG", hostfs);
     if (stat(elf, &st) != 0 || !S_ISREG(st.st_mode)) {
         snprintf(elf, sizeof(elf), "%s/emutos-virt.elf", dir);
         if (stat(elf, &st) != 0) {

@@ -5,7 +5,7 @@
 # Produces the directory layout that EmuTOS/FreeMiNT expect on the boot
 # drive (drive C), ready to be copied into the shinogi drive C folder:
 #
-#   EMUTOS.ELF                  the firmware; the launcher passes it to
+#   EMUTOS.IMG                  the firmware; the launcher passes it to
 #                               QEMU's -kernel, so a user can swap it
 #   AUTO/FVDI.PRG               fVDI, ahead of the kernel so it is resident
 #                               before anything draws through the VDI
@@ -208,17 +208,21 @@ PYX
 # The guest never reads it. It is visible in the C: root and is inert
 # there, which is why the name only has to satisfy our own 8.3 rule --
 # emutos-virt.elf does not (12-character stem), so it lands as
-# EMUTOS.ELF, which does.
+# EMUTOS.IMG -- .IMG rather than .ELF because that is the name every
+# EmuTOS release already carries and the one a user arriving with a
+# downloaded build will recognise. The extension is cosmetic: this
+# target's emutos.img keeps its ELF wrapper, and emutos-virt.elf is a
+# copy of it, so both names have always held identical bytes.
 #
 # Consequence worth knowing: EmuTOS now sits in space the user can edit,
-# so a deleted or damaged EMUTOS.ELF means nothing boots at all, and the
+# so a deleted or damaged EMUTOS.IMG means nothing boots at all, and the
 # failure appears at emulator start rather than anywhere in the guest.
 # The launcher should say so plainly, and the restore path should treat
 # this file as a first-class entry.
 EMUTOS_ELF="${EMUTOS_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 if [ -f "$EMUTOS_ELF" ]; then
-    cp "$EMUTOS_ELF" "$OUT/emutos.elf"
-    echo "firmware: emutos.elf ($(stat -c %s "$EMUTOS_ELF") bytes) - launcher passes this to -kernel"
+    cp "$EMUTOS_ELF" "$OUT/emutos.img"
+    echo "firmware: emutos.img ($(stat -c %s "$EMUTOS_ELF") bytes) - launcher passes this to -kernel"
 else
     echo "note: no EmuTOS at $EMUTOS_ELF - the bundle will not boot on its own" >&2
 fi

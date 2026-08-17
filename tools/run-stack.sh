@@ -35,6 +35,16 @@ HOSTFSD="${SHINOGI_HOSTFSD:-$HOME/git/shinogi/tools/hostfsd/shinogi-hostfsd}"
 SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
 QEMU_EXTRA="${SHINOGI_QEMU_EXTRA:-}"
 
+# The guest takes its mode from the host: EmuTOS asks GET_DISPLAY_INFO and
+# virtio-gpu answers from these properties.  The shipping launcher always
+# passes a size, so a harness that does not is testing a mode no user runs --
+# QEMU's own default is 1280x800 while the installers ask for 1024x768.
+GPURES=""
+if [ -n "${RES:-}" ]; then
+    GPURES=",xres=${RES%x*},yres=${RES#*x}"
+    echo "gpu: ${RES} (host-selected mode)"
+fi
+
 if [ -n "${PROFILE:-}" ]; then
     QEMU_BUILD=$(dirname "$QEMU")
     HOWVEC="$QEMU_BUILD/contrib/plugins/libhowvec.so"
@@ -143,7 +153,7 @@ fi
 # shellcheck disable=SC2086
 "$QEMU" -M "$MACHINE" -cpu "$CPU" -m 128 \
     -kernel "$ELF" \
-    -device virtio-gpu-device,id=vgpu \
+    -device "virtio-gpu-device,id=vgpu$GPURES" \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
     $NETARGS \

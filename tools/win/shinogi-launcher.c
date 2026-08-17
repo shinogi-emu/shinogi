@@ -527,27 +527,41 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
     /*
      * The guest image, which the user may replace without reinstalling.
-     * Drop a newer EmuTOS into the drive C folder as EMUTOS.ELF and it is
+     * Drop a newer EmuTOS into the drive C folder as EMUTOS.IMG and it is
      * used instead of the bundled one; delete it and the bundled one comes
      * back. The guest cannot load this itself -- drive C only exists once
      * EmuTOS is running -- but nothing stops US from reading it, and the
      * drive C folder is the one directory the user already knows.
+     *
+     * EMUTOS.IMG, not EMUTOS.ELF, because .IMG is the name every EmuTOS
+     * release already uses and the one a user arriving with a downloaded
+     * build will recognise. The extension is cosmetic here: this target's
+     * emutos.img keeps its ELF wrapper (see emutos.ld under
+     * TARGET_QEMU_VIRT) and emutos-virt.elf is a copy of it, so the two
+     * names have always held identical bytes.
+     *
+     * EMUTOS.ELF is deliberately NOT honoured any more. The install tree
+     * used to ship one, so a drive C snapshot taken at any point carried an
+     * override that silently outranked a newer installer -- and on 68060
+     * that is fatal rather than merely surprising, because an EmuTOS built
+     * before the 64-bit DIVU workaround panics with exception 61 during
+     * boot. Anyone who deliberately wants an override renames it.
      *
      * Only a REGULAR FILE counts. A directory of that name would otherwise
      * be handed to -kernel and QEMU would fail to start, with the cause
      * sitting in a log the user has no reason to open.
      */
     {
-        char user_elf[MAX_PATH];
+        char user_img[MAX_PATH];
         DWORD attrs;
 
-        _snprintf(user_elf, sizeof(user_elf), "%s\\EMUTOS.ELF", drivec);
-        user_elf[sizeof(user_elf) - 1] = '\0';
+        _snprintf(user_img, sizeof(user_img), "%s\\EMUTOS.IMG", drivec);
+        user_img[sizeof(user_img) - 1] = '\0';
 
-        attrs = GetFileAttributesA(user_elf);
+        attrs = GetFileAttributesA(user_img);
         if (attrs != INVALID_FILE_ATTRIBUTES &&
             !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-            lstrcpynA(kernel, user_elf, sizeof(kernel));
+            lstrcpynA(kernel, user_img, sizeof(kernel));
         } else {
             _snprintf(kernel, sizeof(kernel), "%s\\emutos-virt.elf", dir);
             kernel[sizeof(kernel) - 1] = '\0';

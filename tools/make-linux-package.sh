@@ -99,6 +99,12 @@ if file "$BUNDLE/bin/shinogi-monitor" | grep -q 'dynamically linked'; then
     exit 2
 fi
 
+# Crop and magnify, so a caller can read a dialog without downscaling
+# the screen it sits in. Static, and it carries its own PNG writer rather
+# than linking zlib, for the same reason.
+cc -static -O2 -Wall -Wextra \
+   -o "$BUNDLE/bin/shinogi-shot" "$ROOT/tools/linux/shinogi-shot.c"
+
 # The host end of drive C, the same program the Windows bundle carries.
 # Static for the same reason as the helper above: it must not care what
 # C library the machine it lands on has.

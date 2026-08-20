@@ -21,12 +21,9 @@ tested and how it is meant to be used over a plain SSH session or inside
 WSL:
 
     ./shinogi start                     # boot in the background
+    ./shinogi wait-idle                 # until the screen stops changing
     ./shinogi log -f                    # watch the serial console
     ./shinogi screenshot desktop.png    # capture the screen
-    ./shinogi key ret                   # press Return
-    ./shinogi type "hello"              # send text
-    ./shinogi mouse move 640 400
-    ./shinogi mouse click
     ./shinogi stop
 
 "shinogi screenshot" writes a real PNG of the guest's screen whether or
@@ -36,7 +33,63 @@ kernel's own messages and is usually where a failed boot explains itself.
 
 "shinogi monitor <command>" passes a command straight to the emulator's
 monitor if you need something the launcher does not wrap - "info block",
-"info network", "stop", "cont", and so on.
+"info network", "stop", "cont", and so on. "shinogi qmp <json>" is the
+same for the machine-readable interface.
+
+
+Working the machine without a display
+-------------------------------------
+
+The pointer and the keyboard are driven from the command line, in screen
+pixels, whether or not anything is on screen:
+
+    ./shinogi move 640 360              # put the pointer somewhere
+    ./shinogi click 40 40               # move and click in one step
+    ./shinogi dclick 40 40              # open the icon under 40,40
+    ./shinogi click --right 500 300
+    ./shinogi drag 200 100 600 400      # with the motion in between
+    ./shinogi key ret                   # ret, esc, alt-x, shift-a, f1...
+    ./shinogi type "http://example.com"
+
+Coordinates are pixels with 0,0 at the top left, in the resolution the
+bundle boots at - 1280x720 unless SHINOGI_XRES/SHINOGI_YRES say
+otherwise. The guest's pointing device is a tablet, so a coordinate is
+where the pointer goes, not how far it moves: there is no accumulated
+drift and no need to home the pointer first.
+
+The loop that works is: do something, wait for the screen to settle,
+look at it.
+
+    ./shinogi dclick 40 40
+    ./shinogi wait-idle
+    ./shinogi screenshot win.png --crop 0,0,640,400 --scale 2
+
+"wait-idle" returns as soon as two captures in a row are identical, so
+there is nothing to guess. Sleeping instead is what produces screenshots
+of half-drawn windows, and a half-drawn window read as a rendering fault
+is a wasted afternoon.
+
+Finding coordinates is done by looking. Capture the screen, read the
+pixel position off the image, click there. GEM menus drop on hover, so
+moving the pointer onto a menu title and capturing is enough to see a
+menu and its keyboard shortcuts without clicking anything:
+
+    ./shinogi move 96 7
+    ./shinogi screenshot menu.png --crop 60,0,360,300
+
+Button transitions are paced 40 ms apart, because the guest samples its
+mouse once a frame and cannot see anything faster. SHINOGI_CLICK_MS
+changes that if some guest wants a different rhythm. This is worth
+knowing because getting it wrong fails quietly: every event is accepted,
+single clicks still work, and only double clicks and drags go missing.
+
+--crop and --scale exist for the same reason. GEM type is small, and the
+whole screen shrunk to fit is unreadable in a way that invents faults
+rather than hiding them - this project has chased two rendering findings
+that were only ever artefacts of a downscaled screenshot. Cut out the
+part that matters and magnify it by a whole number instead: every pixel
+becomes a block of identical pixels, so nothing appears that was not
+there.
 
 
 Drive C
@@ -81,7 +134,7 @@ Where things are
 ----------------
 
     ./shinogi                bundle launcher
-    ./bin/                   the emulator and its two helpers
+    ./bin/                   the emulator and its helpers
     ./lib/                   its libraries, including the C library
     ./guest/emutos-virt.elf  the ROM image
     ./guest/drive-c/         the pristine drive C

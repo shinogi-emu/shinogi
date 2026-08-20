@@ -1,7 +1,9 @@
 /*
- * shinogi-monitor - send one command to a running guest's QEMU monitor.
+ * shinogi-monitor - send one command to a running guest's control sockets.
  *
- *   shinogi-monitor <socket> <command> [args...]
+ *   shinogi-monitor <socket> <command> [args...]      human monitor
+ *   shinogi-monitor --qmp <socket> <json>             QMP
+ *   shinogi-monitor --qmp-seq <socket> <ms> <json>... QMP, paced
  *
  * The launcher needs to talk to the monitor to take screenshots and to
  * inject keys, and the package has to work on a machine where nothing
@@ -16,6 +18,23 @@
  * idle timeout matters because some commands (screendump of a large
  * scanout) answer with nothing at all, and waiting for a prompt that has
  * already been consumed would hang the launcher.
+ *
+ * QMP mode exists because the human monitor cannot position a pointer.
+ * Its mouse_move queues RELATIVE motion, and the guest's pointing device
+ * is a tablet, which reports absolute position and has no use for a
+ * delta -- so the pointer does not go where the caller asked, and
+ * nothing reports an error. input-send-event carries absolute axes and
+ * is only reachable over QMP, which is a line of JSON rather than a
+ * line of text. The JSON is composed by the caller; this end only does
+ * the handshake, the write, and picking the reply out of the events.
+ *
+ * --qmp-seq exists because some input has to be PACED. The guest samples
+ * its mouse once a frame, so a press and a release delivered in the same
+ * millisecond are a transition it never observes: a double click sent as
+ * one batch selects an icon and does not open it, and a drag sent as two
+ * endpoints moves nothing. Pacing it from the shell means one process
+ * per event and a sleep whose resolution is not promised; doing it here
+ * means one connection, and gaps that are actually the length asked for.
  */
 #include <errno.h>
 #include <stdio.h>
@@ -28,6 +47,32 @@
 
 #define IDLE_MS 2000
 #define REPLY_MAX (1 << 20)
+
+static int connect_unix(const char *path)
+{
+    struct sockaddr_un sa;
+    int fd;
+
+    if (strlen(path) >= sizeof(sa.sun_path)) {
+        fprintf(stderr, "socket path too long: %s\n", path);
+        return -1;
+    }
+    memset(&sa, 0, sizeof(sa));
+    sa.sun_family = AF_UNIX;
+    strcpy(sa.sun_path, path);
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("socket");
+        return -1;
+    }
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        fprintf(stderr, "cannot reach %s: %s\n", path, strerror(errno));
+        fprintf(stderr, "is the guest running?  try: shinogi status\n");
+        return -1;
+    }
+    return fd;
+}
 
 /* The reply is collected rather than streamed because the monitor echoes
  * what it was sent -- one character at a time, each followed by the
@@ -120,20 +165,120 @@ static void print_reply(void)
     }
 }
 
+/* ------------------------------------------------------------------ QMP */
+
+/*
+ * Read one \n-terminated line. QMP is strictly line-delimited in both
+ * directions, which is the whole reason this needs no JSON parser: the
+ * reply to a command is a line containing "return" or "error", and
+ * anything else on the wire is an asynchronous event to be skipped.
+ */
+static int read_line(int fd, char *buf, size_t cap, int idle_ms)
+{
+    size_t len = 0;
+
+    while (len + 1 < cap) {
+        struct timeval tv;
+        fd_set r;
+        int rc;
+
+        FD_ZERO(&r);
+        FD_SET(fd, &r);
+        tv.tv_sec = idle_ms / 1000;
+        tv.tv_usec = (idle_ms % 1000) * 1000;
+        rc = select(fd + 1, &r, NULL, NULL, &tv);
+        if (rc < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (rc == 0)
+            return -1;                      /* idle: no line coming */
+        if (read(fd, buf + len, 1) != 1)
+            return -1;
+        if (buf[len] == '\n') {
+            buf[len] = '\0';
+            return (int)len;
+        }
+        len++;
+    }
+    return -1;
+}
+
+static int qmp_send(int fd, const char *json, char *reply, size_t cap)
+{
+    size_t len = strlen(json);
+
+    if (write(fd, json, len) != (ssize_t)len ||
+        write(fd, "\n", 1) != 1)
+        return -1;
+
+    /* Events and the reply share the stream, so read past anything that
+     * is not an answer to this command. */
+    for (;;) {
+        if (read_line(fd, reply, cap, IDLE_MS) < 0)
+            return -1;
+        if (strstr(reply, "\"return\"") || strstr(reply, "\"error\""))
+            return strstr(reply, "\"error\"") ? 1 : 0;
+    }
+}
+
+static int qmp_main(const char *path, char **json, int count, int gap_ms)
+{
+    char line[8192];
+    int fd, rc, i;
+
+    fd = connect_unix(path);
+    if (fd < 0)
+        return 1;
+
+    /* The greeting arrives unprompted; capabilities must be negotiated
+     * before any other command is accepted. */
+    if (read_line(fd, line, sizeof(line), 2000) < 0) {
+        fprintf(stderr, "no QMP greeting from %s\n", path);
+        return 1;
+    }
+    if (qmp_send(fd, "{\"execute\":\"qmp_capabilities\"}", line, sizeof(line)) != 0) {
+        fprintf(stderr, "QMP handshake refused: %s\n", line);
+        return 1;
+    }
+
+    for (i = 0; i < count; i++) {
+        if (i && gap_ms > 0)
+            usleep((useconds_t)gap_ms * 1000);
+        rc = qmp_send(fd, json[i], line, sizeof(line));
+        if (rc < 0) {
+            fprintf(stderr, "no reply to: %s\n", json[i]);
+            return 1;
+        }
+        if (rc == 1) {
+            fprintf(stderr, "%s\n", line);
+            return 1;
+        }
+        /* A bare {"return": {}} is the usual success and says nothing
+         * worth printing; anything richer is the caller's answer. */
+        if (strcmp(line, "{\"return\": {}}") != 0)
+            printf("%s\n", line);
+    }
+    close(fd);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    struct sockaddr_un sa;
     char cmd[4096];
     size_t used = 0;
     int fd, i;
 
+    if (argc >= 4 && strcmp(argv[1], "--qmp") == 0)
+        return qmp_main(argv[2], argv + 3, argc - 3, 0);
+    if (argc >= 5 && strcmp(argv[1], "--qmp-seq") == 0)
+        return qmp_main(argv[2], argv + 4, argc - 4, atoi(argv[3]));
+
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <monitor-socket> <command> [args...]\n",
-                argv[0]);
-        return 2;
-    }
-    if (strlen(argv[1]) >= sizeof(sa.sun_path)) {
-        fprintf(stderr, "socket path too long: %s\n", argv[1]);
+        fprintf(stderr, "usage: %s <monitor-socket> <command> [args...]\n", argv[0]);
+        fprintf(stderr, "       %s --qmp <qmp-socket> <json>\n", argv[0]);
+        fprintf(stderr, "       %s --qmp-seq <qmp-socket> <gap-ms> <json>...\n", argv[0]);
         return 2;
     }
 
@@ -150,21 +295,9 @@ int main(int argc, char **argv)
     }
     cmd[used++] = '\n';
 
-    memset(&sa, 0, sizeof(sa));
-    sa.sun_family = AF_UNIX;
-    strcpy(sa.sun_path, argv[1]);
-
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        perror("socket");
+    fd = connect_unix(argv[1]);
+    if (fd < 0)
         return 1;
-    }
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        fprintf(stderr, "cannot reach the monitor at %s: %s\n",
-                argv[1], strerror(errno));
-        fprintf(stderr, "is the guest running?  try: shinogi status\n");
-        return 1;
-    }
 
     /* Swallow the banner and the first prompt, so the caller sees only
      * the answer to its own command. */

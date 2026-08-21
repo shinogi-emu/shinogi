@@ -304,6 +304,23 @@ cmd_start() {
 
     running && die "a guest is already running (pid $(cat "$PIDFILE"))"
 
+    # A windowed backend with nowhere to open a window does not fail, it
+    # HANGS: QEMU starts, burns no CPU, writes nothing to the serial log
+    # and never answers its monitor. From a script that looks like a slow
+    # boot rather than a mistake, so refuse it here where the cause is
+    # still obvious.
+    case "$display" in
+        none|none,*) ;;
+        *)
+            if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+                echo "shinogi: --display $display needs a display, and neither" >&2
+                echo "         DISPLAY nor WAYLAND_DISPLAY is set." >&2
+                echo "         Use --display none; screenshots still work." >&2
+                exit 2
+            fi
+            ;;
+    esac
+
     ensure_drive_c
     mkdir -p "$RUNDIR" "$HOME_DIR/logs"
     # A stale socket makes QEMU fail to bind and the failure is reported
@@ -469,21 +486,35 @@ cmd_screenshot() {
 # a row mean the guest has finished drawing whatever it was drawing.
 cmd_wait_idle() {
     limit="${1:-30}"
+    need="${SHINOGI_IDLE_FRAMES:-3}"
     a="$RUNDIR/idle-a.ppm"
     b="$RUNDIR/idle-b.ppm"
     rm -f "$a" "$b"
+
+    # Two matching captures do NOT mean the machine has finished drawing;
+    # they equally mean it has not started.  Asking for one comparison
+    # returned "settled after 0s" a second after boot, every time, which
+    # is worse than no wait at all because it looks like an answer.  So
+    # require several consecutive identical frames, and never return
+    # before that many seconds have actually passed.
     mon screendump "$a" -f ppm >/dev/null
+    same=0
     i=0
     while [ "$i" -lt "$limit" ]; do
         sleep 1
+        i=$((i + 1))
         mon screendump "$b" -f ppm >/dev/null
         if cmp -s "$a" "$b"; then
-            rm -f "$a" "$b"
-            echo "settled after ${i}s"
-            return 0
+            same=$((same + 1))
+            if [ "$same" -ge "$need" ]; then
+                rm -f "$a" "$b"
+                echo "settled after ${i}s (${need} identical frames)"
+                return 0
+            fi
+        else
+            same=0
         fi
         mv "$b" "$a"
-        i=$((i + 1))
     done
     rm -f "$a" "$b"
     echo "still changing after ${limit}s" >&2

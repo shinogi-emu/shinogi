@@ -64,8 +64,12 @@ look at it.
     ./shinogi wait-idle
     ./shinogi screenshot win.png --crop 0,0,640,400 --scale 2
 
-"wait-idle" returns as soon as two captures in a row are identical, so
-there is nothing to guess. Sleeping instead is what produces screenshots
+"wait-idle" returns once several captures in a row are identical, so
+there is nothing to guess. It asks for three by default (SHINOGI_IDLE_FRAMES)
+rather than one comparison, because two matching frames mean either that
+the machine has finished drawing or that it has not started - and a wait
+that returns instantly is worse than no wait, since it looks like an
+answer. Sleeping instead is what produces screenshots
 of half-drawn windows, and a half-drawn window read as a rendering fault
 is a wasted afternoon.
 
@@ -157,6 +161,11 @@ there the default backend's pointer grab does not release: the pointer
 enters the window and then will not leave. Ask for GTK instead:
 
     ./shinogi run --display gtk
+
+A windowed backend needs somewhere to open a window. Asked for one over a
+plain SSH session with no DISPLAY set, QEMU does not fail - it hangs. The
+launcher refuses that combination rather than letting it look like a slow
+boot.
 
 That is a display-backend quirk, not an emulator fault, and it affects
 remote-desktop sessions on ordinary Linux the same way.

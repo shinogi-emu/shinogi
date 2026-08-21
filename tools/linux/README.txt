@@ -135,7 +135,8 @@ Where things are
 
     ./shinogi                bundle launcher
     ./bin/                   the emulator and its helpers
-    ./lib/                   its libraries, including the C library
+    ./lib/                   its libraries
+    ./lib/glibc/             the C library and the loader, kept separate
     ./guest/emutos-virt.elf  the ROM image
     ./guest/drive-c/         the pristine drive C
     ~/.shinogi/drive-c       the drive C the guest actually uses
@@ -167,10 +168,14 @@ Why the bundle carries a C library
 The emulator is built on a current distribution and references symbol
 versions that older ones do not have; on a host without them it refuses
 to start with a message about GLIBC that reads like a corrupt download.
-So the loader and the C library it was built against travel with it. The
-launcher tries the host's own loader first and only falls back to the
-bundled one, so a machine new enough to run the binary directly does.
-"shinogi doctor" reports which of the two is in use.
+So the loader and the C library it was built against travel with it, in
+lib/glibc rather than in lib with everything else. That separation
+matters: the launcher tries the host's own loader first, and if the
+bundle's C library were on the search path for that attempt, the host's
+loader would pair itself with our newer libc and crash outright instead
+of failing politely. Kept apart, the first attempt uses the host's C
+library and the fallback names ours explicitly. "shinogi doctor" reports
+which of the two is in use.
 
 
 Version

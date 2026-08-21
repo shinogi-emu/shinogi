@@ -79,15 +79,34 @@ rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/bin" "$BUNDLE/lib" "$BUNDLE/guest" "$BUNDLE/share/qemu"
 
 # --- QEMU and its entire closure ---------------------------------------
+# The C library and the loader go in a directory of their OWN, apart from
+# everything else, and that separation is the whole point rather than
+# tidiness.
+#
+# The launcher tries the host's loader first. If the bundle's glibc were
+# on the search path for that attempt, the host's ld.so would load our
+# newer libc.so.6 -- a mismatched loader and C library, which does not
+# fail politely with a version message, it SEGFAULTS. That was reported
+# from a machine with an older glibc, where the probe crashed and only
+# the fallback saved the run. Kept apart, the native attempt sees system
+# glibc plus our other libraries and fails cleanly when it cannot work,
+# and the bundled attempt names lib/glibc explicitly.
+mkdir -p "$BUNDLE/lib/glibc"
 cp -f "$QEMU_LINUX" "$BUNDLE/bin/qemu-system-m68k"
 ldd "$QEMU_LINUX" | awk '/=> \//{print $3}' | sort -u | while read -r so; do
-    cp -Lf "$so" "$BUNDLE/lib/"
+    case "${so##*/}" in
+        libc.so.*|libm.so.*|libmvec.so.*|libpthread.so.*|libdl.so.*|\
+        librt.so.*|libresolv.so.*|libnsl.so.*|libutil.so.*|libanl.so.*)
+            cp -Lf "$so" "$BUNDLE/lib/glibc/" ;;
+        *)
+            cp -Lf "$so" "$BUNDLE/lib/" ;;
+    esac
 done
 # The loader is not in ldd's "=>" list; it is the last line, in parentheses.
 LOADER=$(ldd "$QEMU_LINUX" | awk '/ld-linux/{gsub(/[()]/,"",$1); print $1; exit}')
 [ -n "$LOADER" ] && [ -e "$LOADER" ] || { echo "cannot find the dynamic loader" >&2; exit 2; }
-cp -Lf "$LOADER" "$BUNDLE/lib/ld-linux-x86-64.so.2"
-chmod +x "$BUNDLE/lib/ld-linux-x86-64.so.2"
+cp -Lf "$LOADER" "$BUNDLE/lib/glibc/ld-linux-x86-64.so.2"
+chmod +x "$BUNDLE/lib/glibc/ld-linux-x86-64.so.2"
 cp -rf "$KEYMAPS" "$BUNDLE/share/qemu/"
 
 # The monitor helper is static so the launcher can talk to a running
@@ -159,6 +178,7 @@ cp -f "$ROOT/tools/linux/README.txt" "$BUNDLE/README.txt"
     echo "FreeMiNT kernel: shared 020-060 OLDTOSFS build"
     echo "Network driver: bundled 20 ms receive-poll build"
     echo "EmuTOS image sha256: $(sha256sum "$ELF" | cut -d' ' -f1)"
+    echo "FreeMiNT kernel sha256: $(sha256sum "$KERNEL" | cut -d' ' -f1)"
 } > "$BUNDLE/BUILD.txt"
 
 # --- archive -----------------------------------------------------------

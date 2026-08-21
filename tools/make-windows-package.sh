@@ -135,6 +135,11 @@ fi
     fi
     printf 'FreeMiNT kernel: shared 020-060 OLDTOSFS build\r\n'
     printf 'Network driver: bundled 20 ms receive-poll build\r\n'
+    # Checksums of the two pieces that decide how the machine behaves.
+    # Without them, "which kernel is in this build?" can only be answered
+    # by rebuilding and comparing, and a stale one shipped once already.
+    printf 'Guest image sha256: %s\r\n' "$(sha256sum "$ELF" | cut -d' ' -f1)"
+    printf 'FreeMiNT kernel sha256: %s\r\n' "$(sha256sum "$KERNEL" | cut -d' ' -f1)"
 } > "$BUNDLE/BUILD.txt"
 
 # The icon and manifest. windres is run from tools/win so the .rc can name

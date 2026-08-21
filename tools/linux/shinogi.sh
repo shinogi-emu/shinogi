@@ -24,6 +24,7 @@ set -eu
 PKG=$(cd "$(dirname "$0")" && pwd)
 BIN="$PKG/bin"
 LIB="$PKG/lib"
+GLIBC="$PKG/lib/glibc"
 GUEST="$PKG/guest"
 
 # Runtime state - drive C, logs, the pid file and the monitor socket -
@@ -77,22 +78,29 @@ resolve_qemu() {
     # tested on a host new enough not to need it.
     case "${SHINOGI_LOADER:-auto}" in
         native)  QEMU_MODE=native; return 0 ;;
-        bundled) [ -x "$LIB/ld-linux-x86-64.so.2" ] ||
+        bundled) [ -x "$GLIBC/ld-linux-x86-64.so.2" ] ||
                      die "SHINOGI_LOADER=bundled but the bundle has no loader"
                  QEMU_MODE=bundled; return 0 ;;
         auto) ;;
         *) die "SHINOGI_LOADER must be auto, native or bundled" ;;
     esac
-    if LD_LIBRARY_PATH="$LIB" "$BIN/qemu-system-m68k" --version >/dev/null 2>&1; then
+    # The probe runs in a subshell with its own stderr closed off, because
+    # a crash here is reported by the SHELL, not by the child: redirecting
+    # the child alone still leaves "Segmentation fault (core dumped)" on
+    # the terminal, which reads as a broken bundle when it is only a
+    # question being asked and answered.
+    if ( LD_LIBRARY_PATH="$LIB" "$BIN/qemu-system-m68k" --version ) \
+           >/dev/null 2>&1; then
         QEMU_MODE=native
-    elif [ -x "$LIB/ld-linux-x86-64.so.2" ] &&
-         "$LIB/ld-linux-x86-64.so.2" --library-path "$LIB" \
-             "$BIN/qemu-system-m68k" --version >/dev/null 2>&1; then
+    elif [ -x "$GLIBC/ld-linux-x86-64.so.2" ] &&
+         ( "$GLIBC/ld-linux-x86-64.so.2" --library-path "$GLIBC:$LIB" \
+               "$BIN/qemu-system-m68k" --version ) >/dev/null 2>&1; then
         QEMU_MODE=bundled
     else
         echo "shinogi: the bundled QEMU will not start on this host." >&2
         echo "diagnostic:" >&2
-        LD_LIBRARY_PATH="$LIB" "$BIN/qemu-system-m68k" --version >&2 || true
+        "$GLIBC/ld-linux-x86-64.so.2" --library-path "$GLIBC:$LIB" \
+            "$BIN/qemu-system-m68k" --version >&2 || true
         exit 1
     fi
 }
@@ -102,7 +110,7 @@ run_qemu() {
     if [ "$QEMU_MODE" = native ]; then
         LD_LIBRARY_PATH="$LIB" exec "$BIN/qemu-system-m68k" "$@"
     else
-        exec "$LIB/ld-linux-x86-64.so.2" --library-path "$LIB" \
+        exec "$GLIBC/ld-linux-x86-64.so.2" --library-path "$GLIBC:$LIB" \
              "$BIN/qemu-system-m68k" "$@"
     fi
 }
@@ -112,7 +120,7 @@ run_in_foreground() {
     if [ "$QEMU_MODE" = native ]; then
         LD_LIBRARY_PATH="$LIB" "$BIN/qemu-system-m68k" "$@"
     else
-        "$LIB/ld-linux-x86-64.so.2" --library-path "$LIB" \
+        "$GLIBC/ld-linux-x86-64.so.2" --library-path "$GLIBC:$LIB" \
             "$BIN/qemu-system-m68k" "$@"
     fi
 }
@@ -628,8 +636,12 @@ cmd_doctor() {
     if [ "$QEMU_MODE" = bundled ]; then
         echo "          (host glibc is older than this build; using the bundled loader)"
     fi
-    LD_LIBRARY_PATH="$LIB" "$BIN/qemu-system-m68k" --version 2>/dev/null | head -1 ||
-      "$LIB/ld-linux-x86-64.so.2" --library-path "$LIB" "$BIN/qemu-system-m68k" --version | head -1
+    if [ "$QEMU_MODE" = native ]; then
+        LD_LIBRARY_PATH="$LIB" "$BIN/qemu-system-m68k" --version | head -1
+    else
+        "$GLIBC/ld-linux-x86-64.so.2" --library-path "$GLIBC:$LIB" \
+            "$BIN/qemu-system-m68k" --version | head -1
+    fi
     echo "guest     $GUEST/emutos-virt.elf ($(wc -c < "$GUEST/emutos-virt.elf") bytes)"
     echo "drive C   $DRIVE_C $( [ -d "$DRIVE_C" ] && echo "(present)" || echo "(created on first start)" )"
     if [ -r /proc/version ] && grep -qi microsoft /proc/version; then

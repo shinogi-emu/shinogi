@@ -633,9 +633,15 @@ cmd_doctor() {
     echo "bundle    $PKG"
     resolve_qemu
     echo "qemu      $QEMU_MODE"
-    if [ "$QEMU_MODE" = bundled ]; then
-        echo "          (host glibc is older than this build; using the bundled loader)"
-    fi
+    case "${SHINOGI_LOADER:-auto}" in
+        auto)
+            [ "$QEMU_MODE" = bundled ] &&
+                echo "          (this host's C library is older than the build's; using the bundled loader)"
+            ;;
+        *)
+            echo "          (pinned by SHINOGI_LOADER=$SHINOGI_LOADER, not probed)"
+            ;;
+    esac
     if [ "$QEMU_MODE" = native ]; then
         LD_LIBRARY_PATH="$LIB" "$BIN/qemu-system-m68k" --version | head -1
     else

@@ -445,6 +445,7 @@ typedef struct
 {
     int used;
     int fd;
+    int dirty;                  /* written to since it was opened */
 } filehandle;
 
 typedef struct
@@ -855,6 +856,14 @@ static void handles_reset(void)
     for (i = 0; i < MAX_FILES; i++)
         if (files[i].used)
         {
+            /*
+             * These are the handles the guest still had open when it
+             * went away - a reboot, a halt, or the emulator being
+             * killed. They are the ones most likely to be mid-write,
+             * so commit them rather than just dropping them.
+             */
+            if (files[i].dirty)
+                (void) fsync(files[i].fd);
             close(files[i].fd);
             files[i].used = 0;
         }
@@ -1117,6 +1126,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
 
         files[i].used = 1;
         files[i].fd = fd;
+        files[i].dirty = 0;
         ra = (unsigned long)(i + 1);
         break;
     }
@@ -1129,6 +1139,20 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         {
             status = HOSTFS_EIHNDL;
             break;
+        }
+        /*
+         * Push the file out before letting go of it.  Writes reach the
+         * host's page cache as the guest makes them, so they already
+         * survive the emulator being killed - but not the host losing
+         * power.  A file the guest has finished with is exactly the
+         * point where that is worth paying for, and it costs nothing
+         * for the files nobody wrote to.
+         */
+        if (f->dirty)
+        {
+            if (fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
+                dbg("hostfsd: fsync failed on close: %s\n", strerror(errno));
+            f->dirty = 0;
         }
         close(f->fd);
         f->used = 0;
@@ -1185,6 +1209,8 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             status = errno_to_gemdos(errno);
             break;
         }
+        if (n > 0)
+            f->dirty = 1;
         ra = (unsigned long)n;
         break;
     }

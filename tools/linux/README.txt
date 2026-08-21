@@ -119,11 +119,32 @@ is served by a helper that sorts, so the order does not depend on how the
 host filesystem happens to enumerate the directory - a detail that is not
 cosmetic, since the wrong order panics the guest during boot.
 
-Filenames on drive C are 8.3. A four-character extension cannot be
-spelled there at all - a file written as "resolv.conf" is listed as
-"resolv.con" and then cannot be opened by any name. This bites configuration
-files most; /etc inside the guest is built on a long-name filesystem for
-exactly this reason.
+Filenames on drive C are 8.3, and the way a longer name fails is worth
+reading twice, because one half of it is silent.
+
+A four-character extension cannot be spelled there at all - a file
+written as "resolv.conf" is listed as "resolv.con" and then cannot be
+opened by any name. That half announces itself.
+
+The other half does not. A basename longer than eight characters is
+CLIPPED to eight, and the clipped name then opens whatever file has it.
+So "HighWire_logo.png" becomes "HighWire.png" and quietly returns a
+DIFFERENT, EXISTING file - and a name that matches nothing at all, like
+"HighWire_logo2.png", opens that same file rather than failing. Three
+different names, one file, no error reported anywhere.
+
+For an image that is a visible surprise. For a configuration file, a
+certificate bundle or a saved document it is a substitution that looks
+exactly like success, and it can sit unnoticed for a long time: a logo
+that renders a placeholder and a button that does nothing are easy to
+put down to something else.
+
+The clipping happens in FreeMiNT, which treats drive C as a TOS
+filesystem and shortens the name before the request is issued - so it
+cannot be worked around from the host side by naming files carefully
+there. Keep names within 8.3 in anything the guest opens by name.
+/etc inside the guest is built on a long-name filesystem for exactly
+this reason.
 
 
 Networking

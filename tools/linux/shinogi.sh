@@ -288,6 +288,26 @@ qemu_args() {
         -monitor "unix:$MONSOCK,server,nowait" \
         -qmp "unix:$QMPSOCK,server=on,wait=off" \
         -d guest_errors -D "$ERRLOG"
+    # SHINOGI_QEMU_EXTRA appends raw QEMU options, split on whitespace.
+    #
+    # It exists for measurement.  By default the guest's 200 Hz timer
+    # advances with host wall clock, so what a benchmark inside the
+    # guest measures is how long the host took to emulate the work, not
+    # how much work the guest did: the same benchmark on the same build
+    # has read 18 ticks in one run and 5 in another purely because of
+    # what ran before it.  Passing
+    #
+    #     SHINOGI_QEMU_EXTRA='-icount shift=7,sleep=off'
+    #
+    # ties guest time to instructions retired instead, and repeated runs
+    # then agree to within a tick.  It is not the default because it
+    # changes interrupt timing and slows emulation, and because for
+    # judging how the machine FEELS the wall clock is the honest measure.
+    if [ -n "${SHINOGI_QEMU_EXTRA:-}" ]; then
+        # Unquoted on purpose: the caller supplies separate options.
+        # shellcheck disable=SC2086
+        printf '%s\n' $SHINOGI_QEMU_EXTRA
+    fi
 }
 
 cmd_start() {

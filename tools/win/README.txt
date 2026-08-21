@@ -29,6 +29,21 @@ desktop; the 8.3 names you see are what the mapping gives them.
 It is READ/WRITE. The guest can create, write, delete, rename files and
 make directories, and the changes appear in the folder immediately.
 
+KEEP THE NAMES SHORT - 8 characters plus a 3 character extension. A
+longer name does not fail cleanly, it opens the WRONG FILE. A basename
+over eight characters is clipped to eight, and the clipped name then
+opens whatever file has it: "HighWire_logo.png" returns the file called
+"HighWire.png", and so does "HighWire_logo2.png", which names nothing at
+all. Three names, one file, and no error reported anywhere.
+
+A four character extension is the other half of it, and that half at
+least announces itself - "resolv.conf" is listed as "resolv.con" and
+then cannot be opened by any name.
+
+For a picture the first case is a visible surprise. For a settings file
+or a saved document it looks exactly like success and can go unnoticed
+for a long time.
+
 How it works, and why it changed twice: QEMU cannot build virtio-9p on
 Windows at all, so the first Windows builds had no drive C. The next
 used QEMU's vvfat, which maps a directory as a FAT disk -- but its

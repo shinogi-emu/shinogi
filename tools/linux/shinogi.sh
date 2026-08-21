@@ -268,6 +268,12 @@ check_xy() {
 # desktop. Windows gets away with it because NTFS enumerates in name
 # order. hostfsd sorts, so both platforms see the same order, and the
 # order they see is the one the AUTO folder needs.
+# How long "shinogi stop" gives the guest to put itself away before it
+# stops the emulator instead. A halt is usually a few seconds, but the
+# kernel signals every process and then syncs and unmounts drive C over
+# the host link first, so a guest that was busy writing takes longer.
+STOP_WAIT="${SHINOGI_STOP_WAIT:-90}"
+
 qemu_args() {
     printf '%s\n' \
         -name "$EDITION $VERSION" \
@@ -406,11 +412,78 @@ EOF
     stop_hostfsd
 }
 
+# The keystroke that halts the guest.
+#
+# FreeMiNT watches for ctrl+alt+del at the keyboard interrupt, before the
+# AES ever sees the key, and the LEFT shift variant selects halt rather
+# than warm boot. That is the kernel's own shutdown: every process is
+# signalled, then the file systems are closed, synced and unmounted, and
+# the machine is powered off - which on this machine is a write to
+# QEMU's control device, so the emulator exits by itself.
+#
+# It is the only shutdown in the guest that never stops to ask. Both of
+# the AES hotkeys end at a confirmation whose default button is Cancel,
+# and a dialog needs a click at coordinates that depend on the screen
+# size and the theme, which is not something a command can rely on.
+#
+# SEND IT ONCE. A second ctrl+alt+del more than five seconds into a
+# shutdown is the kernel's escape hatch and resets the machine
+# immediately without syncing anything, which is worse than the thing
+# this replaces. There is deliberately no retry.
+HALT_KEY="ctrl-alt-shift-delete"
+
+# Everything the host has to put away once QEMU has gone, however it went.
+stop_cleanup() {
+    rm -f "$PIDFILE" "$MONSOCK" "$QMPSOCK"
+    stop_hostfsd
+}
+
 cmd_stop() {
-    running || { stop_hostfsd; echo "shinogi: nothing running"; return 0; }
+    now=0
+    wait_for="$STOP_WAIT"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --now|--force) now=1; shift ;;
+            --wait) wait_for="${2:?--wait needs a number of seconds}"; shift 2 ;;
+            --wait=*) wait_for="${1#--wait=}"; shift ;;
+            *) die "unknown option to stop: $1" ;;
+        esac
+    done
+    case "$wait_for" in
+        ''|*[!0-9]*) die "--wait takes a whole number of seconds" ;;
+    esac
+
+    running || { stop_cleanup; echo "shinogi: nothing running"; return 0; }
     pid=$(cat "$PIDFILE")
-    # quit through the monitor first: it lets QEMU close the 9p backend,
-    # so drive C is not left with a half-written file.
+
+    # Ask the guest first. Halting it is the only thing that gives a
+    # running program any notice; stopping the emulator gives it none.
+    if [ "$now" -eq 0 ]; then
+        echo "shinogi: asking the guest to shut down"
+        if "$BIN/shinogi-monitor" "$MONSOCK" sendkey "$HALT_KEY" >/dev/null 2>&1; then
+            i=0
+            while [ "$i" -lt "$wait_for" ]; do
+                kill -0 "$pid" 2>/dev/null || {
+                    stop_cleanup
+                    echo "shinogi: the guest halted and the emulator exited"
+                    return 0
+                }
+                i=$((i + 1))
+                sleep 1
+            done
+            # Say so plainly. Someone who asked for a clean shutdown
+            # should not have to guess whether they got one.
+            echo "shinogi: the guest did not finish within ${wait_for}s;" >&2
+            echo "         stopping the emulator instead, so anything it had" >&2
+            echo "         not yet written is lost. The guest prints its" >&2
+            echo "         progress on its own screen - 'shinogi screenshot'" >&2
+            echo "         shows where it stopped, and 'stop --wait N' allows" >&2
+            echo "         longer." >&2
+        fi
+    fi
+
+    # quit through the monitor first: it lets QEMU close the drive C
+    # backend, so a file is not left half written.
     "$BIN/shinogi-monitor" "$MONSOCK" quit >/dev/null 2>&1 || kill "$pid" 2>/dev/null || true
     i=0
     while [ $i -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
@@ -418,8 +491,7 @@ cmd_stop() {
         sleep 0.1 2>/dev/null || sleep 1
     done
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-    rm -f "$PIDFILE" "$MONSOCK" "$QMPSOCK"
-    stop_hostfsd
+    stop_cleanup
     echo "shinogi: stopped"
 }
 
@@ -717,7 +789,10 @@ $EDITION $VERSION - Atari machine emulator, Linux bundle
                           boot in the background, no display by default
   shinogi run [--display sdl|gtk]
                           boot in the foreground with a window
-  shinogi stop            shut the running guest down
+  shinogi stop [--now] [--wait N]
+                          halt the guest, then let the emulator exit;
+                          --now stops the emulator without asking the
+                          guest, losing anything not yet written
   shinogi status          is it running, and where its files are
   shinogi log [-f|N]      the guest's serial console
   shinogi screenshot [file.png] [--crop X,Y,W,H] [--scale N]
@@ -740,6 +815,7 @@ Environment: SHINOGI_HOME (default ~/.shinogi), SHINOGI_DRIVE_C,
 SHINOGI_CPU, SHINOGI_XRES, SHINOGI_YRES, SHINOGI_MEM,
 SHINOGI_LOADER (auto|native|bundled), SHINOGI_DRAG_STEPS,
 SHINOGI_CLICK_MS (gap between button transitions, default 40).
+SHINOGI_STOP_WAIT (seconds to let the guest halt, default 90).
 
 Coordinates are screen pixels, 0,0 at the top left of a ${XRES}x${YRES}
 screen.

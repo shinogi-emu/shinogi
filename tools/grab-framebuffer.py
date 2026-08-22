@@ -6,7 +6,7 @@ desktop can be inspected today. Format is Atari 4-plane interleaved:
 each group of 16 pixels is 4 consecutive big-endian words, one per
 bitplane, MSB = leftmost pixel.
 """
-import socket, subprocess, sys, time, os
+import socket, subprocess, sys, tempfile, time, os
 from PIL import Image
 
 ELF = sys.argv[1]
@@ -15,7 +15,11 @@ FB = int(sys.argv[3], 16) if len(sys.argv) > 3 else 0x00df8000
 W, H, PLANES = 320, 200, 4
 SETTLE = 8.0
 PORT = 55733
-RAW = "/tmp/shinogi-fb.bin"
+# QEMU writes these itself, through the monitor's memsave, so the path
+# has to be one the emulator can reach on the host - not a guest path,
+# and not a directory that only the shell that started it knows about.
+RAW = os.environ.get("SHINOGI_FB_RAW",
+                     os.path.join(tempfile.gettempdir(), "shinogi-fb.bin"))
 
 # The palette is read from the guest rather than assumed. The VDI keeps
 # REQ_COL[16][3] (requested colour per pen, 0..1000 per component) and

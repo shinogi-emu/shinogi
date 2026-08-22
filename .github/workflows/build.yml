@@ -30,12 +30,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          # The guest is a submodule, shinogi-emu/emutos. It is public, so
+          # the default token reaches it. While it was private every run
+          # died HERE, before a single build step, and every downstream job
+          # was skipped -- which is why no macOS package existed until
+          # 2026-08-22 despite the signing chain being complete.
           submodules: recursive
-          # The guest lives in a separate private repo, so the default
-          # token is not enough -- it only grants access to this one.
-          # Either set EMUTOS_TOKEN to a PAT with read access, or make
-          # the fork public and drop this.
-          token: ${{ secrets.EMUTOS_TOKEN || github.token }}
 
       - name: Fetch the cross toolchain
         run: |
@@ -61,7 +61,7 @@ jobs:
       # The wire header rides along with the image.  run-all-goldens.sh
       # compares the guest and host copies before it runs anything, and the
       # goldens job does not check out the submodule -- that would mean a
-      # second clone of a private repo, and a token, for one file.  Both
+      # second clone of the whole guest repo for one file.  Both
       # paths share the emutos/ prefix, so the artifact keeps
       # emutos-virt.elf at its root and bios/hostfs_proto.h beside it.
       - uses: actions/upload-artifact@v5
@@ -71,6 +71,9 @@ jobs:
             emutos/emutos-virt.elf
             emutos/bios/hostfs_proto.h
           if-no-files-found: error
+          # Build outputs, not releases. The 90-day default filled the
+          # storage allowance with 149 artifacts and stopped CI dead.
+          retention-days: 7
 
   # The goldens boot the guest under QEMU and diff its serial output.
   # They are the only thing that proves the image works rather than
@@ -146,6 +149,7 @@ jobs:
           name: windows
           path: dist/*
           if-no-files-found: error
+          retention-days: 7
 
   macos:
     name: macos package
@@ -238,3 +242,4 @@ jobs:
           name: macos
           path: dist/*.zip*
           if-no-files-found: error
+          retention-days: 7

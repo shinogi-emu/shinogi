@@ -328,6 +328,7 @@ cmd_start() {
         esac
     done
 
+    reap_if_gone
     running && die "a guest is already running (pid $(cat "$PIDFILE"))"
 
     # A windowed backend with nowhere to open a window does not fail, it
@@ -438,6 +439,23 @@ stop_cleanup() {
     stop_hostfsd
 }
 
+# QEMU can also go without cmd_stop ever running: closing the window makes
+# it exit directly, and the drive C helper then outlives it still holding
+# its socket. Three were found running at the end of one session, and each
+# one keeps a drive C open that nothing will ever close - while status
+# reports "stopped" and the next start quietly orphans another.
+#
+# Nothing can make the close box itself clean; QEMU has decided to quit
+# before anything could reach it. So the commands that report or change
+# state clear up after a guest that has already gone. Keyed on the pid
+# file, which only "start" writes: a foreground "run" has its own trap and
+# no pid file, so this can never pull the helper out from under one.
+reap_if_gone() {
+    [ -f "$PIDFILE" ] || return 0
+    running && return 0
+    stop_cleanup
+}
+
 cmd_stop() {
     now=0
     wait_for="$STOP_WAIT"
@@ -496,6 +514,7 @@ cmd_stop() {
 }
 
 cmd_status() {
+    reap_if_gone
     if running; then
         echo "running   pid $(cat "$PIDFILE")"
     else

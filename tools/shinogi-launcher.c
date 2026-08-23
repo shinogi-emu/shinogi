@@ -40,6 +40,14 @@
 #error "SHINOGI_VERSION not defined - build through tools/make-linux-package.sh"
 #endif
 
+/* The .app carries a CPU; a bare developer build does not need one. */
+#ifndef SHINOGI_CPU
+#define SHINOGI_CPU "m68040"
+#endif
+#ifndef SHINOGI_EDITION
+#define SHINOGI_EDITION "Shinogi"
+#endif
+
 /*
  * Ask logind whether the session this process belongs to arrived over
  * the network. Returns 1 for remote, 0 for local, and 0 if we cannot
@@ -115,6 +123,7 @@ int main(int argc, char *argv[])
     char chardev[PATH_MAX + 64], hostfsd[PATH_MAX + 32];
     char display[128];
     char datadir[PATH_MAX + 32];
+    char pristine[PATH_MAX + 32];
     char gpudev[64];
     const char *want;
     const char *home = getenv("HOME");
@@ -142,13 +151,38 @@ int main(int argc, char *argv[])
      */
     snprintf(datadir, sizeof(datadir), "%s/../Resources/qemu/share", dir);
 
+    /*
+     * Drive C ships pristine inside the bundle and is copied out on first
+     * run.  The copy the user edits is therefore never inside an .app that
+     * the next release replaces, and a guest that wrecks its own C: is one
+     * deleted folder away from working again.
+     *
+     * Only when the folder does not exist: an existing drive C belongs to
+     * the user, and re-laying the tree over it would overwrite their
+     * edited configs.
+     */
     /* The host folder the guest sees as drive C:. */
     if (getenv("SHINOGI_HOSTFS"))
         snprintf(hostfs, sizeof(hostfs), "%s", getenv("SHINOGI_HOSTFS"));
     else
         snprintf(hostfs, sizeof(hostfs), "%s/shinogi-drive-c",
                  home ? home : ".");
-    mkdir(hostfs, 0755);
+    if (stat(hostfs, &st) != 0) {
+        snprintf(pristine, sizeof(pristine), "%s/../Resources/drive-c", dir);
+        if (stat(pristine, &st) == 0) {
+            char cmd[2 * PATH_MAX + 64];
+            printf("shinogi: creating drive C at %s\n", hostfs);
+            fflush(stdout);
+            /* -a for the whole tree; the destination must not exist, which
+             * the stat above has already established. */
+            snprintf(cmd, sizeof(cmd), "cp -a '%s' '%s'", pristine, hostfs);
+            if (system(cmd) != 0)
+                fprintf(stderr, "shinogi: could not lay down drive C at "
+                        "%s\n", hostfs);
+        } else {
+            mkdir(hostfs, 0755);
+        }
+    }
 
     /*
      * Screen size. GEM draws with fixed-size bitmap fonts and icons, so
@@ -346,8 +380,9 @@ int main(int argc, char *argv[])
     qemu_pid = fork();
     if (qemu_pid == 0) {
         execlp(qemu, qemu,
-               "-name", "Shinogi (" SHINOGI_VERSION ")",
+               "-name", SHINOGI_EDITION " (" SHINOGI_VERSION ")",
                "-M", "virt",
+               "-cpu", SHINOGI_CPU,
                "-m", "128",
                "-L", datadir,
                "-kernel", elf,

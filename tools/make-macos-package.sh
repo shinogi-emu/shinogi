@@ -2,7 +2,11 @@
 #
 # Build shinogi.app for macOS.
 #
-#   tools/make-macos-package.sh [output-dir]
+#   SHINOGI_CPU=m68060 SHINOGI_ELF=<68020-60-emutos.elf> \
+#     SHINOGI_060SP=<060sp.prg> tools/make-macos-package.sh [output-dir]
+#
+# Output: <output-dir>/Shinogi-040-<version>-macos-arm64.zip or
+# Shinogi-060-<version>-macos-arm64.zip
 #
 # Produces <output-dir>/shinogi.app containing the guest, the launcher,
 # and a relocated copy of QEMU with its dylibs, so the app runs on a
@@ -20,6 +24,30 @@ VERSION=$(cat "$ROOT/VERSION")
 OUTDIR="${1:-$ROOT/dist}"
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 
+CPU="${SHINOGI_CPU:-m68040}"
+case "$CPU" in
+    m68040) EDITION=Shinogi-040 ;;
+    m68060) EDITION=Shinogi-060 ;;
+    *) echo "SHINOGI_CPU must be m68040 or m68060, not $CPU" >&2; exit 2 ;;
+esac
+
+# The system tree the guest boots into: EmuTOS, fVDI, FreeMiNT, XaAES and
+# the bundled GEM applications. Shipped as a published artifact rather
+# than rebuilt here, because several of its inputs are third-party
+# binaries a build machine cannot fetch. tools/make-mint-install.sh
+# reproduces it.
+DRIVE_C_ZIP="${SHINOGI_DRIVE_C_ZIP:-$HOME/git/Aranym/lan-share/freemint-install.zip}"
+NET_DRIVER="${SHINOGI_NET_DRIVER:-$HOME/git/freemint/sys/sockets/xif/virtio_net/.compile_02060/virtio_net.xif}"
+KERNEL="${SHINOGI_MINT_KERNEL:-$HOME/git/freemint/sys/.compile_hat02060/mint0206h.prg}"
+SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
+
+for f in "$DRIVE_C_ZIP" "$NET_DRIVER" "$KERNEL"; do
+    [ -f "$f" ] || { echo "missing input: $f" >&2; exit 2; }
+done
+if [ "$CPU" = m68060 ] && [ ! -f "$SP060" ]; then
+    echo "no 68060 software package at $SP060" >&2; exit 2
+fi
+
 APP="$OUTDIR/shinogi.app"
 MACOS="$APP/Contents/MacOS"
 RES="$APP/Contents/Resources"
@@ -30,7 +58,7 @@ command -v qemu-system-m68k >/dev/null || { echo "qemu-system-m68k not found - b
 QEMU_BIN=$(command -v qemu-system-m68k)
 QEMU_PREFIX=$(cd "$(dirname "$QEMU_BIN")/.." && pwd)
 
-echo "shinogi $VERSION -> $APP"
+echo "$EDITION $VERSION ($CPU) -> $APP"
 echo "  qemu: $QEMU_BIN"
 
 rm -rf "$APP"
@@ -42,6 +70,33 @@ mkdir -p "$MACOS" "$RES" "$MACOS/qemu/bin" "$MACOS/qemu/lib" "$RES/qemu/share"
 # dylib cleanly and then fails the bundle with "code object is not
 # signed at all".
 cp "$ELF" "$RES/emutos-virt.elf"
+
+# Drive C ships pristine inside the bundle and the launcher copies it out
+# on first run, so the folder the user edits is never inside an .app that
+# the next release replaces. Same arrangement as the Linux bundle.
+unzip -q "$DRIVE_C_ZIP" -d "$RES"
+[ -d "$RES/freemint-install" ] || {
+    echo "$DRIVE_C_ZIP did not contain freemint-install/" >&2; exit 2; }
+mv "$RES/freemint-install" "$RES/drive-c"
+
+# The tree carries an older kernel and driver and no 060 package, so the
+# current ones go over the top - the same three overlays the Windows and
+# Linux packagers apply.
+cp -f "$KERNEL" "$RES/drive-c/AUTO/MINT.PRG"
+cp -f "$NET_DRIVER" "$RES/drive-c/MINT/1-19-CUR/VIRTIONE.XIF"
+if [ "$CPU" = m68060 ]; then
+    cp -f "$SP060" "$RES/drive-c/AUTO/060SP.PRG"
+else
+    rm -f "$RES/drive-c/AUTO/060SP.PRG"
+fi
+
+# The drive C helper. Without it the launcher has no drive C at all, the
+# AUTO folder never runs, and what comes up is the bare EmuTOS desktop -
+# which reads as a broken build rather than a missing helper. It lands in
+# Contents/MacOS because it is Mach-O, and sign-macos.sh signs every
+# executable there before sealing the bundle.
+cc "$ROOT/tools/hostfsd/shinogi-hostfsd.c" \
+   -o "$MACOS/shinogi-hostfsd" -O2 -Wall -Wextra
 cp "$QEMU_BIN" "$MACOS/qemu/bin/"
 
 # QEMU's data files, in Resources for the same reason as the guest image:
@@ -68,6 +123,8 @@ dylibbundler -od -b \
 
 cc "$ROOT/tools/shinogi-launcher.c" \
    -DSHINOGI_VERSION="\"$VERSION\"" \
+   -DSHINOGI_CPU="\"$CPU\"" \
+   -DSHINOGI_EDITION="\"$EDITION\"" \
    -o "$MACOS/shinogi" -O2 -Wall
 
 # The icon, converted from the PNG set the Linux build already uses.

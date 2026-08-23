@@ -50,6 +50,11 @@ esac
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64-patched}"
 SDL2="${SDL2_MINGW:-$HOME/mingw-sdl2/x86_64-w64-mingw32}"
+# The system tree the guest boots into. Shipped as a published artifact
+# rather than rebuilt here: tools/make-mint-install.sh reproduces it, but
+# several of its inputs are third-party binaries a build machine cannot
+# fetch.
+DRIVE_C_ZIP="${SHINOGI_DRIVE_C_ZIP:-$HOME/git/Aranym/lan-share/freemint-install.zip}"
 NET_DRIVER="${SHINOGI_NET_DRIVER:-$HOME/git/freemint/sys/sockets/xif/virtio_net/.compile_02060/virtio_net.xif}"
 SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
 DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat02060/mint0206h.prg"
@@ -70,6 +75,12 @@ fi
 }
 command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "mingw cross compiler missing" >&2; exit 2; }
 command -v makensis >/dev/null || { echo "makensis missing" >&2; exit 2; }
+[ -f "$DRIVE_C_ZIP" ] || {
+    echo "no drive C system tree at $DRIVE_C_ZIP" >&2
+    echo "set SHINOGI_DRIVE_C_ZIP=<freemint-install.zip>" >&2
+    exit 2
+}
+
 [ -f "$NET_DRIVER" ] || {
     echo "no guest network driver at $NET_DRIVER" >&2
     echo "build FreeMiNT sys/sockets/xif/virtio_net, or set SHINOGI_NET_DRIVER=<file>" >&2
@@ -121,6 +132,21 @@ cp -rf "$QEMU_WIN/lib/." "$BUNDLE/qemu/lib/"
 cp -f "$QEMU_WIN/COPYING" "$QEMU_WIN/COPYING.LIB" "$QEMU_WIN/VERSION" "$BUNDLE/qemu/"
 
 cp -f "$ELF" "$BUNDLE/emutos-virt.elf"
+
+# Drive C, pristine. The installer lays this down only when the user has
+# no drive C yet; an existing one gets the three overlays alone, because
+# it holds their files and their edited configs (shin-apn.19).
+unzip -q "$DRIVE_C_ZIP" -d "$BUNDLE"
+[ -d "$BUNDLE/freemint-install" ] || {
+    echo "$DRIVE_C_ZIP did not contain freemint-install/" >&2; exit 2; }
+mv "$BUNDLE/freemint-install" "$BUNDLE/drive-c"
+if [ "$CPU" = m68060 ]; then
+    cp -f "$SP060" "$BUNDLE/drive-c/AUTO/060SP.PRG"
+else
+    rm -f "$BUNDLE/drive-c/AUTO/060SP.PRG"
+fi
+cp -f "$KERNEL" "$BUNDLE/drive-c/AUTO/MINT.PRG"
+cp -f "$NET_DRIVER" "$BUNDLE/drive-c/MINT/1-19-CUR/VIRTIONE.XIF"
 cp -f "$SDL2/bin/SDL2.dll" "$BUNDLE/"
 cp -f "$ROOT/tools/win/README.txt" "$BUNDLE/README.txt"
 

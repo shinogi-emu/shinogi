@@ -106,6 +106,23 @@ install_files:
   File "${BUNDLE}\README.txt"
   File "${BUNDLE}\BUILD.txt"
 
+  ; A first install lays down the whole system tree -- EmuTOS, fVDI,
+  ; FreeMiNT, XaAES and the bundled GEM applications -- so one download
+  ; produces a bootable drive C with no second zip to unpack by hand.
+  ;
+  ; ONLY when there is no drive C yet. An existing one is shared space:
+  ; our files, the user's files and their edited configs sit in the same
+  ; folder, so re-extracting over it would silently take their FVDI.SYS
+  ; and anything else they had changed. That case gets the three overlays
+  ; below and nothing more, which is what every build up to beta8 did.
+  ; Reconciling a tree the user has edited is shin-apn.20.
+  IfFileExists "$PROFILE\shinogi-drive-c\*.*" driveCExists 0
+    DetailPrint "Creating drive C at $PROFILE\shinogi-drive-c"
+    SetOutPath "$PROFILE\shinogi-drive-c"
+    File /r "${BUNDLE}\drive-c\*.*"
+    SetOutPath "$INSTDIR"
+  driveCExists:
+
   ; Both CPU editions carry the updated virtio-net driver. Put it where
   ; the existing FreeMiNT tree loads it so neither edition is left using
   ; the older one-second receive poll.

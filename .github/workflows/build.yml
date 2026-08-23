@@ -102,9 +102,79 @@ jobs:
   # The goldens boot the guest under QEMU and diff its serial output.
   # They are the only thing that proves the image works rather than
   # merely links, so a package is never published without them.
+  # The emulator the goldens run on.
+  #
+  # ubuntu-24.04's apt ships qemu-system-m68k 8.2.2, which ships nowhere:
+  # the Windows bundle carries the project build (v11.0.0-rc4) and the
+  # macOS app carries Homebrew's 11.0.2. On 8.2.2 the 060 guest panics
+  # with "Exception number 33" on every golden, and on stock 10.2.1 it
+  # panics with "Line F Emulator" on two of them -- the 68060
+  # unimplemented-FPU trap. Gating a guest on an emulator nobody runs
+  # measures the emulator, not the guest.
+  qemu:
+    name: qemu
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: shinogi-emu/qemu-m68k
+          ref: shinogi-060
+          path: qemu-src
+
+      - name: Record the source revision
+        id: rev
+        working-directory: qemu-src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Keyed on the exact revision, so a rebuild happens only when the
+      # emulator actually changes.
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: qemu-install
+          key: qemu-m68k-${{ steps.rev.outputs.sha }}-v1
+
+      - name: Build it
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libcap-ng-dev libattr1-dev
+          cd qemu-src
+          # virtfs is not optional here: every golden mounts the fixture
+          # folder over virtio-9p.
+          ./configure --target-list=m68k-softmmu \
+                      --enable-virtfs \
+                      --disable-docs --disable-gtk --disable-sdl \
+                      --disable-vnc --disable-werror
+          make -j"$(nproc)"
+          make install DESTDIR="$GITHUB_WORKSPACE/qemu-install"
+
+      - name: Check it is the emulator we asked for
+        run: |
+          set -eu
+          BIN=$(find qemu-install -name qemu-system-m68k -type f | head -1)
+          [ -n "$BIN" ] || { echo "no qemu-system-m68k was built" >&2; exit 1; }
+          "$BIN" --version
+          # 8.2.x is the apt build this job exists to replace.
+          case "$("$BIN" --version | head -1)" in
+            *"version 8."*) echo "built an 8.x -- wrong source" >&2; exit 1 ;;
+          esac
+          "$BIN" -M virt -cpu m68060 -m 8 -display none -S -monitor none \
+                 -serial none & sleep 2; kill $! 2>/dev/null || true
+          echo "m68060 on -M virt accepted"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: qemu-host
+          path: qemu-install/**
+          if-no-files-found: error
+          retention-days: 7
+
   test:
     name: goldens (${{ matrix.edition }})
-    needs: guest
+    needs: [ guest, qemu ]
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -124,10 +194,20 @@ jobs:
           name: guest-${{ matrix.cpu }}
           path: guest
 
-      - name: Install QEMU
+      - uses: actions/download-artifact@v5
+        with:
+          name: qemu-host
+          path: qemu-install
+
+      - name: Put the built QEMU on PATH
         run: |
+          set -eux
           sudo apt-get update
-          sudo apt-get install -y qemu-system-m68k
+          sudo apt-get install -y libpixman-1-0 libglib2.0-0 libcap-ng0
+          BIN=$(find qemu-install -name qemu-system-m68k -type f | head -1)
+          chmod +x "$BIN"
+          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          "$BIN" --version
 
       - name: Build the fixtures
         run: python3 tools/make-fixtures.py /tmp/shinogi-hostfs

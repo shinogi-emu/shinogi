@@ -212,8 +212,22 @@ int main(int argc, char *argv[])
     if (stat(elf, &st) != 0 || !S_ISREG(st.st_mode)) {
         snprintf(elf, sizeof(elf), "%s/emutos-virt.elf", dir);
         if (stat(elf, &st) != 0) {
-            fprintf(stderr, "shinogi: no guest image at %s\n", elf);
-            return 1;
+            /*
+             * Inside a .app the guest image cannot live beside this
+             * binary. Contents/MacOS is for Mach-O, and codesign walks
+             * it expecting to find code: an m68k ELF there is a nested
+             * "code object is not signed at all", which fails the whole
+             * bundle after every dylib has already signed cleanly. So
+             * the bundle puts it in Contents/Resources, which is where a
+             * payload that is data to the host belongs anyway.
+             */
+            snprintf(elf, sizeof(elf), "%s/../Resources/emutos-virt.elf",
+                     dir);
+            if (stat(elf, &st) != 0) {
+                fprintf(stderr, "shinogi: no guest image at "
+                        "%s/emutos-virt.elf\n", dir);
+                return 1;
+            }
         }
     }
 

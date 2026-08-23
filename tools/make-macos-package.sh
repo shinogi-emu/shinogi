@@ -36,7 +36,12 @@ echo "  qemu: $QEMU_BIN"
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RES" "$MACOS/qemu/bin" "$MACOS/qemu/lib" "$MACOS/qemu/share"
 
-cp "$ELF" "$MACOS/emutos-virt.elf"
+# Resources, not MacOS.  Contents/MacOS is for Mach-O, and codesign
+# treats anything nested there as code that must itself carry a
+# signature -- which an m68k ELF cannot.  Left in MacOS it signs every
+# dylib cleanly and then fails the bundle with "code object is not
+# signed at all".
+cp "$ELF" "$RES/emutos-virt.elf"
 cp "$QEMU_BIN" "$MACOS/qemu/bin/"
 
 # QEMU needs its data files: the m68k target loads keymaps, and the

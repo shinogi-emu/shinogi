@@ -97,6 +97,11 @@ typedef struct { SOCKET fd; } listener_t;
 
 #define plat_mkdir(p)   _mkdir(p)
 #define plat_access_w(p) _access((p), 2)
+/* Windows has no fsync.  _commit() is the same operation on a CRT file
+ * descriptor -- flush this handle's buffers to the disk -- and is
+ * declared in <io.h> above.  Without this the mingw link fails on an
+ * undefined reference, which is how the Windows package job found it. */
+#define plat_fsync(fd)  _commit(fd)
 /* No lstat: Windows has no symlink that stat() would not follow in the
  * only case this probe cares about -- "does this name exist". */
 #define plat_lstat(p, st) stat((p), (st))
@@ -292,6 +297,7 @@ typedef struct { int fd; } listener_t;
 #define plat_mkdir(p)    mkdir((p), 0777)
 #define plat_access_w(p) access((p), W_OK)
 #define plat_lstat(p, st) lstat((p), (st))
+#define plat_fsync(fd)   fsync(fd)
 
 static int sockaddr_for(struct sockaddr_un *sa, const char *path)
 {
@@ -863,7 +869,7 @@ static void handles_reset(void)
              * so commit them rather than just dropping them.
              */
             if (files[i].dirty)
-                (void) fsync(files[i].fd);
+                (void) plat_fsync(files[i].fd);
             close(files[i].fd);
             files[i].used = 0;
         }
@@ -1150,7 +1156,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
          */
         if (f->dirty)
         {
-            if (fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
+            if (plat_fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
                 dbg("hostfsd: fsync failed on close: %s\n", strerror(errno));
             f->dirty = 0;
         }

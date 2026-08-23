@@ -22,6 +22,7 @@
  * when it is. SHINOGI_DISPLAY overrides, and an argument overrides that.
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,6 +85,33 @@ static int session_is_remote(void)
 #endif
 }
 
+/*
+ * Everything this program has to say, to the terminal AND to a log file.
+ *
+ * A .app started from the Finder has no terminal at all, so every
+ * diagnostic here would vanish: a launcher that failed and one that was
+ * still working looked identical from the outside -- "it starts, then
+ * nothing". The log is a plain file in the user's home directory so it
+ * can be found without knowing where a sandboxed TMPDIR went.
+ */
+static FILE *logfp;
+
+static void note(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+
+    if (logfp) {
+        va_start(ap, fmt);
+        vfprintf(logfp, fmt, ap);
+        va_end(ap);
+        fflush(logfp);
+    }
+}
+
 /* The directory holding this executable. */
 static int self_dir(char *out, size_t n)
 {
@@ -130,8 +158,18 @@ int main(int argc, char *argv[])
     struct stat st;
     pid_t hostfsd_pid, qemu_pid;
 
+    {
+        char logpath[PATH_MAX + 32];
+
+        snprintf(logpath, sizeof(logpath), "%s/shinogi-launcher.log",
+                 home ? home : "/tmp");
+        logfp = fopen(logpath, "w");
+        note("shinogi " SHINOGI_VERSION " " SHINOGI_EDITION
+             " (" SHINOGI_CPU ") starting\n");
+    }
+
     if (self_dir(dir, sizeof(dir)) != 0) {
-        fprintf(stderr, "shinogi: cannot determine my own location\n");
+        note("shinogi: cannot determine my own location\n");
         return 1;
     }
 
@@ -171,13 +209,13 @@ int main(int argc, char *argv[])
         snprintf(pristine, sizeof(pristine), "%s/../Resources/drive-c", dir);
         if (stat(pristine, &st) == 0) {
             char cmd[2 * PATH_MAX + 64];
-            printf("shinogi: creating drive C at %s\n", hostfs);
+            note("shinogi: creating drive C at %s\n", hostfs);
             fflush(stdout);
             /* -a for the whole tree; the destination must not exist, which
              * the stat above has already established. */
             snprintf(cmd, sizeof(cmd), "cp -a '%s' '%s'", pristine, hostfs);
             if (system(cmd) != 0)
-                fprintf(stderr, "shinogi: could not lay down drive C at "
+                note("shinogi: could not lay down drive C at "
                         "%s\n", hostfs);
         } else {
             mkdir(hostfs, 0755);
@@ -270,7 +308,7 @@ int main(int argc, char *argv[])
             snprintf(elf, sizeof(elf), "%s/../Resources/emutos-virt.elf",
                      dir);
             if (stat(elf, &st) != 0) {
-                fprintf(stderr, "shinogi: no guest image at "
+                note("shinogi: no guest image at "
                         "%s/emutos-virt.elf\n", dir);
                 return 1;
             }
@@ -339,11 +377,11 @@ int main(int argc, char *argv[])
                "--listen", sock,
                "--ready-file", ready,
                (char *)NULL);
-        fprintf(stderr, "shinogi: could not start %s\n", hostfsd);
+        note("shinogi: could not start %s\n", hostfsd);
         _exit(127);
     }
     if (hostfsd_pid < 0) {
-        fprintf(stderr, "shinogi: cannot fork for the drive C helper\n");
+        note("shinogi: cannot fork for the drive C helper\n");
         return 1;
     }
 
@@ -356,12 +394,12 @@ int main(int argc, char *argv[])
             int status;
 
             if (waitpid(hostfsd_pid, &status, WNOHANG) == hostfsd_pid) {
-                fprintf(stderr, "shinogi: the drive C helper exited "
+                note("shinogi: the drive C helper exited "
                                 "before it was ready\n");
                 return 1;
             }
             if (++waited > 200) {        /* 10 seconds */
-                fprintf(stderr, "shinogi: the drive C helper never became "
+                note("shinogi: the drive C helper never became "
                                 "ready\n");
                 kill(hostfsd_pid, SIGTERM);
                 return 1;
@@ -370,15 +408,24 @@ int main(int argc, char *argv[])
         }
     }
 
-    printf("shinogi " SHINOGI_VERSION "\n");
-    printf("drive C: %s\n", hostfs);
-    printf("display: %s\n", display);
+    note("drive C: %s\n", hostfs);
+    note("display: %s\n", display);
+    note("guest:   %s\n", elf);
+    note("qemu:    %s\n", qemu);
     fflush(stdout);
 
     /* Not execlp: the helper has to be cleaned up when QEMU exits, and a
      * replaced process image cannot do that. */
     qemu_pid = fork();
     if (qemu_pid == 0) {
+        /*
+         * QEMU's own complaints go to the log too. Without this a
+         * refused option or a missing dylib kills the emulator silently
+         * under a Finder launch, and the launcher reports nothing
+         * because from its side QEMU simply exited.
+         */
+        if (logfp)
+            dup2(fileno(logfp), 2);
         execlp(qemu, qemu,
                "-name", SHINOGI_EDITION " (" SHINOGI_VERSION ")",
                "-M", "virt",
@@ -399,7 +446,7 @@ int main(int argc, char *argv[])
                "-serial", serial,
                "-d", "guest_errors", "-D", logerr,
                (char *)NULL);
-        fprintf(stderr, "shinogi: could not start %s\n", qemu);
+        note("shinogi: could not start %s\n", qemu);
         _exit(127);
     }
     if (qemu_pid > 0) {
@@ -414,6 +461,6 @@ int main(int argc, char *argv[])
         return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
     }
 
-    fprintf(stderr, "shinogi: could not start %s\n", qemu);
+    note("shinogi: could not start %s\n", qemu);
     return 1;
 }

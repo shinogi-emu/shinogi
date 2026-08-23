@@ -34,7 +34,7 @@ echo "shinogi $VERSION -> $APP"
 echo "  qemu: $QEMU_BIN"
 
 rm -rf "$APP"
-mkdir -p "$MACOS" "$RES" "$MACOS/qemu/bin" "$MACOS/qemu/lib" "$MACOS/qemu/share"
+mkdir -p "$MACOS" "$RES" "$MACOS/qemu/bin" "$MACOS/qemu/lib" "$RES/qemu/share"
 
 # Resources, not MacOS.  Contents/MacOS is for Mach-O, and codesign
 # treats anything nested there as code that must itself carry a
@@ -44,10 +44,13 @@ mkdir -p "$MACOS" "$RES" "$MACOS/qemu/bin" "$MACOS/qemu/lib" "$MACOS/qemu/share"
 cp "$ELF" "$RES/emutos-virt.elf"
 cp "$QEMU_BIN" "$MACOS/qemu/bin/"
 
-# QEMU needs its data files: the m68k target loads keymaps, and the
-# cocoa UI wants the share tree present even when it uses little of it.
+# QEMU's data files, in Resources for the same reason as the guest image:
+# codesign refuses a bundle with unsigned non-code under Contents/MacOS,
+# and it names only the first file it trips over, so these surfaced one
+# failure later than the ELF did.  The launcher points QEMU at them with
+# -L, since they are no longer where it would look by itself.
 for d in keymaps; do
-    [ -d "$QEMU_PREFIX/share/qemu/$d" ] && cp -R "$QEMU_PREFIX/share/qemu/$d" "$MACOS/qemu/share/"
+    [ -d "$QEMU_PREFIX/share/qemu/$d" ] && cp -R "$QEMU_PREFIX/share/qemu/$d" "$RES/qemu/share/"
 done
 
 # Relocate the dylibs. Homebrew's binary references /opt/homebrew paths,

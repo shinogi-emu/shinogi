@@ -114,6 +114,7 @@ int main(int argc, char *argv[])
     char sock[PATH_MAX + 32], ready[PATH_MAX + 40];
     char chardev[PATH_MAX + 64], hostfsd[PATH_MAX + 32];
     char display[128];
+    char datadir[PATH_MAX + 32];
     char gpudev[64];
     const char *want;
     const char *home = getenv("HOME");
@@ -129,6 +130,17 @@ int main(int argc, char *argv[])
     snprintf(qemu, sizeof(qemu), "%s/qemu/bin/qemu-system-m68k", dir);
     if (stat(qemu, &st) != 0)
         snprintf(qemu, sizeof(qemu), "qemu-system-m68k");
+
+    /*
+     * QEMU finds its data files at ../share/qemu relative to its own
+     * binary.  In the .app they cannot be there - that path is inside
+     * Contents/MacOS, which codesign requires to hold only signed code -
+     * so they ship in Resources and QEMU is told where to look.  -L is a
+     * search path and QEMU keeps its built-in entries as well, so on the
+     * Linux bundle, where this directory does not exist, it costs
+     * nothing and changes nothing.
+     */
+    snprintf(datadir, sizeof(datadir), "%s/../Resources/qemu/share", dir);
 
     /* The host folder the guest sees as drive C:. */
     if (getenv("SHINOGI_HOSTFS"))
@@ -337,6 +349,7 @@ int main(int argc, char *argv[])
                "-name", "Shinogi (" SHINOGI_VERSION ")",
                "-M", "virt",
                "-m", "128",
+               "-L", datadir,
                "-kernel", elf,
                /* slirp: NAT with no setup, see the Windows launcher. */
                "-netdev", "user,id=net0",

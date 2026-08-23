@@ -22,11 +22,33 @@ env:
   TOOLCHAIN_URL: https://atari.joska.no/snapshots
   QEMU_WIN_URL: https://qemu.weilnetz.de/w64/qemu-w64-setup-20260729.exe
   SDL2_MINGW_URL: https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-mingw.tar.gz
+  # The drive C system tree, published once as a release asset. Pinned by
+  # checksum: it is 43 MB of guest software that every package lays down,
+  # and a silently changed tree would ship to users unnoticed.
+  DRIVE_C_URL: https://github.com/shinogi-emu/shinogi/releases/download/drive-c-v1/freemint-install.zip
+  DRIVE_C_SHA256: 19b8a35ad7fb6aacf9ba3d68b8814c888f97d4d20cf2f8d650075cca9c5a5ec8
 
 jobs:
   guest:
-    name: guest image
+    name: guest image (${{ matrix.edition }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The 040 image is built -m68040. The 060 image must NOT be:
+          # gcc then emits the 64-bit MULU.L/DIVU.L forms the 68060 moved
+          # into software, and EmuTOS faults on one before anything can
+          # load the 060 package from AUTO. Verified -- the -m68040 image
+          # on -cpu m68060 dies with "Panic: Exception number 61", while
+          # -m68020-60 boots past VDI init. So the 060 edition gets a
+          # 020-60 guest, exactly as its FreeMiNT kernel is 020-60.
+          - edition: Shinogi-040
+            cpu: m68040
+            cpuflags: -m68040
+          - edition: Shinogi-060
+            cpu: m68060
+            cpuflags: -m68020-60
     steps:
       - uses: actions/checkout@v5
         with:
@@ -49,7 +71,9 @@ jobs:
 
       - name: Build
         working-directory: emutos
-        run: make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- qemu-virt
+        run: |
+          make ELF=1 TOOLCHAIN_PREFIX=m68k-atari-mintelf- \
+               CPUFLAGS='${{ matrix.cpuflags }}' qemu-virt
 
       - name: Check it is a real m68k image
         working-directory: emutos
@@ -66,7 +90,7 @@ jobs:
       # emutos-virt.elf at its root and bios/hostfs_proto.h beside it.
       - uses: actions/upload-artifact@v5
         with:
-          name: guest
+          name: guest-${{ matrix.cpu }}
           path: |
             emutos/emutos-virt.elf
             emutos/bios/hostfs_proto.h
@@ -84,9 +108,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      # The 040 image only. run-golden.sh has no way to select a CPU, so
+      # it runs QEMU's default for -M virt, and gating the 060 image here
+      # would mean booting it as an 040 and proving nothing about it.
       - uses: actions/download-artifact@v5
         with:
-          name: guest
+          name: guest-m68040
           path: guest
 
       - name: Install QEMU
@@ -198,15 +225,33 @@ jobs:
           retention-days: 7
 
   windows:
-    name: windows package
+    name: windows package (${{ matrix.edition }})
     needs: [ guest, test, freemint ]
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: Shinogi-040
+            cpu: m68040
+          - edition: Shinogi-060
+            cpu: m68060
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
         with:
-          name: guest
+          name: guest-${{ matrix.cpu }}
           path: guest
+      # The drive C system tree: EmuTOS, fVDI, FreeMiNT, XaAES with its
+      # widget and palette set, MyAES/Thing and the bundled applications.
+      # Published once as a release asset rather than rebuilt per run --
+      # tools/make-mint-install.sh reproduces it exactly, but several of
+      # its inputs are third-party binaries a runner cannot fetch.
+      - name: Fetch the drive C system tree
+        run: |
+          set -eux
+          curl -fsSL "$DRIVE_C_URL" -o freemint-install.zip
+          echo "$DRIVE_C_SHA256  freemint-install.zip" | sha256sum -c -
       - uses: actions/download-artifact@v5
         with:
           name: mint
@@ -244,19 +289,29 @@ jobs:
           SHINOGI_MINT_KERNEL: ${{ github.workspace }}/mint/mint0206h.prg
           SHINOGI_060SP: ${{ github.workspace }}/mint/060sp.prg
           SHINOGI_NET_DRIVER: ${{ github.workspace }}/mint/virtio_net.xif
+          SHINOGI_CPU: ${{ matrix.cpu }}
+          SHINOGI_DRIVE_C_ZIP: ${{ github.workspace }}/freemint-install.zip
         run: ./tools/make-windows-package.sh "${{ github.workspace }}/dist"
 
       - uses: actions/upload-artifact@v5
         with:
-          name: windows
+          name: windows-${{ matrix.cpu }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7
 
   macos:
-    name: macos package
-    needs: [ guest, test ]
+    name: macos package (${{ matrix.edition }})
+    needs: [ guest, test, freemint ]
     runs-on: macos-14          # Apple Silicon
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: Shinogi-040
+            cpu: m68040
+          - edition: Shinogi-060
+            cpu: m68060
     # The secrets context is not available in an `if:` condition, but it
     # is available in `env:`. Resolve the "do we have credentials" checks
     # once here, and let the steps test these instead.
@@ -267,8 +322,18 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
         with:
-          name: guest
+          name: guest-${{ matrix.cpu }}
           path: guest
+      - uses: actions/download-artifact@v5
+        with:
+          name: mint
+          path: mint
+
+      - name: Fetch the drive C system tree
+        run: |
+          set -eux
+          curl -fsSL "$DRIVE_C_URL" -o freemint-install.zip
+          echo "$DRIVE_C_SHA256  freemint-install.zip" | shasum -a 256 -c -
 
       - name: Install QEMU and the bundling tool
         # dylibbundler rewrites QEMU's dylib references to
@@ -279,6 +344,11 @@ jobs:
       - name: Build the app bundle
         env:
           SHINOGI_ELF: ${{ github.workspace }}/guest/emutos-virt.elf
+          SHINOGI_CPU: ${{ matrix.cpu }}
+          SHINOGI_DRIVE_C_ZIP: ${{ github.workspace }}/freemint-install.zip
+          SHINOGI_MINT_KERNEL: ${{ github.workspace }}/mint/mint0206h.prg
+          SHINOGI_060SP: ${{ github.workspace }}/mint/060sp.prg
+          SHINOGI_NET_DRIVER: ${{ github.workspace }}/mint/virtio_net.xif
         run: ./tools/make-macos-package.sh "${{ github.workspace }}/dist"
 
       # Signing and notarisation only run when the secrets exist, so a
@@ -331,17 +401,96 @@ jobs:
           rm -f "$RUNNER_TEMP/notary.p8"
 
       - name: Package for download
+        env:
+          EDITION: ${{ matrix.edition }}
         run: |
           set -eu
           VERSION=$(cat VERSION)
           ditto -c -k --keepParent dist/shinogi.app \
-            "dist/shinogi-$VERSION-macos-arm64.zip"
-          shasum -a 256 "dist/shinogi-$VERSION-macos-arm64.zip" \
-            > "dist/shinogi-$VERSION-macos-arm64.zip.sha256"
+            "dist/$EDITION-$VERSION-macos-arm64.zip"
+          shasum -a 256 "dist/$EDITION-$VERSION-macos-arm64.zip" \
+            > "dist/$EDITION-$VERSION-macos-arm64.zip.sha256"
 
       - uses: actions/upload-artifact@v5
         with:
-          name: macos
+          name: macos-${{ matrix.cpu }}
           path: dist/*.zip*
           if-no-files-found: error
           retention-days: 7
+
+  # A soft release: pushing a tag like b9 builds every package and
+  # attaches them to a GitHub prerelease. Prerelease rather than latest,
+  # so a tag does not silently become the thing the repo front page
+  # recommends. Asset download counts are per file, which is what makes
+  # 040 against 060 and macOS against Windows answerable.
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/b')
+    needs: [ windows, macos ]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: windows-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: macos-*
+          path: dist
+          merge-multiple: true
+
+      # Four packages and their checksums. Fewer means a matrix leg
+      # failed without failing this job, and a release missing an edition
+      # would quietly bias exactly the comparison it exists to make.
+      - name: Check every package is present
+        run: |
+          set -eu
+          ls -l dist/
+          missing=
+          for f in Shinogi-040-*-win64-setup.exe \
+                   Shinogi-060-*-win64-setup.exe \
+                   Shinogi-040-*-macos-arm64.zip \
+                   Shinogi-060-*-macos-arm64.zip; do
+            # shellcheck disable=SC2086
+            set -- dist/$f
+            [ -e "$1" ] || missing="$missing $f"
+          done
+          [ -z "$missing" ] || { echo "missing packages:$missing" >&2; exit 1; }
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION=$(cat VERSION)
+          cat > notes.md <<NOTES
+          Shinogi $VERSION, for macOS (Apple Silicon) and Windows x64.
+
+          Two editions, differing only in the emulated CPU. Both carry the
+          same system tree and the same desktop.
+
+          - **Shinogi-060** - the default. Start here.
+          - **Shinogi-040** - a control, and a fallback if something
+            misbehaves on the 060.
+
+          Each package is self-contained. A first install lays down drive C
+          for you: EmuTOS, fVDI, FreeMiNT, XaAES and the bundled GEM
+          applications. An existing drive C keeps your files and your edited
+          configs - only the kernel and drivers are refreshed.
+
+          The macOS builds are signed, notarised and stapled. Check a
+          download against its .sha256 before running it.
+
+          Built from $GITHUB_SHA.
+          NOTES
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Shinogi $VERSION" \
+            --prerelease \
+            --notes-file notes.md

@@ -105,9 +105,83 @@ jobs:
           SHINOGI_EMUTOS: ${{ github.workspace }}/guest
         run: ./tools/run-all-goldens.sh
 
+  freemint:
+    name: freemint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: shinogi-emu/freemint
+          ref: virtio-net
+          path: freemint
+
+      # FreeMiNT is an a.out build -- m68k-atari-mint, NOT the mintelf
+      # toolchain the guest job fetches. Same server, different tarball.
+      - name: Fetch the a.out cross toolchain
+        run: |
+          set -eux
+          for pkg in binutils gcc; do
+            curl -fsSL "$TOOLCHAIN_URL/$pkg/$pkg-mint-current.tar.bz2" \
+              | sudo tar xjf - -C /
+          done
+          m68k-atari-mint-gcc --version
+
+      # hat02060 is not an upstream target; it is defined here on the make
+      # command line, which is how FreeMiNT's sys/KERNELDEFS says to add
+      # one. Same KERNELDEFS as the 040 kernel -- -DM68040 selects the
+      # runtime MMU and cache model -- but built for the 020-060 family,
+      # so one kernel serves both the 040 and 060 editions.
+      - name: Build the kernel, the 060 package and the network driver
+        working-directory: freemint
+        env:
+          M68K_ATARI_MINT_CROSS: yes
+          KDEFS: >-
+            -DCRYPTO_CODE -DSOFT_UNITABLE -DBUILTIN_SHELL -DM68040 -DOLDTOSFS -DWITH_MMU_SUPPORT -DMACHINE_QEMU_VIRT
+        run: |
+          set -eux
+          make -C sys \
+            kerneltargets=hat02060 \
+            CPU_hat02060=02060 \
+            MINT_hat02060=mint0206h.prg \
+            "KERNELDEFS_hat02060=$KDEFS" \
+            hat02060
+          make -C sys/arch/060sp
+          make -C sys/sockets/xif/virtio_net
+
+      # The kernel records its own build flags, so this checks that what
+      # came out is the kernel we asked for rather than merely that a
+      # kernel came out. Without it a target that silently fell back to
+      # different defs would ship looking identical.
+      - name: Check the kernel is the one we asked for
+        run: |
+          set -eu
+          for f in freemint/sys/.compile_hat02060/mint0206h.prg \
+                   freemint/sys/arch/060sp/060sp.prg \
+                   freemint/sys/sockets/xif/virtio_net/.compile_02060/virtio_net.xif; do
+            test -s "$f" || { echo "missing or empty: $f" >&2; exit 1; }
+          done
+          strings freemint/sys/.compile_hat02060/mint0206h.prg \
+            | grep -q -- "-DMACHINE_QEMU_VIRT" \
+            || { echo "kernel was not built with MACHINE_QEMU_VIRT" >&2; exit 1; }
+          strings freemint/sys/.compile_hat02060/mint0206h.prg \
+            | grep -q -- "-m68020-60" \
+            || { echo "kernel is not an 020-060 build" >&2; exit 1; }
+          mkdir -p mint
+          cp freemint/sys/.compile_hat02060/mint0206h.prg mint/
+          cp freemint/sys/arch/060sp/060sp.prg mint/
+          cp freemint/sys/sockets/xif/virtio_net/.compile_02060/virtio_net.xif mint/
+          ls -l mint/
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: mint
+          path: mint/*
+          if-no-files-found: error
+          retention-days: 7
+
   windows:
     name: windows package
-    needs: [ guest, test ]
+    needs: [ guest, test, freemint ]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -115,6 +189,10 @@ jobs:
         with:
           name: guest
           path: guest
+      - uses: actions/download-artifact@v5
+        with:
+          name: mint
+          path: mint
 
       - name: Install the cross toolchain and installer builder
         run: |
@@ -142,6 +220,12 @@ jobs:
           SHINOGI_ELF: ${{ github.workspace }}/guest/emutos-virt.elf
           QEMU_WIN: ${{ github.workspace }}/qemu-w64
           SDL2_MINGW: ${{ github.workspace }}/mingw-sdl2/x86_64-w64-mingw32
+          # Without these three the packager looks for a FreeMiNT tree in
+          # a home directory, which is why this job failed on every run
+          # before the freemint job existed.
+          SHINOGI_MINT_KERNEL: ${{ github.workspace }}/mint/mint0206h.prg
+          SHINOGI_060SP: ${{ github.workspace }}/mint/060sp.prg
+          SHINOGI_NET_DRIVER: ${{ github.workspace }}/mint/virtio_net.xif
         run: ./tools/make-windows-package.sh "${{ github.workspace }}/dist"
 
       - uses: actions/upload-artifact@v5

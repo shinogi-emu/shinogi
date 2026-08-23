@@ -18,6 +18,7 @@ Outputs:
     tools/macos/shinogi.icns                   make-macos-package.sh
     emutos/bios/shinogi_splash.h               the boot splash
 """
+import io
 import os
 import struct
 import sys
@@ -72,6 +73,67 @@ def render(px):
             b = min(255, b * 255 // a)
         out[i * 4:i * 4 + 4] = bytes((r, g, b, a))
     return Image.frombytes("RGBA", (px, px), bytes(out))
+
+
+def render_mark(px):
+    """Just the mountain, cropped square -- no lettering.
+
+    The QEMU window icon is shown at 32x32 in a taskbar, where the
+    SHINOGI lettering is a grey smear and the mountain is still a
+    mountain.  Derived from the one SVG rather than hand-drawn a second
+    time, so the mark cannot drift away from the logo.
+    """
+    text = io.open(SVG, encoding="utf-8").read()
+
+    # Drop the lettering group; it is the only <g> in the file.
+    start = text.index("  <g fill=\"#ffffff\"")
+    end = text.index("</g>", start) + len("</g>")
+    text = text[:start] + text[end:]
+
+    # The mountain occupies x 109..915, y 155..826.  Re-frame the viewBox
+    # on it, square and centred, with a little air around the edges.
+    text = text.replace('viewBox="0 0 1024 1024"',
+                        'viewBox="68.5 47 887 887"')
+
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, px, px)
+    ctx = cairo.Context(surface)
+    handle = Rsvg.Handle.new_from_data(text.encode("utf-8"))
+    rect = Rsvg.Rectangle()
+    rect.x = rect.y = 0
+    rect.width = rect.height = px
+    handle.render_document(ctx, rect)
+    surface.flush()
+
+    data = bytes(surface.get_data())
+    out = bytearray(px * px * 4)
+    for i in range(px * px):
+        b, g, r, a = data[i * 4:i * 4 + 4]
+        if a:
+            r = min(255, r * 255 // a)
+            g = min(255, g * 255 // a)
+            b = min(255, b * 255 // a)
+        out[i * 4:i * 4 + 4] = bytes((r, g, b, a))
+    return Image.frombytes("RGBA", (px, px), bytes(out))
+
+
+def qemu_bmp(img, path):
+    """The mark on white, for QEMU's SDL icon loader.
+
+    ui/sdl2.c colour-keys pure white to transparent, and our snow cap is
+    pure white -- keyed as-is it would be punched out of the middle of
+    the mountain.  So the background is white and every white pixel that
+    belongs to the ARTWORK is nudged one step off it, which the eye
+    cannot see and the colour key no longer matches.
+    """
+    flat = Image.new("RGB", img.size, (255, 255, 255))
+    flat.paste(img, (0, 0), img)
+    src, dst = img.load(), flat.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            if src[x, y][3] >= 128 and dst[x, y] == (255, 255, 255):
+                dst[x, y] = (254, 254, 254)
+    flat.save(path, "BMP")
 
 
 def quantise(img):
@@ -203,6 +265,17 @@ def main():
                    sizes=[(s, s) for s in (16, 32, 48, 64, 128, 256)]))
 
     ok &= emit("tools/macos/shinogi.icns", lambda f: icns(imgs, f))
+
+    # QEMU's own window icon, which it loads from these two paths inside
+    # its share/icons tree.  The packagers drop ours over the stock ones,
+    # so the emulator window and its taskbar button carry the mark
+    # instead of the QEMU logo.  Both forms ship because which one is
+    # read depends on whether that QEMU build has SDL_image.
+    marks = {px: render_mark(px) for px in (32, 128)}
+    ok &= emit("tools/win/qemu-icon.png",
+               lambda f: marks[128].save(f, "PNG"))
+    ok &= emit("tools/win/qemu-icon.bmp",
+               lambda f: qemu_bmp(marks[32], f))
 
     idx, w, h = quantise(imgs[SPLASH_SIZE])
     data = rle(idx, w, h)

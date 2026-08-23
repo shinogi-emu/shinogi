@@ -105,6 +105,18 @@ cp -f "$QEMU_WIN"/*.dll "$BUNDLE/qemu/"
 for d in keymaps icons locale; do
     [ -d "$QEMU_WIN/share/$d" ] && cp -rf "$QEMU_WIN/share/$d" "$BUNDLE/qemu/share/"
 done
+
+# The emulator window and its taskbar button belong to qemu-system-m68k,
+# not to our launcher, so giving the launcher an icon never touched them -
+# what the user sees is QEMU's own logo.  ui/sdl2.c does not embed that
+# icon, it LOADS it from share/icons at startup, so dropping ours over it
+# is enough.  Both names are replaced because which one is read depends on
+# whether that QEMU was built with SDL_image.
+ICONS="$BUNDLE/qemu/share/icons/hicolor"
+[ -f "$ICONS/128x128/apps/qemu.png" ] &&
+    cp -f "$ROOT/tools/win/qemu-icon.png" "$ICONS/128x128/apps/qemu.png"
+[ -f "$ICONS/32x32/apps/qemu.bmp" ] &&
+    cp -f "$ROOT/tools/win/qemu-icon.bmp" "$ICONS/32x32/apps/qemu.bmp"
 cp -rf "$QEMU_WIN/lib/." "$BUNDLE/qemu/lib/"
 cp -f "$QEMU_WIN/COPYING" "$QEMU_WIN/COPYING.LIB" "$QEMU_WIN/VERSION" "$BUNDLE/qemu/"
 

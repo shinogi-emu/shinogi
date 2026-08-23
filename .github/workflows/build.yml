@@ -117,6 +117,14 @@ jobs:
 
       # FreeMiNT is an a.out build -- m68k-atari-mint, NOT the mintelf
       # toolchain the guest job fetches. Same server, different tarball.
+      #
+      # The compiler alone is not enough: sys/arch/magic/genmagic.c is a
+      # host-side generator that includes <mint/mintbind.h>, so the
+      # mintlib sysroot has to be there too or the very first object
+      # fails. This mirrors what FreeMiNT's own CI installs, and the
+      # split matters -- the tools go to /, the libraries go to the cross
+      # sysroot. gcc and binutils take "current", everything else takes
+      # "latest", which is also upstream's rule.
       - name: Fetch the a.out cross toolchain
         run: |
           set -eux
@@ -124,7 +132,17 @@ jobs:
             curl -fsSL "$TOOLCHAIN_URL/$pkg/$pkg-mint-current.tar.bz2" \
               | sudo tar xjf - -C /
           done
+          curl -fsSL "$TOOLCHAIN_URL/mintbin/mintbin-mint-latest.tar.bz2" \
+            | sudo tar xjf - -C /
+          SYSROOT=/usr/m68k-atari-mint/sys-root
+          sudo mkdir -p "$SYSROOT"
+          for pkg in mintlib fdlibm gemlib cflib gemma; do
+            curl -fsSL "$TOOLCHAIN_URL/$pkg/$pkg-mint-latest.tar.bz2" \
+              | sudo tar xjf - -C "$SYSROOT"
+          done
           m68k-atari-mint-gcc --version
+          test -f "$SYSROOT/usr/include/mint/mintbind.h" \
+            || find "$SYSROOT" -name mintbind.h
 
       # hat02060 is not an upstream target; it is defined here on the make
       # command line, which is how FreeMiNT's sys/KERNELDEFS says to add

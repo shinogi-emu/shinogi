@@ -103,17 +103,25 @@ jobs:
   # They are the only thing that proves the image works rather than
   # merely links, so a package is never published without them.
   test:
-    name: goldens
+    name: goldens (${{ matrix.edition }})
     needs: guest
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: Shinogi-040
+            cpu: m68040
+          - edition: Shinogi-060
+            cpu: m68060
     steps:
       - uses: actions/checkout@v5
-      # The 040 image only. run-golden.sh has no way to select a CPU, so
-      # it runs QEMU's default for -M virt, and gating the 060 image here
-      # would mean booting it as an 040 and proving nothing about it.
+      # Each guest is booted on the CPU it ships for. Booting the 060
+      # image as an 040 would prove nothing about the edition that
+      # actually ships it.
       - uses: actions/download-artifact@v5
         with:
-          name: guest-m68040
+          name: guest-${{ matrix.cpu }}
           path: guest
 
       - name: Install QEMU
@@ -126,6 +134,7 @@ jobs:
 
       - name: Run the goldens
         env:
+          SHINOGI_CPU: ${{ matrix.cpu }}
           SHINOGI_ELF: ${{ github.workspace }}/guest/emutos-virt.elf
           # Not a real EmuTOS tree, just the artifact -- but it carries
           # bios/hostfs_proto.h, which is all the wire-header check reads.

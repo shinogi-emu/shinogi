@@ -165,8 +165,16 @@ set -- "$@" \
     -device virtio-serial-device \
     -device virtserialport,chardev=hostfs,name=shinogi.hostfs
 
+# The CPU the guest is booted on. Defaults to m68040, which is what
+# QEMU's virt machine picks anyway, so every existing golden runs
+# unchanged. It exists so the 060 edition's guest can be gated on the CPU
+# it actually ships for: that image is built -m68020-60 precisely because
+# an -m68040 build dies on -cpu m68060 with "Panic: Exception number 61",
+# and booting it as an 040 here would prove nothing about it.
+CPU="${SHINOGI_CPU:-m68040}"
+
 qemu-system-m68k \
-    -M virt -m 128 \
+    -M virt -cpu "$CPU" -m 128 \
     -kernel "$ELF" \
     -device virtio-gpu-device \
     -fsdev "local,id=hostfs9p,path=$FOLDER,security_model=mapped-xattr" \
@@ -270,6 +278,20 @@ if [ "$QSTATUS" -ne 0 ] && [ "$QSTATUS" -ne 143 ]; then
 fi
 
 [ -s "$LOG" ] || { echo "no serial output captured in $LOG - guest never ran" >&2; exit 2; }
+
+# A guest that panicked has not passed, wherever the panic appears.
+#
+# The comparison below reads only the FIRST $WANT matching lines, so a
+# crash after them is invisible to it. That is not hypothetical: booting
+# the 68040 guest on -cpu m68060 panics with "Exception number 61" once
+# it reaches the VDI, and every one of these 14 goldens still reported
+# PASS -- the expected listing had already been emitted. A gate that
+# cannot fail on a crashed guest is not gating the thing that matters.
+if grep -q "Panic:" "$LOG"; then
+    echo "FAIL $NAME - the guest panicked" >&2
+    sed -n '/Panic:/,+2p' "$LOG" | tr -d '\r' | sed 's/^/    /' >&2
+    exit 1
+fi
 
 # The guest emits CRLF; strip the CR so goldens can be plain LF.
 #

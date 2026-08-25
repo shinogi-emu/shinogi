@@ -32,6 +32,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <dirent.h>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -110,6 +111,37 @@ static void note(const char *fmt, ...)
         va_end(ap);
         fflush(logfp);
     }
+}
+
+/*
+ * Is this directory empty, or absent?
+ *
+ * An empty drive C is not a user's drive C. It is what an older build
+ * left behind: before the tree shipped inside the bundle, the launcher
+ * simply mkdir'd the folder, so anyone who ran one of those has an empty
+ * one sitting there. Treating it as "theirs" means the tree is never laid
+ * down, the AUTO folder is never found, and what comes up is the bare
+ * EmuTOS desktop in EmuTOS's own palette -- which reads as a broken build
+ * rather than as an empty folder. That is exactly how it was reported.
+ */
+static int dir_is_empty_or_absent(const char *path)
+{
+    DIR *d = opendir(path);
+    struct dirent *e;
+    int n = 0;
+
+    if (!d)
+        return 1;
+
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+            continue;
+        n++;
+        break;
+    }
+    closedir(d);
+
+    return n == 0;
 }
 
 /* The directory holding this executable. */
@@ -195,9 +227,10 @@ int main(int argc, char *argv[])
      * the next release replaces, and a guest that wrecks its own C: is one
      * deleted folder away from working again.
      *
-     * Only when the folder does not exist: an existing drive C belongs to
-     * the user, and re-laying the tree over it would overwrite their
-     * edited configs.
+     * Only when there is nothing there: a drive C with files in it
+     * belongs to the user, and re-laying the tree over it would overwrite
+     * their edited configs. An EMPTY folder is not that -- see
+     * dir_is_empty_or_absent above.
      */
     /* The host folder the guest sees as drive C:. */
     if (getenv("SHINOGI_HOSTFS"))
@@ -205,20 +238,23 @@ int main(int argc, char *argv[])
     else
         snprintf(hostfs, sizeof(hostfs), "%s/shinogi-drive-c",
                  home ? home : ".");
-    if (stat(hostfs, &st) != 0) {
+    if (dir_is_empty_or_absent(hostfs)) {
         snprintf(pristine, sizeof(pristine), "%s/../Resources/drive-c", dir);
         if (stat(pristine, &st) == 0) {
             char cmd[2 * PATH_MAX + 64];
             note("shinogi: creating drive C at %s\n", hostfs);
             fflush(stdout);
-            /* -a for the whole tree; the destination must not exist, which
-             * the stat above has already established. */
-            snprintf(cmd, sizeof(cmd), "cp -a '%s' '%s'", pristine, hostfs);
+            /* Copy the CONTENTS, so an existing empty folder is filled
+             * rather than nested inside itself. */
+            mkdir(hostfs, 0755);
+            snprintf(cmd, sizeof(cmd), "cp -a '%s/.' '%s/'", pristine, hostfs);
             if (system(cmd) != 0)
                 note("shinogi: could not lay down drive C at "
                         "%s\n", hostfs);
         } else {
             mkdir(hostfs, 0755);
+            note("shinogi: drive C at %s is empty and this bundle has no "
+                 "tree to put there\n", hostfs);
         }
     }
 

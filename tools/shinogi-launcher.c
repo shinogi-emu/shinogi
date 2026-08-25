@@ -156,7 +156,7 @@ int main(int argc, char *argv[])
     const char *want;
     const char *home = getenv("HOME");
     struct stat st;
-    pid_t hostfsd_pid, qemu_pid;
+    pid_t hostfsd_pid;
 
     {
         char logpath[PATH_MAX + 32];
@@ -376,6 +376,9 @@ int main(int argc, char *argv[])
                "--root", hostfs,
                "--listen", sock,
                "--ready-file", ready,
+               /* It ends itself when the emulator disconnects, so
+                * nothing has to survive QEMU in order to reap it. */
+               "--once",
                (char *)NULL);
         note("shinogi: could not start %s\n", hostfsd);
         _exit(127);
@@ -414,18 +417,28 @@ int main(int argc, char *argv[])
     note("qemu:    %s\n", qemu);
     fflush(stdout);
 
-    /* Not execlp: the helper has to be cleaned up when QEMU exits, and a
-     * replaced process image cannot do that. */
-    qemu_pid = fork();
-    if (qemu_pid == 0) {
-        /*
-         * QEMU's own complaints go to the log too. Without this a
-         * refused option or a missing dylib kills the emulator silently
-         * under a Finder launch, and the launcher reports nothing
-         * because from its side QEMU simply exited.
-         */
-        if (logfp)
-            dup2(fileno(logfp), 2);
+    /*
+     * BECOME QEMU, rather than starting it as a child.
+     *
+     * On macOS the running application is the process the bundle
+     * launched -- Contents/MacOS/shinogi -- and that is what owns the
+     * Dock icon, the activation state and the right to put a window on
+     * screen. A QEMU forked underneath it is a separate, unbundled
+     * process that the window server does not consider part of the app,
+     * so the guest boots perfectly and nothing is ever displayed.
+     *
+     * This used to fork because the helper had to be reaped when QEMU
+     * exited. It does not: --once above makes it end itself when the
+     * emulator disconnects, which is the same event, observed from the
+     * other side.
+     *
+     * QEMU's own complaints go to the log first. Without this a refused
+     * option or a missing dylib kills the emulator silently under a
+     * Finder launch.
+     */
+    if (logfp)
+        dup2(fileno(logfp), 2);
+    {
         execlp(qemu, qemu,
                "-name", SHINOGI_EDITION " (" SHINOGI_VERSION ")",
                "-M", "virt",
@@ -446,21 +459,12 @@ int main(int argc, char *argv[])
                "-serial", serial,
                "-d", "guest_errors", "-D", logerr,
                (char *)NULL);
-        note("shinogi: could not start %s\n", qemu);
-        _exit(127);
-    }
-    if (qemu_pid > 0) {
-        int status;
-
-        while (waitpid(qemu_pid, &status, 0) < 0 && errno == EINTR)
-            ;
-        kill(hostfsd_pid, SIGTERM);
-        waitpid(hostfsd_pid, NULL, 0);
-        unlink(sock);
-        unlink(ready);
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
     }
 
+    /* Only reached if the emulator could not be replaced into. */
     note("shinogi: could not start %s\n", qemu);
-    return 1;
+    kill(hostfsd_pid, SIGTERM);
+    unlink(sock);
+    unlink(ready);
+    return 127;
 }

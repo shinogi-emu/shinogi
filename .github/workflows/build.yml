@@ -671,6 +671,35 @@ jobs:
           fi
           echo "guest booted and is reading drive C, with no panic"
 
+      # The check above runs display=none, so it says nothing about
+      # whether a window ever appears -- and "it starts, then nothing
+      # displayed" was exactly the report it could not explain. This one
+      # uses the DEFAULT display, which on macOS is cocoa. If the
+      # emulator cannot put itself on screen it exits almost at once, so
+      # simply still being alive is the signal.
+      - name: The bundle survives on its real display
+        run: |
+          set -u
+          export SHINOGI_HOSTFS="$RUNNER_TEMP/cocoa-drive-c"
+          rm -f "$HOME/shinogi-launcher.log"
+
+          dist/shinogi.app/Contents/MacOS/shinogi &
+          LPID=$!
+          sleep 25
+
+          if kill -0 "$LPID" 2>/dev/null; then
+            echo "still running after 25s on the default display"
+            kill "$LPID" 2>/dev/null || true
+            pkill -f shinogi-hostfsd 2>/dev/null || true
+            exit 0
+          fi
+
+          echo "===== launcher log ====="
+          cat "$HOME/shinogi-launcher.log" 2>/dev/null || echo "(none written)"
+          pkill -f shinogi-hostfsd 2>/dev/null || true
+          echo "::error::the bundle exited on its own display - see the log" >&2
+          exit 1
+
       - name: Package for download
         env:
           EDITION: ${{ matrix.edition }}

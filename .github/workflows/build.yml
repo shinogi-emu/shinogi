@@ -437,12 +437,21 @@ jobs:
           cd qemu-src
           # cocoa is the display the launcher asks for on macOS; slirp is
           # the guest's network with nothing to configure on the host.
+          # --prefix, not DESTDIR. QEMU builds its own libslirp when
+          # Homebrew has none, and the installed binary records that
+          # library's FINAL path in its load commands - so a DESTDIR
+          # staging tree produces a qemu that cannot start, because
+          # /usr/local/lib/libslirp.0.dylib does not exist yet. Installing
+          # straight into the prefix keeps the binary runnable, which the
+          # check below depends on. dylibbundler rewrites all of this
+          # again when the .app is assembled.
           ./configure --target-list=m68k-softmmu \
+                      --prefix="$GITHUB_WORKSPACE/qemu-macos-install" \
                       --enable-cocoa --enable-slirp \
                       --disable-docs --disable-guest-agent --disable-tools \
                       --disable-vnc --disable-werror
           make -j"$(sysctl -n hw.ncpu)"
-          make install DESTDIR="$GITHUB_WORKSPACE/qemu-macos-install"
+          make install
 
       - name: Check it is ours, not Homebrew's
         run: |

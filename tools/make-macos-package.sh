@@ -53,7 +53,24 @@ MACOS="$APP/Contents/MacOS"
 RES="$APP/Contents/Resources"
 
 [ -f "$ELF" ] || { echo "no guest image at $ELF" >&2; exit 2; }
-command -v qemu-system-m68k >/dev/null || { echo "qemu-system-m68k not found - brew install qemu" >&2; exit 2; }
+command -v qemu-system-m68k >/dev/null || {
+    echo "qemu-system-m68k not found" >&2
+    echo "build it from shinogi-emu/qemu-m68k and put its bin on PATH" >&2
+    exit 2
+}
+
+# Refuse a stock emulator. Homebrew's qemu is upstream, and the 060
+# edition panics on it the moment the guest reaches 060SP.PRG - "Line F
+# Emulator", the 68060 unimplemented-FPU trap - because it does not carry
+# the project's 68060 work. That shipped once, signed and notarised and
+# unable to boot, so it is checked here rather than left to a tester.
+case "$(qemu-system-m68k --version | head -1)" in
+    *rc*) ;;
+    *)  echo "this is a stock QEMU, not the project build:" >&2
+        qemu-system-m68k --version | head -1 >&2
+        echo "the 060 edition cannot work on it - see 'Line F Emulator'" >&2
+        exit 2 ;;
+esac
 
 QEMU_BIN=$(command -v qemu-system-m68k)
 QEMU_PREFIX=$(cd "$(dirname "$QEMU_BIN")/.." && pwd)

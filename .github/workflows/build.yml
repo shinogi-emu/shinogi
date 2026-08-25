@@ -140,13 +140,22 @@ jobs:
           set -eux
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config python3-venv \
-            libglib2.0-dev libpixman-1-dev libcap-ng-dev libattr1-dev
+            libglib2.0-dev libpixman-1-dev libcap-ng-dev libattr1-dev \
+            libsdl2-dev libgtk-3-dev libslirp-dev
           cd qemu-src
-          # virtfs is not optional here: every golden mounts the fixture
-          # folder over virtio-9p.
+          # One build serves the goldens and the Linux bundle.
+          #
+          # virtfs is not optional: every golden mounts the fixture folder
+          # over virtio-9p. Nor are sdl and gtk - the shipped launcher
+          # picks SDL normally and GTK on a remote session, because SDL
+          # grabs the pointer there and never lets go. slirp is the guest's
+          # network with nothing to configure on the host.
+          #
+          # The goldens run this headless anyway, so carrying the UI
+          # backends costs them nothing.
           ./configure --target-list=m68k-softmmu \
-                      --enable-virtfs \
-                      --disable-docs --disable-gtk --disable-sdl \
+                      --enable-virtfs --enable-sdl --enable-slirp \
+                      --disable-docs --disable-guest-agent --disable-tools \
                       --disable-vnc --disable-werror
           make -j"$(nproc)"
           make install DESTDIR="$GITHUB_WORKSPACE/qemu-install"
@@ -203,7 +212,8 @@ jobs:
         run: |
           set -eux
           sudo apt-get update
-          sudo apt-get install -y libpixman-1-0 libglib2.0-0 libcap-ng0
+          sudo apt-get install -y libpixman-1-0 libglib2.0-0 libcap-ng0 \
+            libsdl2-2.0-0 libgtk-3-0 libslirp0
           BIN=$(find qemu-install -name qemu-system-m68k -type f | head -1)
           chmod +x "$BIN"
           echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
@@ -390,9 +400,72 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The macOS emulator, built the same way and from the same source as
+  # the Linux one.
+  #
+  # Homebrew's qemu is a stock upstream build, and the 060 edition dies on
+  # it: the guest reaches 060SP.PRG and panics with "Line F Emulator", the
+  # 68060 unimplemented-FPU trap, because that QEMU does not carry the
+  # project's 68060 work. The Windows and Linux bundles have always
+  # shipped the project build; the .app was the odd one out.
+  qemu-macos:
+    name: qemu (macos)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: shinogi-emu/qemu-m68k
+          ref: shinogi-060
+          path: qemu-src
+
+      - name: Record the source revision
+        id: rev
+        working-directory: qemu-src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: qemu-macos-install
+          key: qemu-macos-${{ steps.rev.outputs.sha }}-v1
+
+      - name: Build it
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          brew install glib pixman ninja pkg-config
+          cd qemu-src
+          # cocoa is the display the launcher asks for on macOS; slirp is
+          # the guest's network with nothing to configure on the host.
+          ./configure --target-list=m68k-softmmu \
+                      --enable-cocoa --enable-slirp \
+                      --disable-docs --disable-guest-agent --disable-tools \
+                      --disable-vnc --disable-werror
+          make -j"$(sysctl -n hw.ncpu)"
+          make install DESTDIR="$GITHUB_WORKSPACE/qemu-macos-install"
+
+      - name: Check it is ours, not Homebrew's
+        run: |
+          set -eu
+          BIN=$(find qemu-macos-install -name qemu-system-m68k -type f | head -1)
+          [ -n "$BIN" ] || { echo "no qemu-system-m68k was built" >&2; exit 1; }
+          chmod +x "$BIN"
+          "$BIN" --version
+          # The project build reports an rc version off v11.0.0-rc4.
+          # Homebrew ships a released 11.x, so this tells them apart.
+          "$BIN" --version | grep -q "rc" \
+            || { echo "this is not the project build" >&2; exit 1; }
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: qemu-macos
+          path: qemu-macos-install/**
+          if-no-files-found: error
+          retention-days: 7
+
   macos:
     name: macos package (${{ matrix.edition }})
-    needs: [ guest, test, freemint ]
+    needs: [ guest, test, freemint, qemu-macos ]
     runs-on: macos-14          # Apple Silicon
     strategy:
       fail-fast: false
@@ -426,11 +499,26 @@ jobs:
             "$DRIVE_C_URL" -o freemint-install.zip
           echo "$DRIVE_C_SHA256  freemint-install.zip" | shasum -a 256 -c -
 
-      - name: Install QEMU and the bundling tool
+      - uses: actions/download-artifact@v5
+        with:
+          name: qemu-macos
+          path: qemu-macos-install
+
+      - name: Install the bundling tool and our QEMU
         # dylibbundler rewrites QEMU's dylib references to
         # @executable_path so the app runs on a machine without
         # Homebrew. It is not preinstalled on the runner.
-        run: brew install qemu dylibbundler
+        #
+        # glib/pixman/sdl2 are the libraries our QEMU links against;
+        # dylibbundler copies them in and rewrites the references, so the
+        # .app still runs on a Mac with no Homebrew at all.
+        run: |
+          set -eux
+          brew install dylibbundler glib pixman
+          BIN=$(find "$GITHUB_WORKSPACE/qemu-macos-install" -name qemu-system-m68k -type f | head -1)
+          chmod +x "$BIN"
+          echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          "$BIN" --version
 
       - name: Build the app bundle
         env:

@@ -145,6 +145,12 @@ if [ "$CPU" = m68060 ]; then
 else
     rm -f "$BUNDLE/drive-c/AUTO/060SP.PRG"
 fi
+# EMUTOS.IMG too. The launcher prefers drive C's copy over the bundled
+# guest -- that is the documented way a user swaps firmware -- so leaving
+# the tree's own copy in place means the edition's guest image is built,
+# shipped and then never booted. It only looked right because the tree
+# carried an 020-60 image, which runs on both CPUs.
+cp -f "$ELF" "$BUNDLE/drive-c/EMUTOS.IMG"
 cp -f "$KERNEL" "$BUNDLE/drive-c/AUTO/MINT.PRG"
 cp -f "$NET_DRIVER" "$BUNDLE/drive-c/MINT/1-19-CUR/VIRTIONE.XIF"
 cp -f "$SDL2/bin/SDL2.dll" "$BUNDLE/"

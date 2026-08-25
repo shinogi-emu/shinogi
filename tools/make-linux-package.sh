@@ -144,6 +144,12 @@ mv "$BUNDLE/guest/freemint-install" "$BUNDLE/guest/drive-c"
 
 # The same three overlays the Windows installer applies: the shipped tree
 # carries an older kernel and driver, and no 060 software package at all.
+# EMUTOS.IMG too. The launcher prefers drive C's copy over the bundled
+# guest -- that is the documented way a user swaps firmware -- so leaving
+# the tree's own copy in place means the edition's guest image is built,
+# shipped and then never booted. It only looked right because the tree
+# carried an 020-60 image, which runs on both CPUs.
+cp -f "$ELF" "$BUNDLE/guest/drive-c/EMUTOS.IMG"
 cp -f "$KERNEL" "$BUNDLE/guest/drive-c/AUTO/MINT.PRG"
 cp -f "$NET_DRIVER" "$BUNDLE/guest/drive-c/MINT/1-19-CUR/VIRTIONE.XIF"
 if [ "$CPU" = m68060 ]; then

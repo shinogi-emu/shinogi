@@ -339,7 +339,8 @@ jobs:
       - name: Fetch the drive C system tree
         run: |
           set -eux
-          curl -fsSL "$DRIVE_C_URL" -o freemint-install.zip
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+            "$DRIVE_C_URL" -o freemint-install.zip
           echo "$DRIVE_C_SHA256  freemint-install.zip" | sha256sum -c -
       - uses: actions/download-artifact@v5
         with:
@@ -421,7 +422,8 @@ jobs:
       - name: Fetch the drive C system tree
         run: |
           set -eux
-          curl -fsSL "$DRIVE_C_URL" -o freemint-install.zip
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+            "$DRIVE_C_URL" -o freemint-install.zip
           echo "$DRIVE_C_SHA256  freemint-install.zip" | shasum -a 256 -c -
 
       - name: Install QEMU and the bundling tool

@@ -420,9 +420,13 @@ jobs:
           cd "$GITHUB_WORKSPACE/qemu-w64"
           cp -f "$GITHUB_WORKSPACE/qemu-src/COPYING" \
                 "$GITHUB_WORKSPACE/qemu-src/COPYING.LIB" . 2>/dev/null || true
-          [ -f VERSION ] || "$GITHUB_WORKSPACE/qemu-src/configure" --version 2>/dev/null | \
-            sed -n 's/^QEMU emulator version //p' > VERSION || true
-          [ -s VERSION ] || echo "unknown" > VERSION
+          # From the source tree, which carries one. The first attempt
+          # fell back to writing "unknown", which the package then printed
+          # in BUILD.txt and which made the stock-emulator check below
+          # match nothing - a guard that always passes.
+          cp -f "$GITHUB_WORKSPACE/qemu-src/VERSION" VERSION
+          grep -qE '^[0-9]+\.[0-9]+' VERSION \
+            || { echo "VERSION is not a version: $(cat VERSION)" >&2; exit 1; }
           for f in qemu-system-m68k.exe qemu-system-m68kw.exe COPYING COPYING.LIB VERSION; do
             [ -e "$f" ] || { echo "missing $f" >&2; ls -la >&2; exit 1; }
           done
@@ -500,8 +504,14 @@ jobs:
           echo "qemu: $(cat qemu-w64/VERSION)"
           # Stock weilnetz builds report a released version; ours is the
           # development tree the other two platforms also build from.
+          # Ours is the development tree the other two platforms build
+          # from and reports 10.2.9x; the weilnetz.de download reports a
+          # released 11.x. Positive test, so an unexpected value fails
+          # rather than slipping through.
           case "$(cat qemu-w64/VERSION)" in
-            11.0.9*|11.1*) echo "this is a stock build" >&2; exit 1 ;;
+            10.2.9*) ;;
+            *) echo "not the project emulator: $(cat qemu-w64/VERSION)" >&2
+               exit 1 ;;
           esac
 
       - name: Build the package

@@ -323,9 +323,125 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The Windows emulator, cross-built from the same source as the other
+  # two.
+  #
+  # This job exists because the Windows package was the last one still
+  # carrying a stock emulator: it unpacked the weilnetz.de build, which
+  # does not have the project's 68060 work, so a CI-built Windows 060
+  # panicked at 060SP.PRG with "Line F Emulator" exactly as the macOS one
+  # did.
+  #
+  # Fedora rather than Ubuntu, because the hard part is not the compiler -
+  # it is having glib, pixman and SDL2 built for mingw to link against.
+  # Fedora packages all three; Ubuntu does not, which is why the local
+  # build needed a hand-made prefix under /tmp/mingw.
+  qemu-win:
+    name: qemu (windows)
+    runs-on: ubuntu-24.04
+    container: fedora:42
+    steps:
+      - name: Install the mingw toolchain and libraries
+        run: |
+          set -eux
+          dnf -y install --setopt=install_weak_deps=False \
+            git meson ninja-build python3 gcc binutils bzip2 findutils diffutils \
+            mingw64-gcc mingw64-binutils mingw64-glib2 mingw64-pixman \
+            mingw64-SDL2 mingw64-winpthreads mingw64-zlib
+          x86_64-w64-mingw32-gcc --version | head -1
+
+      - uses: actions/checkout@v5
+        with:
+          repository: shinogi-emu/qemu-m68k
+          ref: shinogi-060
+          path: qemu-src
+
+      - name: Record the source revision
+        id: rev
+        working-directory: qemu-src
+        run: |
+          git config --global --add safe.directory "$PWD"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: qemu-w64
+          key: qemu-w64-${{ steps.rev.outputs.sha }}-v1
+
+      - name: Cross-build it
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          cd qemu-src
+          ./configure --cross-prefix=x86_64-w64-mingw32- \
+                      --target-list=m68k-softmmu \
+                      --prefix="$GITHUB_WORKSPACE/qemu-w64" \
+                      --enable-sdl --enable-slirp \
+                      --disable-docs --disable-gtk --disable-guest-agent \
+                      --disable-tools --disable-vnc --disable-werror
+          make -j"$(nproc)"
+          make install
+
+      # QEMU's install does not bring the mingw runtime DLLs with it, and
+      # the package needs them beside the exe or it will not start on a
+      # machine without Fedora's sysroot. Walk the imports and copy what
+      # they name, following each DLL's own imports in turn.
+      - name: Collect the runtime DLLs
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          SYS=/usr/x86_64-w64-mingw32/sys-root/mingw/bin
+          cd "$GITHUB_WORKSPACE/qemu-w64"
+          pending=$(ls *.exe)
+          seen=""
+          while [ -n "$pending" ]; do
+            next=""
+            for f in $pending; do
+              for d in $(x86_64-w64-mingw32-objdump -p "$f" 2>/dev/null \
+                         | sed -n 's/^\s*DLL Name:\s*//p'); do
+                case " $seen " in *" $d "*) continue ;; esac
+                if [ -f "$SYS/$d" ]; then
+                  cp -n "$SYS/$d" . 2>/dev/null || true
+                  seen="$seen $d"
+                  next="$next $d"
+                fi
+              done
+            done
+            pending="$next"
+          done
+          echo "collected $(ls *.dll 2>/dev/null | wc -l) dll(s)"
+
+      # The packager copies these by name, so their absence has to fail
+      # here rather than three jobs later.
+      - name: Check it looks like the tree the packager expects
+        run: |
+          set -eu
+          cd "$GITHUB_WORKSPACE/qemu-w64"
+          cp -f "$GITHUB_WORKSPACE/qemu-src/COPYING" \
+                "$GITHUB_WORKSPACE/qemu-src/COPYING.LIB" . 2>/dev/null || true
+          [ -f VERSION ] || "$GITHUB_WORKSPACE/qemu-src/configure" --version 2>/dev/null | \
+            sed -n 's/^QEMU emulator version //p' > VERSION || true
+          [ -s VERSION ] || echo "unknown" > VERSION
+          for f in qemu-system-m68k.exe qemu-system-m68kw.exe COPYING COPYING.LIB VERSION; do
+            [ -e "$f" ] || { echo "missing $f" >&2; ls -la >&2; exit 1; }
+          done
+          [ -d share ] || { echo "no share/ tree" >&2; exit 1; }
+          n=$(ls *.dll 2>/dev/null | wc -l)
+          [ "$n" -ge 5 ] || { echo "only $n dll(s) - the exe will not start" >&2; exit 1; }
+          file qemu-system-m68k.exe
+          echo "version: $(cat VERSION)   dlls: $n"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: qemu-win
+          path: qemu-w64/**
+          if-no-files-found: error
+          retention-days: 7
+
   windows:
     name: windows package (${{ matrix.edition }})
-    needs: [ guest, test, freemint ]
+    needs: [ guest, test, freemint, qemu-win ]
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -370,13 +486,23 @@ jobs:
           tar xzf sdl2.tar.gz --strip-components=1 \
               -C "${{ github.workspace }}/mingw-sdl2"
 
-      - name: Fetch and unpack QEMU for Windows
+      # Our own cross-build, not the weilnetz.de download. That one is
+      # stock upstream and the 060 edition cannot boot on it.
+      - uses: actions/download-artifact@v5
+        with:
+          name: qemu-win
+          path: qemu-w64
+
+      - name: Check the emulator is ours
         run: |
-          set -eux
-          curl -fsSL "$QEMU_WIN_URL" -o qemu-w64-setup.exe
-          mkdir -p qemu-w64
-          7z x -oqemu-w64 qemu-w64-setup.exe > /dev/null
+          set -eu
           test -s qemu-w64/qemu-system-m68k.exe
+          echo "qemu: $(cat qemu-w64/VERSION)"
+          # Stock weilnetz builds report a released version; ours is the
+          # development tree the other two platforms also build from.
+          case "$(cat qemu-w64/VERSION)" in
+            11.0.9*|11.1*) echo "this is a stock build" >&2; exit 1 ;;
+          esac
 
       - name: Build the package
         env:

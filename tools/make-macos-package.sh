@@ -59,16 +59,21 @@ command -v qemu-system-m68k >/dev/null || {
     exit 2
 }
 
-# Refuse a stock emulator. Homebrew's qemu is upstream, and the 060
+# Refuse a Homebrew emulator. Its qemu is stock upstream, and the 060
 # edition panics on it the moment the guest reaches 060SP.PRG - "Line F
 # Emulator", the 68060 unimplemented-FPU trap - because it does not carry
 # the project's 68060 work. That shipped once, signed and notarised and
-# unable to boot, so it is checked here rather than left to a tester.
-case "$(qemu-system-m68k --version | head -1)" in
-    *rc*) ;;
-    *)  echo "this is a stock QEMU, not the project build:" >&2
-        qemu-system-m68k --version | head -1 >&2
-        echo "the 060 edition cannot work on it - see 'Line F Emulator'" >&2
+# unable to boot, so it is caught here rather than by a tester.
+#
+# The test is WHERE the binary came from, not what it reports. A build
+# from a shallow clone has no git describe output, so the version string
+# alone cannot tell the two apart - which is how this check failed the
+# first time it ran.
+case "$(command -v qemu-system-m68k)" in
+    /opt/homebrew/*|/usr/local/Cellar/*|/usr/local/bin/*)
+        echo "refusing Homebrew's qemu: $(command -v qemu-system-m68k)" >&2
+        echo "build shinogi-emu/qemu-m68k and put its bin first on PATH" >&2
+        echo "the 060 edition cannot boot on a stock QEMU - 'Line F Emulator'" >&2
         exit 2 ;;
 esac
 

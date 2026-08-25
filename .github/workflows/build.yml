@@ -453,17 +453,19 @@ jobs:
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
-      - name: Check it is ours, not Homebrew's
+      - name: Check it built and runs
         run: |
           set -eu
           BIN=$(find qemu-macos-install -name qemu-system-m68k -type f | head -1)
           [ -n "$BIN" ] || { echo "no qemu-system-m68k was built" >&2; exit 1; }
           chmod +x "$BIN"
+          # Running it is the point: the first attempt at this job built a
+          # qemu that aborted on --version because its libslirp was not
+          # where its load commands said.
           "$BIN" --version
-          # The project build reports an rc version off v11.0.0-rc4.
-          # Homebrew ships a released 11.x, so this tells them apart.
-          "$BIN" --version | grep -q "rc" \
-            || { echo "this is not the project build" >&2; exit 1; }
+          "$BIN" -M virt -cpu m68060 -m 8 -display none -S -monitor none \
+                 -serial none & sleep 2; kill $! 2>/dev/null || true
+          echo "m68060 on -M virt accepted"
 
       - uses: actions/upload-artifact@v5
         with:

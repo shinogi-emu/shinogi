@@ -489,6 +489,59 @@ jobs:
           xcrun stapler validate dist/shinogi.app
           rm -f "$RUNNER_TEMP/notary.p8"
 
+      # Run the thing we are about to ship, on a real Mac, and require
+      # the guest to reach a known point.
+      #
+      # Everything before this proves the bundle BUILDS. None of it
+      # proves it RUNS, and the two came apart badly: the first .app that
+      # signed, notarised and stapled cleanly could not start at all,
+      # because it shipped without the drive C helper. That was found by
+      # a person double-clicking it, which is a slow and unfair way to
+      # find it.
+      #
+      # display=none because the runner has no screen; every other part
+      # of the startup path - the drive C copy out of Resources, the
+      # helper, the emulator - is exactly what a user gets.
+      - name: Smoke-test the bundle
+        env:
+          SHINOGI_DISPLAY: none
+        run: |
+          set -u
+          export SHINOGI_HOSTFS="$RUNNER_TEMP/smoke-drive-c"
+          SERIAL="${TMPDIR:-/tmp}/shinogi-serial.log"
+          rm -f "$SERIAL" "$HOME/shinogi-launcher.log"
+
+          dist/shinogi.app/Contents/MacOS/shinogi &
+          LPID=$!
+
+          # The guest prints its video mode once the VDI is up, which is
+          # far enough in to mean the helper answered and drive C exists.
+          ok=0
+          for i in $(seq 1 90); do
+            if [ -f "$SERIAL" ] && grep -q "VDI video mode" "$SERIAL" 2>/dev/null; then
+              ok=1; break
+            fi
+            kill -0 "$LPID" 2>/dev/null || break
+            sleep 1
+          done
+
+          kill "$LPID" 2>/dev/null || true
+          pkill -f shinogi-hostfsd 2>/dev/null || true
+          pkill -f qemu-system-m68k 2>/dev/null || true
+
+          echo "===== launcher log ====="
+          cat "$HOME/shinogi-launcher.log" 2>/dev/null || echo "(none written)"
+          echo "===== serial log (tail) ====="
+          tail -25 "$SERIAL" 2>/dev/null || echo "(no serial output)"
+          echo "===== drive C ====="
+          ls "$SHINOGI_HOSTFS" 2>/dev/null | head || echo "(drive C was never created)"
+
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::the bundle did not reach a booted guest" >&2
+            exit 1
+          fi
+          echo "guest reached the VDI"
+
       - name: Package for download
         env:
           EDITION: ${{ matrix.edition }}

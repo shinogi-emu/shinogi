@@ -72,9 +72,18 @@ done
 #
 # We deliberately leave out -DWITH_NATIVE_FEATURES: upstream's hat targets
 # enable it for ARAnyM/Hatari NatFeats, which QEMU virt does not provide.
-KERNEL_TARGET=hat040
-KERNEL_CPU=040
-KERNEL_PRG=mint040h.prg
+# 02060, not 040. The packagers all ship
+# sys/.compile_hat02060/mint0206h.prg and overlay it over whatever this
+# tree carried, so building 040 here meant the tree and the packages
+# disagreed about the kernel and only the packages were right. One
+# 020-060 kernel covers both editions, which is why they ship it.
+#
+# The defines are unchanged: -DM68040 picks the runtime MMU and cache
+# model, not the instruction set, and the CPU family below is what makes
+# the compiler emit -m68020-60.
+KERNEL_TARGET=hat02060
+KERNEL_CPU=02060
+KERNEL_PRG=mint0206h.prg
 KERNEL_DEFS='-DCRYPTO_CODE -DSOFT_UNITABLE -DBUILTIN_SHELL -DM68040 -DOLDTOSFS -DWITH_MMU_SUPPORT -DMACHINE_QEMU_VIRT'
 
 # The stock 68040 kernel is built and shipped alongside it, unused, so
@@ -579,16 +588,31 @@ cp "$XA"/xa_help.* "$XAAESDIR/"
 mkdir -p "$XAAESDIR/gradient" "$XAAESDIR/widgets" "$XAAESDIR/xobj"
 cp "$XA/gradient"/*.grd "$XAAESDIR/gradient/"
 cp "$XA/widgets"/*.rsc  "$XAAESDIR/widgets/"
+
+# The theme is a config recipe over two resources that are NOT in stock
+# XaAES: the a_skin1 widget set and the ablue/agrey gradients. They come
+# off the Aranym drive, which is the only place they exist here, so the
+# look is not reproducible from the FreeMiNT tree alone.
+THEME="${THEME_DIR:-$HOME/git/Aranym/lan-share/host_fs/Bootback/c/mint/1-19-025/xaaes}"
+if [ -d "$THEME" ]; then
+    cp -f "$THEME/widgets"/a_skin*.rsc "$XAAESDIR/widgets/" 2>/dev/null || true
+    cp -f "$THEME/gradient"/ablue_*.grd "$XAAESDIR/gradient/" 2>/dev/null || true
+    cp -f "$THEME/gradient"/agrey_*.grd "$XAAESDIR/gradient/" 2>/dev/null || true
+else
+    echo "note: no theme resources at $THEME - shipping stock widgets" >&2
+fi
 cp "$XA/xobj"/*.rsc     "$XAAESDIR/xobj/"
 cp -r "$XA/img" "$XAAESDIR/"
 cp -r "$XA/pal" "$XAAESDIR/"
 
 # XaAES's own config. The stock example points "shell =" at TeraDesk,
-# which we do not ship -- and the rule below used to uncomment that line
-# anyway, so XaAES started with a shell that was not there. Nothing
-# reported it: the screen came up as a bare XaAES desktop with no way to
-# launch anything, which looks like a working AES until you try to use it.
-# Point it at Thing, which is the desktop this tree actually ships.
+# commented out. We DO ship TeraDesk (see the desktop section below), so
+# that line is uncommented as it stands rather than redirected.
+#
+# It pointed at Thing for a while, from when the tree carried Thing and
+# not TeraDesk. Thing is still shipped and still works, but TeraDesk is
+# the desktop this tree is configured for -- it is the one with the
+# colour icons and the theme below.
 need "$XA/example.cnf"
 #
 # launchpath: the stock example points at u:\opt\GEM, which belongs to a
@@ -600,8 +624,26 @@ need "$XA/example.cnf"
 sed -e 's|^#setenv AVSERVER   "DESKTOP "|setenv AVSERVER   "DESKTOP "|' \
     -e 's|^#setenv FONTSELECT "DESKTOP "|setenv FONTSELECT "DESKTOP "|' \
     -e 's|^\(launchpath[[:space:]]*=\).*|\1  c:\\|' \
-    -e 's|^#shell = c:.teradesk.desktop.prg|shell = c:\\thing\\thing.app|' \
+    -e 's|^#shell = c:.teradesk.desktop.prg|shell = c:\\desktop\\desktop.prg|' \
     "$XA/example.cnf" > "$XAAESDIR/xaaes.cnf"
+
+# The theme, appended rather than sed'd in: these keys are commented out
+# in the stock example with differing spacing, and a rule that matched
+# them all would be less readable than saying what we want outright. The
+# last assignment wins, so appending is enough.
+#
+# textures is OFF on purpose. The metallic look comes from the a_skin1
+# widget set, not from a texture -- guessing "textures = img" was wrong
+# and produced a different desktop entirely.
+cat >> "$XAAESDIR/xaaes.cnf" <<'XCNF'
+
+# --- Shinogi appearance ------------------------------------------------
+widgets = widgets\a_skin1.rsc
+gradients = ablue_2
+textures = 0
+palette = nvdi
+back_col = 1
+XCNF
 
 # --- fonts and keyboard tables -----------------------------------------
 cp -r "$FREEMINT/fonts"/* "$FONTSDIR/"
@@ -644,6 +686,46 @@ if [ -f "$THING/thing.app" ]; then
     echo "desktop: thing/thing.app (Thing Neo), $dropped file(s) dropped as un-8.3"
 else
     echo "note: no Thing at $THING - the AES will have no desktop to start" >&2
+fi
+
+# --- desktop: TeraDesk -------------------------------------------------
+#
+# The shell XaAES starts, and what "shell = c:\desktop\desktop.prg"
+# above points at. Upstream's ready-to-go snapshot bundles TeraDesk for
+# exactly this reason; the FreeMiNT source tree does not carry it, so a
+# build from source would come up with XaAES running and nothing to
+# launch.
+#
+# CICONS.RSC is why this is worth doing: TeraDesk picks it up on its own
+# whenever the AES advertises colour icon support, with no setting to
+# turn on, and that is the difference between the colour desktop and a
+# monochrome one.
+TERADESK="${TERADESK_DIR:-$HOME/git/Aranym/lan-share/host_fs/Bootback/c/desktop}"
+if [ -f "$TERADESK/desktop.prg" ]; then
+    mkdir -p "$OUT/desktop"
+    for f in "$TERADESK"/*; do
+        b=$(basename "$f")
+        # doc/ is a hypertext manual tree with names that cannot exist on
+        # an 8.3 drive, and .bak is a stale copy of the resource.
+        case "$b" in
+            doc|DOC|*.bak) continue ;;
+        esac
+        cp -r "$f" "$OUT/desktop/"
+    done
+
+    # teradesk.inf comes across as-is. It is 20 KB of structured
+    # configuration that says "Avoid editing this file by hand" at the
+    # top, and it already carries the settings this desktop is meant to
+    # have - mode=1, dpat=4, dcol=1. Writing one from scratch means
+    # inventing a format TeraDesk would then have to parse.
+    #
+    # The cost is that it also carries the state that drive was left in,
+    # window positions and all. A working config with stale windows beats
+    # a hand-made one that does not load.
+    dropped=$(prune_non_83 "$OUT/desktop")
+    echo "desktop: desktop/desktop.prg (TeraDesk), $dropped file(s) dropped as un-8.3"
+else
+    echo "note: no TeraDesk at $TERADESK - XaAES will start with no shell" >&2
 fi
 
 # --- AES: MyAES (opt-in) -----------------------------------------------

@@ -132,7 +132,13 @@ jobs:
         id: cache
         with:
           path: qemu-install
-          key: qemu-m68k-${{ steps.rev.outputs.sha }}-v1
+          # The suffix is part of the key on purpose: the source
+          # revision alone does not describe the binary, the configure
+          # flags do too. Turning the audio backends off changed nothing
+          # the source hash could see, so the cache kept handing back the
+          # old binary and the fix appeared not to work. BUMP THIS
+          # whenever the configure line below changes.
+          key: qemu-m68k-${{ steps.rev.outputs.sha }}-v2-noaudio
 
       - name: Build it
         if: steps.cache.outputs.cache-hit != 'true'

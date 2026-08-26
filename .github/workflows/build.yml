@@ -168,6 +168,18 @@ jobs:
           make -j"$(nproc)"
           make install DESTDIR="$GITHUB_WORKSPACE/qemu-install"
 
+      # Unconditional, unlike the build above. On a cache HIT the build
+      # step does not run, so nothing installs these - and the check that
+      # follows then cannot start the very binary the cache restored.
+      # That is exactly how this failed: it passed when it rebuilt and
+      # failed when it did not, which is the wrong way round.
+      - name: Install the runtime libraries
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y libpixman-1-0 libglib2.0-0 libcap-ng0 \
+            libsdl2-2.0-0 libgtk-3-0 libslirp0 libpulse0
+
       - name: Check it is the emulator we asked for
         run: |
           set -eu

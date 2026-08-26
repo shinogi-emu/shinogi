@@ -153,8 +153,16 @@ jobs:
           #
           # The goldens run this headless anyway, so carrying the UI
           # backends costs them nothing.
+          # Audio backends are pinned OFF rather than left to whatever the
+          # runner image happens to provide. The build picked up sndio
+          # from the image on one run and the goldens then could not start
+          # it - and the cache hid that until an unrelated source change
+          # forced a rebuild. What the emulator links against should be a
+          # decision, not a property of the machine that built it.
           ./configure --target-list=m68k-softmmu \
                       --enable-virtfs --enable-sdl --enable-slirp \
+                      --audio-drv-list=pa \
+                      --disable-sndio --disable-jack --disable-oss \
                       --disable-docs --disable-guest-agent --disable-tools \
                       --disable-vnc --disable-werror
           make -j"$(nproc)"
@@ -212,10 +220,21 @@ jobs:
         run: |
           set -eux
           sudo apt-get update
+          # Whatever the emulator ended up linking against has to be here
+          # too. Listing runtime libraries by hand went stale silently:
+          # the binary gained a dependency and this job could not start it.
           sudo apt-get install -y libpixman-1-0 libglib2.0-0 libcap-ng0 \
-            libsdl2-2.0-0 libgtk-3-0 libslirp0
+            libsdl2-2.0-0 libgtk-3-0 libslirp0 libpulse0
           BIN=$(find qemu-install -name qemu-system-m68k -type f | head -1)
           chmod +x "$BIN"
+          # Name what is missing, rather than letting --version fail with
+          # one library and no list. An "if" and not "&&": grep exits 1
+          # when it finds nothing, which is the good case, and under
+          # set -e that would fail the step for succeeding.
+          if ldd "$BIN" | grep "not found"; then
+            echo "the libraries above are missing" >&2
+            exit 1
+          fi
           echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
           "$BIN" --version
 

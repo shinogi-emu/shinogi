@@ -53,6 +53,11 @@ VVFAT="${4:-}"
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
+# The emulator: the fork the installer laid down, or SHINOGI_QEMU. The
+# distribution package is refused -- it runs neither the 68060 edition nor
+# the 040 tree, and a golden passed on it says nothing about our build.
+QEMU="${SHINOGI_QEMU:-$HOME/.local/share/shinogi/qemu/bin/qemu-system-m68k}"
+[ -x "$QEMU" ] || { echo "no shinogi QEMU at $QEMU (run tools/install-linux.sh or set SHINOGI_QEMU)" >&2; exit 2; }
 GOLDEN="$ROOT/tests/golden/$NAME.expected"
 WORK="${TMPDIR:-/tmp}/run-golden-$NAME"
 BOOT_WAIT="${BOOT_WAIT:-25}"
@@ -173,7 +178,7 @@ set -- "$@" \
 # and booting it as an 040 here would prove nothing about it.
 CPU="${SHINOGI_CPU:-m68040}"
 
-qemu-system-m68k \
+"$QEMU" \
     -M virt -cpu "$CPU" -m 128 \
     -kernel "$ELF" \
     -device virtio-gpu-device \

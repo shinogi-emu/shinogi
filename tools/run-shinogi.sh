@@ -32,6 +32,17 @@ ELF="${1:-$HOME/git/emutos/emutos-virt.elf}"
 # scale the window, neither of which SDL offers. tools/sdl-grab-probe.c
 # tells you whether a given machine is affected.
 DISP="${2:-sdl}"
+
+# The emulator. Never the bare name: on a developer box that resolves to
+# the distribution package, which lacks the 68060 work and trips on the
+# 040 tree too, and it did so silently for weeks. Prefer what the
+# installer laid down, then SHINOGI_QEMU, and refuse anything else.
+QEMU="${SHINOGI_QEMU:-$HOME/.local/share/shinogi/qemu/bin/qemu-system-m68k}"
+if [ ! -x "$QEMU" ]; then
+    echo "no shinogi QEMU at $QEMU" >&2
+    echo "run tools/install-linux.sh, or set SHINOGI_QEMU to the fork's qemu-system-m68k" >&2
+    exit 1
+fi
 SCALE="${SHINOGI_SCALE:-1.5}"
 LOG="${TMPDIR:-/tmp}/shinogi-serial.log"
 
@@ -58,7 +69,7 @@ mkdir -p "$HOSTFS"
 #
 if [ "${DISP%%,*}" = gtk ] && [ "$DISP" = gtk ]; then
     DISP="gtk,zoom-to-fit=off"
-    if qemu-system-m68k -M virt -m 16 -display "gtk,scale=bogus" 2>&1 \
+    if "$QEMU" -M virt -m 16 -display "gtk,scale=bogus" 2>&1 \
        | grep -q "for 'scale'"; then
         DISP="$DISP,scale=$SCALE"
     else
@@ -82,7 +93,7 @@ echo "drive C: $HOSTFS"
 # -serial file: rather than stdio, so the window is the only thing the
 # user has to look at. -d guest_errors costs nothing and turns a silent
 # virtio mistake into a line in the log.
-exec qemu-system-m68k \
+exec "$QEMU" \
     -M virt \
     -m 128 \
     -kernel "$ELF" \

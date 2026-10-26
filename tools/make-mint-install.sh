@@ -1,106 +1,108 @@
 #!/usr/bin/env bash
 #
-# make-mint-install.sh - assemble a FreeMiNT system install tree for shinogi.
+# make-mint-install.sh - shinogi's drive C: FreeMiNT's own bootable
+# snapshot, installed the way FreeMiNT says to install it, plus the few
+# files this machine needs that the snapshot cannot carry.
 #
-# Produces the directory layout that EmuTOS/FreeMiNT expect on the boot
-# drive (drive C), ready to be copied into the shinogi drive C folder:
+# FreeMiNT's install, from the snapshot page its GitHub README links to
+# (https://atari.joska.no/snapshots/freemint/bootable/):
 #
-#   EMUTOS.IMG                  the firmware; the launcher passes it to
-#                               QEMU's -kernel, so a user can swap it
-#   AUTO/FVDI.PRG               fVDI, ahead of the kernel so it is resident
-#                               before anything draws through the VDI
-#   AUTO/MINT.PRG               the 68040 kernel, launched from AUTO by EmuTOS
-#   FVDI.SYS                    fVDI's config; driver lives in GEMSYS/
-#   MINT/1-19-CUR/              the kernel "sysdir": config + loadable modules
-#   MINT/1-19-CUR/XAAES/        XaAES (the AES/GEM layer) and its resources
+#   1. download the archive suitable for your machine
+#   2. unpack it to the root of your C drive
+#   3. disable all AUTO programs except the archive's mint-*.prg
+#   4. reboot
 #
-# Every name written here is uppercase and 8.3-clean; both are verified
-# before exit.
-# See docs/freemint-build.md for the reasoning behind the choices.
+# Steps 1 and 2 are done here as written, with the TT/Falcon archive: its
+# kernel modules, XaAES and userland are built for 68020-68060, which is
+# both editions. What it brings: XaAES, TeraDesk as the desktop, bash and
+# the Unix tools, QED, COPS, TosWin2 and the hypertext guides.
+#
+# Then these changes, each explained where it is made:
+#
+#   AUTO/MINT.PRG          our kernel, in place of the archive's loader
+#                          and stock kernels, none of which can reach a
+#                          GEMDOS-level drive C
+#   MINT/1-19-CUR/         the archive's MINT/1-19-<id>, renamed to the
+#                          directory our kernel looks for
+#   .../INET4.XDD          the IP stack, built with our kernel, and our
+#   .../VIRTIONE.XIF       virtio network driver
+#   .../MINT.CNF           /etc built in the ram disk; the NAT network
+#   EMUTOS.IMG             the firmware the launcher boots
+#   AUTO/FVDI.PRG          fVDI, with FVDI.SYS and GEMSYS/
+#   TOOLS/SETRES.PRG       the resolution picker
+#   XAAES theme            the a_skin1 widgets and ablue gradients
+#
+# The tree is uppercase and 8.3-clean throughout, and both are checked
+# before exit. See docs/freemint-build.md.
 #
 # Usage:
-#   tools/make-mint-install.sh [--freemint DIR] [--out DIR] [--build]
+#   tools/make-mint-install.sh [--zip FILE] [--freemint DIR] [--out DIR]
+#                              [--build]
 #
-#   --freemint DIR  FreeMiNT source tree (default $FREEMINT_DIR or
-#                   $HOME/git/freemint)
+#   --zip FILE      a FreeMiNT bootable snapshot to use instead of the
+#                   pinned one below (taken as given, no checksum)
+#   --freemint DIR  FreeMiNT source tree the kernel, IP stack and network
+#                   driver are built in (default $FREEMINT_DIR or
+#                   $HOME/git/freemint-rc)
 #   --out DIR       where to write the tree (default $HOME/shinogi-build/
 #                   mint-install); recreated from scratch each run
-#   --build         run the FreeMiNT make targets first; without it the
-#                   tree is assembled from whatever is already compiled
+#   --build         build the kernel, IP stack and network driver first
 
 set -euo pipefail
 
-FREEMINT="${FREEMINT_DIR:-$HOME/git/freemint}"
+FREEMINT="${FREEMINT_DIR:-$HOME/git/freemint-rc}"
 OUT="$HOME/shinogi-build/mint-install"
+ZIP=
 DO_BUILD=no
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --zip)      ZIP="$2"; shift 2 ;;
         --freemint) FREEMINT="$2"; shift 2 ;;
         --out)      OUT="$2"; shift 2 ;;
         --build)    DO_BUILD=yes; shift ;;
-        -h|--help)  sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '2,49p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
 
-# The kernel we ship.
+# The snapshot, pinned. FreeMiNT has had no release since 1.18.0 (2013)
+# and its own site points at these snapshots instead. "latest" moves with
+# every upstream commit, so the build names one: upstream 0218382, built
+# 2026-10-19, identical to "latest" on the day it was pinned. The file
+# name carries the commit; the sysdir inside carries its first three hex
+# digits (1-19-021).
+SNAPSHOT=freemint-1-19-0218382e-tt_falcon_clones.zip
+SNAPSHOT_SHA256=0529ec5fa9a88298b7e0ad4640777729b48bd13240d8069bd207457c8350fbcb
+SNAPSHOT_URL="https://atari.joska.no/snapshots/freemint/bootable/$SNAPSHOT"
+CACHE="$HOME/shinogi-build/cache"
+
+# Our kernel.
 #
-# Upstream has no 68040 target that suits us, so we define one on the
-# make command line (FreeMiNT's sys/KERNELDEFS documents custom targets;
-# the variables below are exactly what a new entry in that file would
-# set, so nothing in the FreeMiNT tree has to be modified).
+# It has to be ours. Every kernel in the snapshot takes GEMDOS away from
+# TOS and drives FAT itself over XHDI, and shinogi's drive C is a host
+# folder served at GEMDOS level, with no BIOS device behind it at all. A
+# stock kernel loads, then finds no drive C -- its own boot drive. The
+# kernel FreeMiNT builds for Hatari has the same problem and the same
+# answer, -DOLDTOSFS, which keeps the kernel calling the TOS GEMDOS.
+# -DMACHINE_QEMU_VIRT is what lets Shut Down power the machine off.
 #
-#   -DM68040 -DWITH_MMU_SUPPORT   68040 with MMU, matching QEMU virt
-#   -DOLDTOSFS                    keep calling the underlying TOS GEMDOS
-#                                 instead of driving a real FAT filesystem
-#                                 over XHDI. This is the flag upstream uses
-#                                 for its Hatari kernels, and it is what
-#                                 makes a GEMDOS-level emulated drive C
-#                                 (which is exactly what shinogi's hostfs
-#                                 is) reachable at all.
-#   -DMACHINE_QEMU_VIRT           lets hw_poweroff() reach this machine's
-#                                 control device, so Shut Down closes the
-#                                 emulator instead of leaving it running
-#                                 around a halted guest. FreeMiNT has no
-#                                 machine type for this box, and probing
-#                                 the address unguarded would fault on real
-#                                 hardware -- so it is a build flag, which
-#                                 is how EmuTOS spells the same thing and
-#                                 how FreeMiNT already builds per machine
-#                                 (mintmil.prg and friends).
-#
-# We deliberately leave out -DWITH_NATIVE_FEATURES: upstream's hat targets
-# enable it for ARAnyM/Hatari NatFeats, which QEMU virt does not provide.
-# 02060, not 040. The packagers all ship
-# sys/.compile_hat02060/mint0206h.prg and overlay it over whatever this
-# tree carried, so building 040 here meant the tree and the packages
-# disagreed about the kernel and only the packages were right. One
-# 020-060 kernel covers both editions, which is why they ship it.
-#
-# The defines are unchanged: -DM68040 picks the runtime MMU and cache
-# model, not the instruction set, and the CPU family below is what makes
-# the compiler emit -m68020-60.
+# One 020-060 kernel serves both editions; -DM68040 picks the runtime MMU
+# and cache model, not the instruction set. docs/freemint-build.md has
+# the history of this target.
 KERNEL_TARGET=hat02060
 KERNEL_CPU=02060
 KERNEL_PRG=mint0206h.prg
 KERNEL_DEFS='-DCRYPTO_CODE -DSOFT_UNITABLE -DBUILTIN_SHELL -DM68040 -DOLDTOSFS -DWITH_MMU_SUPPORT -DMACHINE_QEMU_VIRT'
-
-# The stock 68040 kernel is built and shipped alongside it, unused, so
-# the FAT/XHDI path can be tried once shinogi grows a block device.
-ALT_TARGET=040
-ALT_PRG=mint040.prg
-
-# Loadable modules and XaAES are built per CPU *family*, not per CPU; the
-# family covering the 68040 is 02060 (68020 through 68060).
 MOD_TARGET=02060
 
-# Must match MINT_VERS_PATH_STRING in sys/buildinfo/version.h.
+# The directory our kernel reads: MINT_VERS_PATH_STRING in
+# sys/buildinfo/version.h, "1-19-cur" for a development build. Upstream's
+# CI swaps the "cur" for a commit prefix, which is why the snapshot's
+# sysdir is called something else.
 SYSDIR_NAME=1-19-cur
 
 [ -d "$FREEMINT/sys" ] || { echo "not a FreeMiNT tree: $FREEMINT" >&2; exit 1; }
-
-XA="$FREEMINT/xaaes/src.km"
 
 if [ "$DO_BUILD" = yes ]; then
     export M68K_ATARI_MINT_CROSS=yes
@@ -115,50 +117,41 @@ if [ "$DO_BUILD" = yes ]; then
         "MINT_$KERNEL_TARGET=$KERNEL_PRG" \
         "KERNELDEFS_$KERNEL_TARGET=$KERNEL_DEFS" \
         "$KERNEL_TARGET"
-    make -C "$FREEMINT/sys" "$ALT_TARGET"
-    make -C "$XA" "$MOD_TARGET"
-    make -C "$XA/xaloader" "$MOD_TARGET"
-    make -C "$XA/adi/whlmoose" "$MOD_TARGET"
-    make -C "$XA/gradient"
-    for d in sys/xdd/xconout2 sys/xdd/nfstderr sys/xfs/ext2fs \
-             sys/xfs/minixfs sys/xfs/nfs sys/sockets; do
-        make -C "$FREEMINT/$d" "$MOD_TARGET"
-    done
-
-    # Everything else that goes into the driver library below. Without
-    # this a clean build produces a LIBRARY WITH HOLES IN IT and says
-    # nothing about it, because the collector below simply ships whatever
-    # happens to be lying around already built.
-    #
-    # Failures are tolerated on purpose: several of these are for hardware
-    # or a CPU we do not target, and one of them not building is not a
-    # reason to abandon the tree. They are counted and reported instead --
-    # 'uart' is the expected one, having only 'deb' and 'mil' targets
-    # because it is the Milan serial driver.
-    skipped=
-    for d in "$FREEMINT"/sys/xdd/*/ "$FREEMINT"/sys/xfs/*/; do
-        b=$(basename "$d")
-        [ "$b" = skeleton ] && continue
-        make -C "$d" "$MOD_TARGET" >/dev/null 2>&1 || skipped="$skipped $b"
-    done
-    # The xif Makefiles use their own target names, and 'make 02060' there
-    # succeeds while building NOTHING. The default target builds every CPU
-    # variant, which is what we want.
-    make -C "$FREEMINT/sys/sockets/xif" >/dev/null 2>&1 || skipped="$skipped xif"
-    for d in "$FREEMINT"/sys/sockets/xif/*/; do
-        [ -f "$d/Makefile" ] || continue
-        make -C "$d" >/dev/null 2>&1 || skipped="$skipped $(basename "$d")"
-    done
-    [ -n "$skipped" ] && echo "note: driver(s) not built:$skipped" >&2
+    make -C "$FREEMINT/sys/sockets" "$MOD_TARGET"
+    # The xif Makefiles use their own target names, and 'make 02060'
+    # there succeeds while building nothing. The default target builds
+    # every CPU variant, 02060 among them.
+    make -C "$FREEMINT/sys/sockets/xif/virtio_net"
 fi
 
-# ---------------------------------------------------------------- layout
+need() {
+    [ -f "$1" ] || { echo "missing: $1" >&2
+                     echo "(run with --build, or build FreeMiNT first)" >&2
+                     exit 1; }
+}
 
-AUTODIR="$OUT/auto"
-MINTDIR="$OUT/mint/$SYSDIR_NAME"
-XAAESDIR="$MINTDIR/xaaes"
-FONTSDIR="$MINTDIR/fonts"
-TBLDIR="$MINTDIR/keyboard"
+KERNEL="$FREEMINT/sys/.compile_$KERNEL_TARGET/$KERNEL_PRG"
+INET4="$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd"
+VNET="$FREEMINT/sys/sockets/xif/virtio_net/.compile_$MOD_TARGET/virtio_net.xif"
+need "$KERNEL"
+need "$INET4"
+need "$VNET"
+
+# ------------------------------------------------ 1. download the archive
+
+if [ -z "$ZIP" ]; then
+    ZIP="$CACHE/$SNAPSHOT"
+    if [ ! -f "$ZIP" ]; then
+        mkdir -p "$CACHE"
+        curl -fsSL --retry 3 -o "$ZIP.part" "$SNAPSHOT_URL"
+        mv "$ZIP.part" "$ZIP"
+    fi
+    echo "$SNAPSHOT_SHA256  $ZIP" | sha256sum -c --quiet - || {
+        echo "$ZIP does not match the pinned checksum" >&2; exit 1; }
+fi
+[ -f "$ZIP" ] || { echo "no such snapshot: $ZIP" >&2; exit 1; }
+
+# ----------------------------------------- 2. unpack it to the root of C:
 
 if [ -e "$OUT" ]; then
     # No rm: walk the tree bottom-up and unlink explicitly.
@@ -173,472 +166,242 @@ for dirpath, dirnames, filenames in os.walk(root, topdown=False):
 os.rmdir(root)
 PY
 fi
-mkdir -p "$AUTODIR" "$MINTDIR" "$XAAESDIR" "$FONTSDIR" "$TBLDIR"
+mkdir -p "$OUT"
+unzip -q "$ZIP" -d "$OUT"
+echo "snapshot: $(basename "$ZIP")"
 
-need() {
-    [ -f "$1" ] || { echo "missing build output: $1" >&2
-                     echo "(run with --build, or build FreeMiNT first)" >&2
-                     exit 1; }
+# The archive's sysdir, renamed to the one our kernel reads. Everything
+# inside it that names the directory does so through ${SYSDIR}, so the
+# rename needs no edits to follow it.
+shopt -s nullglob
+sysdirs=("$OUT"/mint/1-19-*)
+shopt -u nullglob
+[ "${#sysdirs[@]}" -eq 1 ] || {
+    echo "expected one mint/1-19-* directory in the snapshot, found ${#sysdirs[@]}" >&2
+    exit 1; }
+MINTDIR="$OUT/mint/$SYSDIR_NAME"
+if [ "${sysdirs[0]}" != "$MINTDIR" ]; then
+    mv "${sysdirs[0]}" "$MINTDIR"
+fi
+echo "sysdir: mint/$(basename "${sysdirs[0]}") -> mint/$SYSDIR_NAME"
+XAAESDIR="$MINTDIR/xaaes"
+SYSROOT="$MINTDIR/sys-root"
+need "$MINTDIR/mint.cnf"
+need "$XAAESDIR/xaaes.cnf"
+
+# ----------------------------------------------------------- the kernel
+#
+# Step 3 says to leave only the archive's mint-*.prg in AUTO. That
+# program is a loader: it reads the _CPU and _MCH cookies and starts one
+# of the stock kernels from the sysdir. None of those can reach drive C
+# (see the top), so the loader and the kernels it chooses between are
+# taken out, and our kernel is the AUTO program instead.
+for f in "$OUT"/auto/mint-*.prg "$MINTDIR"/mint*.prg; do
+    [ -f "$f" ] && python3 -c "import os,sys; os.remove(sys.argv[1])" "$f"
+done
+cp "$KERNEL" "$OUT/auto/mint.prg"
+echo "kernel: auto/mint.prg ($KERNEL_TARGET, $(stat -c %s "$KERNEL") bytes)"
+
+# ---------------------------------------------------------- the network
+#
+# The IP stack and the driver are replaced as a pair, both from the tree
+# the kernel came from. A network driver is compiled against the stack's
+# interface structures, and the two trees do not have the same ones: ours
+# carries the interface-index work, upstream's does not. A driver built
+# against one stack and loaded by the other is the kind of mismatch that
+# crashes rather than complains.
+cp "$INET4" "$MINTDIR/inet4.xdd"
+cp "$VNET" "$MINTDIR/virtione.xif"
+echo "network: inet4.xdd + virtione.xif from $(basename "$FREEMINT")"
+
+# Switched off, not removed -- the snapshot's own convention, as with its
+# asix.xix and isofs.xfx: renaming the extension back turns one on.
+#
+# These drive hardware this machine does not have: DMA sound, the floppy
+# controller, and the parallel and serial ports that plip and slip run
+# over. Upstream's ARAnyM archive -- its own build for a machine that is
+# an emulator -- carries none of the four. plip and slip have a second
+# reason: inet4 loads every *.xif at boot, and these two were built
+# against the upstream stack, not ours.
+disable() {                     # <name> <new extension>
+    [ -f "$MINTDIR/$1" ] || return 0
+    mv "$MINTDIR/$1" "$MINTDIR/${1%.*}.$2"
+    echo "  disabled: $1 -> ${1%.*}.$2"
 }
+disable audiodev.xdd xdx
+disable flop_raw.xdd xdx
+disable plip.xif xix
+disable slip.xif xix
 
-# Drop names that cannot exist on an 8.3 GEMDOS drive.
+# ------------------------------------------------------------ 8.3 names
 #
-# Used for the third-party trees, which carry documentation and icon sets
-# with modern names -- gpl-3.0.txt, MYSTART48.PNG. A name that cannot be
-# spelled in 8.3 cannot be asked for either, so the file is unreachable
-# whether or not it is copied. Dropping is reported rather than silent,
-# because a silent drop reads as though the file shipped.
-prune_non_83()
-{
-    python3 - "$1" <<'PYX'
-import os, re, shutil, sys
-ok = re.compile(r"^[A-Za-z0-9_~%^&@!(){}'`#$-]{1,8}(\.[A-Za-z0-9_~%^&@!(){}'`#$-]{1,3})?$")
-n = 0
-for dirpath, dirnames, filenames in os.walk(sys.argv[1], topdown=False):
-    for name in filenames:
-        if not ok.match(name):
-            os.remove(os.path.join(dirpath, name)); n += 1
-    for name in dirnames:
-        if not ok.match(name):
-            shutil.rmtree(os.path.join(dirpath, name), ignore_errors=True); n += 1
-print(n)
-PYX
-}
+# Drive C is a GEMDOS world, and a name that cannot be spelled in 8.3
+# cannot be opened either: it shows up in a listing, truncated, and every
+# access fails. The snapshot is built for FAT drives with long-name
+# support and has a dozen such names, all under sys-root.
+#
+# Commands are renamed so they stay usable. resolv.conf is replaced
+# outright below. Everything else is dropped, by name, so the log says
+# what this tree does not have.
+for pair in "bin/fsck.minix:bin/fsckminx" \
+            "bin/mount_nfs:bin/mountnfs" \
+            "bin/mount_nfs3:bin/mntnfs3"; do
+    from="$SYSROOT/${pair%%:*}"
+    to="$SYSROOT/${pair##*:}"
+    if [ -f "$from" ]; then
+        mv "$from" "$to"
+        echo "  renamed: sys-root/${pair%%:*} -> ${pair##*:}"
+    fi
+done
 
-# --- EmuTOS -------------------------------------------------------------
+# ---------------------------------------------------------------- /etc
 #
-# EmuTOS is the firmware: QEMU loads it with -kernel, off the HOST
-# filesystem, before any guest or any drive exists. It is put on drive C
-# anyway, because drive C *is* a host folder -- so the launcher can point
-# -kernel straight at it, and a user upgrading EmuTOS just drops a new
-# file in place. That removes the need for any separate update path for
-# it; it becomes an ordinary manifest entry like everything else here.
+# The resolver opens "/etc/resolv.conf" by that exact name, and drive C
+# cannot spell it: the four-character extension comes out truncated and
+# the file cannot be opened at all. The resolver then falls back to its
+# compiled-in name server, 127.0.0.1, and every lookup fails having put
+# nothing on the wire -- which looks like a broken network and is not
+# one. host.conf has the same problem.
 #
-# The guest never reads it. It is visible in the C: root and is inert
-# there, which is why the name only has to satisfy our own 8.3 rule --
-# emutos-virt.elf does not (12-character stem), so it lands as
-# EMUTOS.IMG -- .IMG rather than .ELF because that is the name every
-# EmuTOS release already carries and the one a user arriving with a
-# downloaded build will recognise. The extension is cosmetic: this
-# target's emutos.img keeps its ELF wrapper, and emutos-virt.elf is a
-# copy of it, so both names have always held identical bytes.
+# So /etc is built at boot in u:/ram, the kernel's own ram filesystem,
+# which takes long names, from 8.3-named copies kept in sys-root/etc.
+# Redirection does the copying rather than cp, which refuses files on
+# this drive, reporting them "replaced while being copied".
+ETC="$SYSROOT/etc"
+[ -f "$ETC/resolv.conf" ] && python3 -c "import os,sys; os.remove(sys.argv[1])" "$ETC/resolv.conf"
+# 10.0.2.3 is the name server on the NAT link every launcher gives the
+# guest; it forwards to whatever the host uses. 8.8.8.8 is the
+# snapshot's own choice, kept as the fallback.
+printf 'nameserver 10.0.2.3\nnameserver 8.8.8.8\n' > "$ETC/resolv.cnf"
+printf 'order hosts,bind\n'                        > "$ETC/hostconf"
+printf '127.0.0.1 localhost\n'                     > "$ETC/hosts"
+
+cat > "$MINTDIR/mketc.sh" <<'MKETC'
+# Build /etc where long names are possible. Run from mint.cnf.
+# LEFT is the name drive C can spell, RIGHT the name programs ask for.
+E=/ram/etc
+S=/c/mint/1-19-cur/sys-root/etc
+mkdir -p $E
+cat $S/resolv.cnf > $E/resolv.conf
+cat $S/hostconf   > $E/host.conf
+cat $S/hosts      > $E/hosts
+cat $S/passwd     > $E/passwd
+cat $S/fstab      > $E/fstab
+cat $S/profile    > $E/profile
+MKETC
+
+python3 - "$MINTDIR/mint.cnf" <<'PY'
+import sys
+
+path = sys.argv[1]
+s = open(path, encoding='latin-1').read()
+
+def swap(old, new):
+    global s
+    if s.count(old) != 1:
+        sys.exit("mint.cnf: expected exactly one %r" % old.strip())
+    s = s.replace(old, new)
+
+swap('sln ${SYSDIR}sys-root/etc      u:/etc\n',
+     '# shinogi: not a link to sys-root/etc on drive C, which cannot spell\n'
+     '# names like resolv.conf. /etc is built in the ram filesystem by\n'
+     '# mketc.sh, run under EXECUTE PROGRAMS below.\n'
+     'sln u:/ram/etc                 u:/etc\n')
+
+anchor = '#exec u:/bin/route add default XXX gw BBB.BBB.BBB.BBB\n'
+swap(anchor, anchor +
+     '\n'
+     '# shinogi: /etc first (see the sln above), then the network. The\n'
+     '# launchers give the guest a NAT link whose addressing is fixed:\n'
+     '# 10.0.2.15 for us, 10.0.2.2 the gateway, 10.0.2.3 the name server.\n'
+     '# On a bridged or tap link these are wrong, and so is the name server\n'
+     '# in sys-root/etc/resolv.cnf.\n'
+     'exec u:/bin/bash u:/c/mint/1-19-cur/mketc.sh\n'
+     'exec u:/bin/ifconfig eth0 addr 10.0.2.15 netmask 255.255.255.0 up\n'
+     'exec u:/bin/route add default eth0 gw 10.0.2.2\n')
+
+open(path, 'w', encoding='latin-1').write(s)
+PY
+echo "mint.cnf: /etc in u:/ram, eth0 10.0.2.15 via 10.0.2.2"
+
+# -------------------------------------------------------------- EmuTOS
 #
-# Consequence worth knowing: EmuTOS now sits in space the user can edit,
-# so a deleted or damaged EMUTOS.IMG means nothing boots at all, and the
-# failure appears at emulator start rather than anywhere in the guest.
-# The launcher should say so plainly, and the restore path should treat
-# this file as a first-class entry.
+# The firmware. QEMU loads it with -kernel, off the host filesystem,
+# before any guest exists, and the launcher looks for it here first --
+# so a user upgrading EmuTOS drops a new file in place. The guest never
+# reads it. A deleted EMUTOS.IMG means nothing boots at all.
 EMUTOS_ELF="${EMUTOS_ELF:-$HOME/git/emutos/emutos-virt.elf}"
 if [ -f "$EMUTOS_ELF" ]; then
     cp "$EMUTOS_ELF" "$OUT/emutos.img"
-    echo "firmware: emutos.img ($(stat -c %s "$EMUTOS_ELF") bytes) - launcher passes this to -kernel"
+    echo "firmware: emutos.img ($(stat -c %s "$EMUTOS_ELF") bytes)"
 else
-    echo "note: no EmuTOS at $EMUTOS_ELF - the bundle will not boot on its own" >&2
+    echo "note: no EmuTOS at $EMUTOS_ELF - the packagers supply it" >&2
 fi
 
-# --- fVDI ---------------------------------------------------------------
+# ---------------------------------------------------------------- fVDI
 #
 # fVDI replaces the ROM VDI and has to be resident before anything draws
-# through it, so it is written into AUTO *ahead of* the kernel: EmuTOS
-# runs \AUTO in directory order, and FVDI.PRG also sorts before MINT.PRG
-# on any host that hands them back alphabetically. This block therefore
-# stays above the kernel block -- moving it below would reverse the two.
+# through it, so it goes in AUTO ahead of the kernel: EmuTOS runs AUTO in
+# directory order, and FVDI.PRG sorts before MINT.PRG.
 #
-# The fVDI tree is stock; we carry no patch to it. The 16-bit driver
-# suits this machine as-is, taking the screen from the Line-A variables
-# and Physbase(), which is exactly the state EmuTOS leaves behind.
+# fvdi.sys, read from the boot drive root:
+#   booted      required when started from AUTO
+#   cookie      the VALUE matters: a bare "cookie nvdi" yields 0x0250,
+#               below the bar applications test -- HighWire wants NVDI
+#               >= 3. "$" is hex to fVDI's atol().
+#   01r ...     the 16-bit driver, looked for in gemsys\
+# No "debug" line: to make fVDI talk, put "debugout 1" as the FIRST line
+# and it reaches the host serial log.
 FVDI="${FVDI_DIR:-$HOME/git/fvdi/fvdi}"
-if [ -f "$FVDI/engine/fvdi_gnu.prg" ] && [ -f "$FVDI/drivers/16_bit/16_bit.sys" ]; then
-    cp "$FVDI/engine/fvdi_gnu.prg" "$AUTODIR/fvdi.prg"
-    mkdir -p "$OUT/gemsys"
-    cp "$FVDI/drivers/16_bit/16_bit.sys" "$OUT/gemsys/16_bit.sys"
-    # fVDI's config, read from the boot drive root.
-    #
-    # "booted" is required when starting from AUTO. The driver line names
-    # a driver looked for in gemsys\ beside this file. The NVDI cookie is
-    # not set at all unless the config asks for one, and the VALUE
-    # matters: a bare "cookie nvdi" yields 0x0250, below the bar
-    # applications test against -- HighWire wants NVDI >= 3. "$" is hex
-    # to fVDI's atol().
-    #
-    # Deliberately no "debug"/"debugout" line: those are diagnostics and
-    # a release should not emit them. To make fVDI talk again put
-    # "debugout 1" as the FIRST line; it reaches the host serial log.
-    # Note that "debug" takes NO argument -- a stray token after it is
-    # taken for a font name and abandons the rest of the parse.
-    cat > "$OUT/fvdi.sys" <<'FVDICFG'
+need "$FVDI/engine/fvdi_gnu.prg"
+need "$FVDI/drivers/16_bit/16_bit.sys"
+cp "$FVDI/engine/fvdi_gnu.prg" "$OUT/auto/fvdi.prg"
+mkdir -p "$OUT/gemsys"
+cp "$FVDI/drivers/16_bit/16_bit.sys" "$OUT/gemsys/16_bit.sys"
+cat > "$OUT/fvdi.sys" <<'FVDICFG'
 booted
 cookie nvdi = $0501
 01r 16_bit.sys
 FVDICFG
 
-    # Outline fonts, if we have any to ship.
-    #
-    # The engine only honours "fonts" when it was built with the ft2
-    # module -- check the banner for -FT- -- and the keyword is inert
-    # otherwise, so the line is only written when there is something to
-    # point it at.
-    #
-    # Syntax is not uniform and getting it wrong is not a warning: "path"
-    # and "fonts" REQUIRE an "=" (get_pathname, loader.c:497), while
-    # "filecache" and "preallocate" take a bare token.  A missing "=" here
-    # aborts the whole config and the driver line above never runs.
-    #
-    # load_font_dir() recurses, so naming the top directory picks up every
-    # family below it.  That recursion is also what exhausted EmuTOS's
-    # hostfs scan table and silently cancelled the AUTO scan before
-    # emutos c8558992 -- a guest older than that will not boot with this.
-    FONTS_SRC="${FONTS_DIR:-$HOME/git/Aranym/lan-share/C-drive/gemsys/fonts}"
-    if [ -d "$FONTS_SRC" ]; then
-        mkdir -p "$OUT/gemsys/fonts"
-        cp -r "$FONTS_SRC"/. "$OUT/gemsys/fonts/"
-        printf 'fonts = c:\\gemsys\\fonts\n' >> "$OUT/fvdi.sys"
-        echo "vdi: fonts from $FONTS_SRC ($(du -sh "$OUT/gemsys/fonts" | cut -f1))"
-    else
-        echo "note: no fonts at $FONTS_SRC - fVDI will have the system font only" >&2
-    fi
-
-    echo "vdi: auto/fvdi.prg + gemsys/16_bit.sys + fvdi.sys"
+# Outline fonts. "fonts" needs an "=" -- without one fVDI abandons the
+# whole config and the driver line above never runs. load_font_dir()
+# recurses, so naming the top directory picks up every family below it.
+FONTS_SRC="${FONTS_DIR:-$HOME/git/Aranym/lan-share/C-drive/gemsys/fonts}"
+if [ -d "$FONTS_SRC" ]; then
+    mkdir -p "$OUT/gemsys/fonts"
+    cp -r "$FONTS_SRC"/. "$OUT/gemsys/fonts/"
+    printf 'fonts = c:\\gemsys\\fonts\n' >> "$OUT/fvdi.sys"
+    echo "vdi: fVDI, 16-bit driver, fonts ($(du -sh "$OUT/gemsys/fonts" | cut -f1))"
 else
-    echo "note: no fVDI at $FVDI - the ROM VDI will be used" >&2
+    echo "vdi: fVDI, 16-bit driver; no fonts at $FONTS_SRC, system font only" >&2
 fi
 
-# --- the kernel ---------------------------------------------------------
+# --------------------------------------------------- resolution picker
 #
-# EmuTOS runs every *.PRG in \AUTO at boot, in directory order. The
-# FreeMiNT kernel is itself the AUTO program - we do not use
-# tools/mintload, whose job is to sniff the machine and pick one of
-# several kernels, because we ship exactly one and its machine detection
-# has nothing to go on here.
-KERNEL="$FREEMINT/sys/.compile_$KERNEL_TARGET/$KERNEL_PRG"
-need "$KERNEL"
-cp "$KERNEL" "$AUTODIR/mint.prg"
-# A second copy in the sysdir, so the tree still records which kernel it
-# was built from once the AUTO copy is renamed or replaced. Not under the
-# build's own name: mint0206h is nine characters, so the 8.3 check at
-# the end failed every build from e9057f2 on, after the tree was already
-# written -- the tree looked fine and the exit status said otherwise.
-cp "$KERNEL" "$MINTDIR/mint206h.prg"
-# The FAT/XHDI kernel, parked in the sysdir. Only one kernel may be
-# active, so this one stays out of AUTO.
-ALT="$FREEMINT/sys/.compile_$ALT_TARGET/$ALT_PRG"
-need "$ALT"
-cp "$ALT" "$MINTDIR/$ALT_PRG"
-
-# --- the userland (sys-root) --------------------------------------------
-#
-# bash, ping, ifconfig, route, arp, netstat, the ext2/minix tools and the
-# rest. The stock mint.cnf already links u:/bin, u:/etc and friends into
-# sys-root, so without this the tree boots to a system with nothing in it.
-#
-# EVERY NAME HERE MUST BE 8.3. Drive C is a GEMDOS world, and a name that
-# cannot be spelled there cannot be opened either -- it appears in a
-# listing, truncated, and every access fails. The config files are the
-# ones that matter, so they are renamed rather than dropped, and the real
-# names are rebuilt at boot (see the /etc note further down). Anything
-# else that cannot be spelled is dropped and counted.
-SYSROOT="${SYSROOT_DIR:-$HOME/tmp/freemint-sysroot}"
-if [ -d "$SYSROOT/bin" ]; then
-    cp -r "$SYSROOT" "$MINTDIR/sys-root"
-    # Names GEMDOS cannot hold, renamed so the file survives and is
-    # reachable. The four-character extension is the usual offender.
-    for pair in "etc/resolv.conf:etc/resolv.cnf" \
-                "etc/host.conf:etc/hostconf" \
-                "etc/mke2fs.conf:etc/mke2fs.cnf" \
-                "bin/mount_nfs:bin/mountnfs" \
-                "bin/fsck.minix:bin/fsckminx"; do
-        from="$MINTDIR/sys-root/${pair%%:*}"
-        to="$MINTDIR/sys-root/${pair##*:}"
-        [ -f "$from" ] && { [ -f "$to" ] || cp "$from" "$to"; }
-        [ -f "$from" ] && python3 -c "import os,sys; os.remove(sys.argv[1])" "$from"
-    done
-    dropped=$(prune_non_83 "$MINTDIR/sys-root")
-    echo "userland: sys-root ($(du -sh "$MINTDIR/sys-root" | cut -f1), $dropped file(s) dropped as un-8.3)"
-else
-    echo "note: no sys-root at $SYSROOT - the tree will boot with no userland" >&2
-fi
-
-# --- kernel configuration ----------------------------------------------
-#
-# The kernel looks for \mint\1-19-cur\ on the boot drive and reads
-# mint.cnf from it. The stock example starts XaAES and so do we, which is
-# what the GEM= line below leaves in place; it is written out explicitly
-# anyway so the file says which AES runs rather than depending on what the
-# upstream example happens to ship.
-need "$FREEMINT/doc/examples/mint.cnf"
-sed -e 's|^#setenv LOGNAME root|setenv LOGNAME root|' \
-    -e 's|^#setenv USER    root|setenv USER    root|' \
-    -e 's|^#setenv HOME    /root|setenv HOME    /root|' \
-    -e 's|^GEM=.*|GEM=${SYSDIR}xaaes/xaloader.prg|' \
-    "$FREEMINT/doc/examples/mint.cnf" > "$MINTDIR/mint.cnf"
-
-# /etc has to be built somewhere that takes long names.
-#
-# The resolver opens "/etc/resolv.conf" by that exact name, and drive C
-# cannot spell it: a four-character extension is truncated to three and
-# the file then cannot be opened at all. The resolver never reads it,
-# falls back to its compiled-in nameserver of 127.0.0.1, and every lookup
-# fails having put nothing on the wire -- which looks like a broken
-# network and is not one.
-#
-# u:/ram is the kernel's own ramfs and takes long names, so /etc is built
-# there at boot from the 8.3-named copies above. Redirection does the
-# copying rather than cp, which refuses these files, reporting them
-# "replaced while being copied" (see the hostfs stat bead).
-python3 - "$MINTDIR/mint.cnf" "$OUT/mketc.sh" <<'PYETC'
-import sys
-
-cnf, script = sys.argv[1], sys.argv[2]
-
-open(script, 'w').write(
-    "# Build /etc where long names are possible.  Run from mint.cnf.\n"
-    "# LEFT name is what drive C can spell, RIGHT name is what asks for it.\n"
-    "E=/ram/etc\n"
-    "S=/c/mint/1-19-cur/sys-root/etc\n"
-    "mkdir -p $E\n"
-    "cat $S/resolv.cnf > $E/resolv.conf\n"
-    "cat $S/hostconf   > $E/host.conf\n"
-    "cat $S/hosts      > $E/hosts\n"
-    "cat $S/passwd     > $E/passwd\n"
-    "cat $S/fstab      > $E/fstab\n"
-    "cat $S/profile    > $E/profile\n"
-)
-
-s = open(cnf, encoding='latin-1').read()
-old = 'sln ${SYSDIR}sys-root/etc      u:/etc\n'
-new = ('# NOT a link to the drive C directory: see mketc.sh -- names like\n'
-       '# resolv.conf cannot be spelled there, so /etc is built in the ram\n'
-       '# filesystem instead, which takes long names.\n'
-       'sln u:/ram/etc u:/etc\n')
-if old in s:
-    s = s.replace(old, new)
-    hdr = '# ---------------------- EXECUTE PROGRAMS -------------------------\n'
-    line = (
-        'exec u:/bin/bash u:/c/mketc.sh\n'
-        '\n'
-        '# Bring the network up. The launcher gives the guest a NAT link,\n'
-        '# where the addressing is fixed and known -- 10.0.2.15 for us,\n'
-        '# 10.0.2.2 the gateway, 10.0.2.3 the name server -- so there is\n'
-        '# nothing to discover and no DHCP client to run. Configuring it\n'
-        '# here is what makes the shipped ping, route and arp any use.\n'
-        '#\n'
-        '# THESE ADDRESSES ARE THE NAT ONES. If this is ever moved to a\n'
-        '# bridged or tap link, they are wrong, and so is the 10.0.2.3 in\n'
-        '# sys-root/etc/resolv.cnf.\n'
-        'exec u:/bin/ifconfig eth0 addr 10.0.2.15 netmask 255.255.255.0 up\n'
-        'exec u:/bin/route add default eth0 gw 10.0.2.2\n'
-    )
-    if hdr in s:
-        s = s.replace(hdr, hdr + '\n' + line, 1)
-    else:
-        raise SystemExit('mint.cnf: EXECUTE PROGRAMS header not found')
-    open(cnf, 'w', encoding='latin-1').write(s)
-    print("  mint.cnf: /etc built in u:/ram, populated by mketc.sh")
-else:
-    print("  WARNING: mint.cnf has no sys-root/etc link to replace", file=sys.stderr)
-PYETC
-
-# --- loadable modules ---------------------------------------------------
-#
-# Anything named *.xfs / *.xdd in the sysdir is loaded at boot. Modules we
-# do not want active are shipped with the conventional disabled extensions
-# (.xfx / .xdx) so they can be turned on by renaming.
-cp_mod() { need "$1"; cp "$1" "$2"; }
-cp_mod "$FREEMINT/sys/xdd/xconout2/.compile_$MOD_TARGET/xconout2.xdd" "$MINTDIR/xconout2.xdd"
-cp_mod "$FREEMINT/sys/xfs/ext2fs/.compile_$MOD_TARGET/ext2.xfs"       "$MINTDIR/ext2.xfs"
-cp_mod "$FREEMINT/sys/xfs/minixfs/.compile_$MOD_TARGET/minix.xfs"     "$MINTDIR/minix.xfx"
-# The IP stack, enabled: it is also what scans for and loads the .xif
-# network drivers, so nothing networking happens without it.
-cp_mod "$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd"         "$MINTDIR/inet4.xdd"
-cp_mod "$FREEMINT/sys/xfs/nfs/.compile_$MOD_TARGET/nfs.xfs"           "$MINTDIR/nfs.xfx"
-
-# The virtio-net driver, if it has been built. Loaded by inet4 above --
-# only .xif is scanned, and only from the sysdir.
-VNET="$FREEMINT/sys/sockets/xif/virtio_net/.compile_$MOD_TARGET/virtio_net.xif"
-if [ -f "$VNET" ]; then
-    cp "$VNET" "$MINTDIR/virtione.xif"
-    echo "network: virtione.xif"
-else
-    echo "note: no virtio-net driver built - no networking" >&2
-fi
-# nfstderr routes kernel debug output through ARAnyM native features,
-# which QEMU virt does not provide: shipped disabled.
-cp_mod "$FREEMINT/sys/xdd/nfstderr/.compile_$MOD_TARGET/nfstderr.xdd" "$MINTDIR/nfstderr.xdx"
-
-# --- the driver library -------------------------------------------------
-#
-# The FreeMiNT release lays its loadable modules out as
-# driver/{xdd,xfs,xif}, one .txt beside each. We ship the same shape.
-#
-# THIS IS A LIBRARY, NOT A RUNTIME PATH, and the distinction matters:
-# sys/module.c:200 calls load_modules(sysdir, ...), so the kernel scans
-# ONLY the sysdir. Nothing here is loaded from where it sits. It is the
-# menu -- the modules actually in use were copied into the sysdir above,
-# and enabling another one means copying it there too.
-#
-# The BINARIES are built from our own tree rather than lifted from the
-# 1.18 release, because a module is tied to the kernel it was compiled
-# against and ours is 1-19-cur. Taking 1.18 binaries would put modules
-# from one kernel beside another, and the sysdir they belong in
-# (mint/1-18-0) is not even the one our kernel reads. DOCUMENTATION has
-# no such tie, so the .txt files come from the release where our tree
-# has none of its own.
-DRVDIR="$OUT/driver"
-# The unpacked FreeMiNT release, used ONLY for its .txt documentation.
-# freemint-1.18.0.zip is on the LAN share; unpack it here and the docs are
-# picked up automatically. Its absence is reported rather than passed over,
-# because a tree that silently loses its documentation looks complete.
-FMREL="${FREEMINT_RELEASE:-$HOME/tmp/freemint-1.18.0/freemint}"
-mkdir -p "$DRVDIR/xdd" "$DRVDIR/xfs" "$DRVDIR/xif"
-
-collect() {                             # <glob-root> <ext> <destdir>
-    n=0
-    for f in $(find "$1" -path "*.compile_$MOD_TARGET*" -name "*.$2" 2>/dev/null | sort); do
-        b=$(basename "$f")
-        # 8.3: virtio_net is ten characters and would be pruned silently
-        # later. It is the same driver the sysdir carries as virtione.xif,
-        # so give it the same name here rather than lose it.
-        [ "$b" = "virtio_net.xif" ] && b=virtione.xif
-        cp "$f" "$3/$b"
-        n=$((n+1))
-    done
-    echo $n
-}
-
-nxdd=$(collect "$FREEMINT/sys/xdd" xdd "$DRVDIR/xdd")
-nxfs=$(collect "$FREEMINT/sys/xfs" xfs "$DRVDIR/xfs")
-nxif=$(collect "$FREEMINT/sys/sockets/xif" xif "$DRVDIR/xif")
-# inet4 is built under sys/sockets rather than with the drivers, but it
-# belongs in the library beside them: it is what loads every .xif.
-if [ -f "$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd" ]; then
-    cp "$FREEMINT/sys/sockets/.compile_$MOD_TARGET/inet4.xdd" "$DRVDIR/xdd/"
-    nxdd=$((nxdd+1))
-fi
-
-# Our own driver docs, then the release's for anything we do not document.
-for t in "$FREEMINT/sys/sockets/xif"/*.txt; do
-    [ -f "$t" ] && cp "$t" "$DRVDIR/xif/"
-done
-ndoc=0
-if [ -d "$FMREL/driver" ]; then
-    for k in xdd xfs xif; do
-        for t in "$FMREL/driver/$k"/*.txt; do
-            [ -f "$t" ] || continue
-            [ -f "$DRVDIR/$k/$(basename "$t")" ] || { cp "$t" "$DRVDIR/$k/"; ndoc=$((ndoc+1)); }
-        done
-    done
-else
-    echo "note: no FreeMiNT release at $FMREL - driver docs will be incomplete" >&2
-    echo "      (unpack freemint-1.18.0.zip from the LAN share there)" >&2
-fi
-echo "driver library: $nxdd xdd, $nxfs xfs, $nxif xif (+$ndoc docs from the release)"
-
-# --- the release's own tools -------------------------------------------
-#
-# fsetter, gluestik, lpflush, mgw, mkfatfs, mktbl and sysctl, from the
-# FreeMiNT release. These are the GEM-side utilities; the Unix userland
-# (bash, ping, ifconfig and the rest) is NOT in the release at all and
-# comes from sys-root above -- worth stating, because "the tools" means
-# two different sets of things depending on which half you mean.
-#
-# toswin2 is deliberately skipped: a newer one is installed at C:\TOSWIN2
-# and MyAES's TOSRUN points there, so a second copy would only raise the
-# question of which one runs.
-if [ -d "$FMREL/tools" ]; then
-    mkdir -p "$OUT/tools"
-    ntool=0
-    for d in "$FMREL"/tools/*/; do
-        b=$(basename "$d")
-        [ "$b" = toswin2 ] && continue
-        cp -r "$d" "$OUT/tools/"
-        ntool=$((ntool+1))
-    done
-    dropped=$(prune_non_83 "$OUT/tools")
-    echo "release tools: $ntool ($dropped file(s) dropped as un-8.3)"
-else
-    echo "note: no release tools at $FMREL/tools" >&2
-fi
-
-# Our own resolution picker.
-#
-# The screen size is fixed when QEMU starts -- the guest asks the host for
-# it at boot and nothing running here can resize a scanout that is already
-# up.  So SETRES writes the choice to C:\SHINOGI.INI and the launcher reads
-# it on the way back in; the round trip is "choose, shut down, start again".
-#
-# Built here rather than shipped prebuilt so it cannot drift from the
-# launcher that has to agree with it about the file format.
+# The screen size is fixed when QEMU starts, so SETRES writes the choice
+# to C:\SHINOGI.INI and the launcher reads it on the next start. Built
+# here so it cannot drift from the launcher about the file format.
 GUEST_SRC="$(cd "$(dirname "$0")" && pwd)/guest/setres.c"
-if [ -f "$GUEST_SRC" ]; then
-    mkdir -p "$OUT/tools"
-    if m68k-atari-mint-gcc -O2 -o "$OUT/tools/setres.prg" "$GUEST_SRC" 2>/dev/null; then
-        echo "resolution picker: tools/setres.prg"
-    else
-        echo "note: could not build $GUEST_SRC - no resolution picker" >&2
-    fi
-fi
+mkdir -p "$OUT/tools"
+m68k-atari-mint-gcc -O2 -o "$OUT/tools/setres.prg" "$GUEST_SRC"
+echo "resolution picker: tools/setres.prg"
 
-# --- XaAES --------------------------------------------------------------
-cp_mod "$XA/xaloader/.compile_$MOD_TARGET/xaloader.prg" "$XAAESDIR/xaloader.prg"
-cp_mod "$XA/.compile_$MOD_TARGET/xaaes020.km"           "$XAAESDIR/xaaes.km"
-cp_mod "$XA/adi/whlmoose/.compile_$MOD_TARGET/moose.adi"   "$XAAESDIR/moose.adi"
-cp_mod "$XA/adi/whlmoose/.compile_$MOD_TARGET/moose_w.adi" "$XAAESDIR/moose_w.adi"
-
-cp "$XA"/*.rsc "$XAAESDIR/"
-cp "$XA"/*.rsl "$XAAESDIR/"
-cp "$XA"/xa_help.* "$XAAESDIR/"
-
-mkdir -p "$XAAESDIR/gradient" "$XAAESDIR/widgets" "$XAAESDIR/xobj"
-cp "$XA/gradient"/*.grd "$XAAESDIR/gradient/"
-cp "$XA/widgets"/*.rsc  "$XAAESDIR/widgets/"
-
-# The theme is a config recipe over two resources that are NOT in stock
-# XaAES: the a_skin1 widget set and the ablue/agrey gradients. They come
-# off the Aranym drive, which is the only place they exist here, so the
-# look is not reproducible from the FreeMiNT tree alone.
+# ---------------------------------------------------------- XaAES theme
+#
+# The snapshot's XaAES starts TeraDesk as its shell and TosWin2 beside
+# it; both stay as they are. The look is ours: the a_skin1 widget set and
+# the ablue/agrey gradients, which are not in stock XaAES and come off
+# the ARAnyM drive. Appended, because the last assignment wins.
+#
+# textures is OFF on purpose: the metallic look comes from the widget
+# set, and "textures = img" gives a different desktop entirely.
 THEME="${THEME_DIR:-$HOME/git/Aranym/lan-share/host_fs/Bootback/c/mint/1-19-025/xaaes}"
-if [ -d "$THEME" ]; then
-    cp -f "$THEME/widgets"/a_skin*.rsc "$XAAESDIR/widgets/" 2>/dev/null || true
-    cp -f "$THEME/gradient"/ablue_*.grd "$XAAESDIR/gradient/" 2>/dev/null || true
-    cp -f "$THEME/gradient"/agrey_*.grd "$XAAESDIR/gradient/" 2>/dev/null || true
-else
-    echo "note: no theme resources at $THEME - shipping stock widgets" >&2
-fi
-cp "$XA/xobj"/*.rsc     "$XAAESDIR/xobj/"
-cp -r "$XA/img" "$XAAESDIR/"
-cp -r "$XA/pal" "$XAAESDIR/"
-
-# XaAES's own config. The stock example points "shell =" at TeraDesk,
-# commented out. We DO ship TeraDesk (see the desktop section below), so
-# that line is uncommented as it stands rather than redirected.
-#
-# It pointed at Thing for a while, from when the tree carried Thing and
-# not TeraDesk. Thing is no longer shipped at all: TeraDesk is the one
-# desktop, the one with the colour icons and the theme below, and a
-# second desktop on the drive only raised the question of which runs.
-need "$XA/example.cnf"
-#
-# launchpath: the stock example points at u:\opt\GEM, which belongs to a
-# full distribution we do not ship -- with it, XaAES's built-in desktop
-# offers an empty launcher and there is no way to start anything. Point
-# it at the boot drive instead, which is the host folder the user
-# actually puts programs in. doc/install.txt asks for exactly this kind
-# of path adaptation when the layout differs from the stock snapshot.
-sed -e 's|^#setenv AVSERVER   "DESKTOP "|setenv AVSERVER   "DESKTOP "|' \
-    -e 's|^#setenv FONTSELECT "DESKTOP "|setenv FONTSELECT "DESKTOP "|' \
-    -e 's|^\(launchpath[[:space:]]*=\).*|\1  c:\\|' \
-    -e 's|^#shell = c:.teradesk.desktop.prg|shell = c:\\desktop\\desktop.prg|' \
-    "$XA/example.cnf" > "$XAAESDIR/xaaes.cnf"
-
-# The theme, appended rather than sed'd in: these keys are commented out
-# in the stock example with differing spacing, and a rule that matched
-# them all would be less readable than saying what we want outright. The
-# last assignment wins, so appending is enough.
-#
-# textures is OFF on purpose. The metallic look comes from the a_skin1
-# widget set, not from a texture -- guessing "textures = img" was wrong
-# and produced a different desktop entirely.
-cat >> "$XAAESDIR/xaaes.cnf" <<'XCNF'
+if [ -f "$THEME/widgets/a_skin1.rsc" ]; then
+    cp -f "$THEME/widgets"/a_skin*.rsc "$XAAESDIR/widgets/"
+    cp -f "$THEME/gradient"/ablue_*.grd "$THEME/gradient"/agrey_*.grd \
+          "$XAAESDIR/gradient/"
+    cat >> "$XAAESDIR/xaaes.cnf" <<'XCNF'
 
 # --- Shinogi appearance ------------------------------------------------
 widgets = widgets\a_skin1.rsc
@@ -647,199 +410,45 @@ textures = 0
 palette = nvdi
 back_col = 1
 XCNF
-
-# --- fonts and keyboard tables -----------------------------------------
-cp -r "$FREEMINT/fonts"/* "$FONTSDIR/"
-# Upstream ships a handful of names that are not 8.3; rename them the way
-# FreeMiNT's own snapshot script does.
-mv "$FONTSDIR/cs/cp1250_08.txt" "$FONTSDIR/cs/cp125008.txt"
-mv "$FONTSDIR/cs/cp1250_09.txt" "$FONTSDIR/cs/cp125009.txt"
-mv "$FONTSDIR/cs/cp1250_10.txt" "$FONTSDIR/cs/cp125010.txt"
-mv "$FONTSDIR/pl/ISO-8859-2.fnt" "$FONTSDIR/pl/iso88592.fnt"
-
-cp -r "$FREEMINT/sys/tbl"/* "$TBLDIR/"
-
-
-# --- desktop: TeraDesk -------------------------------------------------
-#
-# The shell XaAES starts, and what "shell = c:\desktop\desktop.prg"
-# above points at. Upstream's ready-to-go snapshot bundles TeraDesk for
-# exactly this reason; the FreeMiNT source tree does not carry it, so a
-# build from source would come up with XaAES running and nothing to
-# launch.
-#
-# It is the only desktop on the drive. Thing Neo used to ship beside it
-# in C:\THING and was dropped (2026-10), so there is one desktop and no
-# doubt about which one runs.
-#
-# CICONS.RSC is why this is worth doing: TeraDesk picks it up on its own
-# whenever the AES advertises colour icon support, with no setting to
-# turn on, and that is the difference between the colour desktop and a
-# monochrome one.
-TERADESK="${TERADESK_DIR:-$HOME/git/Aranym/lan-share/host_fs/Bootback/c/desktop}"
-if [ -f "$TERADESK/desktop.prg" ]; then
-    mkdir -p "$OUT/desktop"
-    for f in "$TERADESK"/*; do
-        b=$(basename "$f")
-        # doc/ is a hypertext manual tree with names that cannot exist on
-        # an 8.3 drive, and .bak is a stale copy of the resource.
-        case "$b" in
-            doc|DOC|*.bak) continue ;;
-        esac
-        cp -r "$f" "$OUT/desktop/"
-    done
-
-    # teradesk.inf comes across as-is. It is 20 KB of structured
-    # configuration that says "Avoid editing this file by hand" at the
-    # top, and it already carries the settings this desktop is meant to
-    # have - mode=1, dpat=4, dcol=1. Writing one from scratch means
-    # inventing a format TeraDesk would then have to parse.
-    #
-    # The cost is that it also carries the state that drive was left in,
-    # window positions and all. A working config with stale windows beats
-    # a hand-made one that does not load.
-    dropped=$(prune_non_83 "$OUT/desktop")
-    echo "desktop: desktop/desktop.prg (TeraDesk), $dropped file(s) dropped as un-8.3"
+    echo "theme: a_skin1 widgets, ablue_2 gradients"
 else
-    echo "note: no TeraDesk at $TERADESK - XaAES will start with no shell" >&2
+    echo "note: no theme at $THEME - the snapshot's stock look" >&2
 fi
 
-# --- AES: MyAES (opt-in) -----------------------------------------------
+# ------------------------------------------- drop what 8.3 cannot spell
 #
-# No longer the AES this tree boots -- XaAES is, and mint.cnf points at
-# xaloader.prg above.  The install is kept because it works and because
-# having the other AES to hand is worth something while the switch beds
-# in, but it is off unless asked for:
+# Last, so it also catches anything added above. Each drop is named, so
+# the log says what this tree does not have; a directory the drop
+# empties goes too, while one that was empty in the archive
+# (sys-root/tmp, sys-root/root) stays.
+python3 - "$OUT" <<'PY'
+import os, re, shutil, sys
+
+root = sys.argv[1]
+ok = re.compile(r"^[A-Za-z0-9_~%^&@!(){}'`#$-]{1,8}(\.[A-Za-z0-9_~%^&@!(){}'`#$-]{1,3})?$")
+for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+    dropped_here = False
+    for name in filenames + dirnames:
+        if ok.match(name):
+            continue
+        p = os.path.join(dirpath, name)
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
+        dropped_here = True
+        print("  dropped (not 8.3):", os.path.relpath(p, root))
+    if dropped_here and dirpath != root and not os.listdir(dirpath):
+        os.rmdir(dirpath)
+        print("  dropped (left empty):", os.path.relpath(dirpath, root))
+PY
+
+# ----------------------------------------------- uppercase + 8.3 check
 #
-#     INSTALL_MYAES=1 tools/make-mint-install.sh
-#
-# Note that installing it does NOT select it.  Nothing here rewrites
-# GEM=, so a tree built with INSTALL_MYAES=1 still boots XaAES and simply
-# carries MyAES alongside; switching means editing mint.cnf by hand.
-MYAES="${MYAES_DIR:-$HOME/git/Aranym/lan-share/C-drive/myaes099final}"
-MYAES_CPU="${MYAES_CPU:-68020}"
-if [ -n "${INSTALL_MYAES:-}" ] && [ -d "$MYAES/config/$MYAES_CPU/myaes" ]; then
-    mkdir -p "$OUT/gemsys"
-    cp -r "$MYAES/config/$MYAES_CPU/myaes" "$OUT/gemsys/"
-    # Its shell: TeraDesk. MyAES refuses to start without a desktop, and
-    # the stock config names Thing, which this tree no longer carries.
-    if [ -f "$OUT/gemsys/myaes/desktop.cnf" ]; then
-        sed -i 's|^shell .*|shell c:\\desktop\\desktop.prg|' \
-            "$OUT/gemsys/myaes/desktop.cnf"
-    fi
-    # Olivier's extras: a taskbar, a resolution switcher, network setup.
-    # A glob that matches nothing makes cp fail, and set -e would end the
-    # build over an optional extra, so each is copied only if it is there.
-    for g in yopla yoprez yopnet; do
-        if [ -d "$MYAES/config/goodies/$g" ]; then
-            mkdir -p "$OUT/gemsys/myaes/$g"
-            find "$MYAES/config/goodies/$g" -maxdepth 1 \
-                 \( -name '*.prg' -o -name '*.cnf' -o -name '*.rsc' \) \
-                 -exec cp {} "$OUT/gemsys/myaes/$g/" \;
-        fi
-    done
-    # MyAES's stock config is written for a full Atari installation and
-    # names several paths that do not exist in this tree. Left alone they
-    # fail quietly at every boot, so they are corrected here rather than
-    # shipped broken. Done in Python because these are Windows-style paths
-    # full of backslashes and the files are latin-1 French.
-    python3 - "$OUT/gemsys/myaes" <<'PYCFG'
-import os, sys
-
-d = sys.argv[1]
-
-def edit(name, subs):
-    p = os.path.join(d, name)
-    if not os.path.isfile(p):
-        return
-    s = open(p, encoding='latin-1').read()
-    for old, new, why in subs:
-        if old in s:
-            s = s.replace(old, new)
-            print("  %s: %s" % (name, why))
-    open(p, 'w', encoding='latin-1').write(s)
-
-edit('myaes.cnf', [
-    # Shutdown. SDMASTER names the program MyAES runs when Shutdown is
-    # chosen from the menu -- without it the menu item has nothing to
-    # launch. gemhalt.prg ships with MyAES and is already beside this file.
-    # NOTE THE TRAILING SPACE in the stock line -- it is matched and
-    # dropped deliberately. Left in place the path becomes
-    # "...gemhalt.prg " with a space, which does not open, and choosing
-    # Shut down reports that the shutdown app was not found. Uncommenting
-    # this line without stripping it looks right and does not work.
-    #
-    # RSMASTER is the same idea for resolution: desktops such as Thing
-    # look it up and fall back to chgres.prg, and we ship no chgres.prg.
-    # MyAES does not set it at all, so it is added here rather than
-    # uncommented. yoprez.prg is MyAES's own resolution switcher, from the
-    # goodies copied below.
-    ('#export SDMASTER=C:\\gemsys\\myaes\\gemhalt.prg \n',
-     'export SDMASTER=C:\\gemsys\\myaes\\gemhalt.prg\n'
-     'export RSMASTER=C:\\gemsys\\myaes\\yoprez\\yoprez.prg\n',
-     'SDMASTER enabled (trailing space stripped) and RSMASTER added'),
-    # ...and make shutdown actually shut down. The stock value reboots.
-    # "poweroff" is supported by MyAES, and the whole chain behind it
-    # exists here: EmuTOS's qemuvirt_shutdown() writes CMD_HALT to the
-    # virt control device, and QEMU turns that into a shutdown request,
-    # so the emulator really does exit.
-    ('\nshutdown=reboot', '\nshutdown=poweroff',
-     'shutdown=poweroff (was reboot)'),
-    # TOSRUN is how a TOS program gets a window instead of taking over the
-    # screen. The stock path is a full-installation one; ours is C:\TOSWIN2.
-    ('export TOSRUN=C:\\mint\\toswin2\\toswin2.app',
-     'export TOSRUN=C:\\toswin2\\toswin2.app',
-     'TOSRUN repointed at C:\\toswin2'),
-])
-
-# synctime is not shipped, so this line only ever fails.
-edit('autorun.cnf', [
-    ('run C:\\programs\\synctime\\synctime.prg',
-     '#run C:\\programs\\synctime\\synctime.prg',
-     'synctime disabled (not shipped)'),
-])
-PYCFG
-    # MyAES ships colour-icon sets and keyboard tables whose names cannot
-    # exist on a GEMDOS drive -- MYSTART48.PNG, TRASHEMPTY.PNG and the
-    # like. Drop them rather than fail the build: they are decoration, and
-    # a name that cannot be spelled in 8.3 cannot be asked for either.
-    # Counted and reported, because a silent drop reads as "shipped".
-    dropped=$(prune_non_83 "$OUT/gemsys/myaes")
-    echo "aes: gemsys/myaes ($MYAES_CPU), $dropped file(s) dropped as un-8.3"
-else
-    if [ -z "${INSTALL_MYAES:-}" ]; then
-        : # not asked for; XaAES is the AES and nothing is missing
-    else
-        echo "note: INSTALL_MYAES set but no MyAES at $MYAES/config/$MYAES_CPU" >&2
-    fi
-fi
-
-# --- applications ------------------------------------------------------
-#
-# The rest of the base system: a text editor, a control panel and a
-# terminal. Each is a "latest" build from the share, unpacked so that
-# <name>/<name>/ is the program directory.
-#
-# ToswIn2 matters beyond being a terminal -- MyAES's own config points
-# TOSRUN at tw-call.app, which is how a TOS program gets a window
-# instead of taking over the screen.
-APPSRC="${APPS_DIR:-$HOME/tmp/newapps}"
-for a in qed cops toswin2; do
-    if [ -d "$APPSRC/$a/$a" ]; then
-        cp -r "$APPSRC/$a/$a" "$OUT/$a"
-        dropped=$(prune_non_83 "$OUT/$a")
-        echo "app: $a ($dropped file(s) dropped as un-8.3)"
-    else
-        echo "note: no $a at $APPSRC/$a/$a" >&2
-    fi
-done
-
-# ------------------------------------------------- uppercase + 8.3 check
-#
-# Drive C is an 8.3 GEMDOS world, and the shinogi drive C folder is
-# uppercase throughout, so the tree is normalised to uppercase last.
-# (The kernel and XaAES ask for their own files in lower case, so the
-# GEMDOS layer has to fold case either way -- real GEMDOS does.)
+# The shinogi drive C folder is uppercase throughout, and the packagers
+# write into it by uppercase paths (AUTO/MINT.PRG, MINT/1-19-CUR/...).
+# The kernel and XaAES ask for their files in lower case; hostfsd folds
+# case the way GEMDOS does, so both find them.
 python3 - "$OUT" <<'PY'
 import os, sys
 
@@ -852,9 +461,6 @@ for dirpath, dirnames, filenames in os.walk(root, topdown=False):
                       os.path.join(dirpath, upper))
 PY
 
-# The guest reaches drive C through a GEMDOS layer that is 8.3 only.
-# Anything longer, or with more than one dot, or with a character GEMDOS
-# rejects, will simply not be found at boot.
 python3 - "$OUT" <<'PY'
 import os, re, sys
 
@@ -865,7 +471,6 @@ for dirpath, dirnames, filenames in os.walk(root):
     for name in dirnames + filenames:
         if not ok.match(name):
             bad.append(os.path.relpath(os.path.join(dirpath, name), root))
-
 if bad:
     print("NOT 8.3-clean:", file=sys.stderr)
     for name in sorted(bad):
@@ -874,28 +479,6 @@ if bad:
 print("8.3 check: all names clean")
 PY
 
-echo "FreeMiNT install tree: $OUT"
-echo "kernel: AUTO/MINT.PRG ($(stat -c %s "$OUT/AUTO/MINT.PRG") bytes, target $KERNEL_TARGET)"
-# --- desktop -----------------------------------------------------------
-#
-# XaAES is the AES; it is not a desktop. Upstream's ready-to-go snapshot
-# bundles TeraDesk for this, but the FreeMiNT source tree does not carry
-# it, so a build from source comes up with XaAES running and nothing to
-# launch. Ship TeraDesk and point XaAES's "shell =" at it -- the line its
-# own example config already carries, commented out.
-# Also drop it on the LAN share, which is how it reaches the Windows box.
-# Without this the tree only ever exists on the build machine.
-SHARE="${SHINOGI_SHARE:-$HOME/git/Aranym/lan-share}"
-if [ -d "$SHARE" ]; then
-    python3 -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" \
-        "$SHARE/freemint-install"
-    cp -r "$OUT" "$SHARE/freemint-install"
-    ( cd "$SHARE" &&
-      python3 -c "import os; os.path.exists('freemint-install.zip') and os.remove('freemint-install.zip')" &&
-      zip -qr freemint-install.zip freemint-install )
-    echo "also copied to $SHARE/freemint-install (+ .zip)"
-fi
-
 echo
-echo "Copy into the shinogi drive C folder, e.g.:"
-echo "  cp -r \"$OUT\"/* \"\${SHINOGI_HOSTFS:-\$HOME/shinogi-drive-c}\"/"
+echo "drive C tree: $OUT ($(du -sh "$OUT" | cut -f1))"
+echo "The packagers take it zipped, with freemint-install/ at the top."

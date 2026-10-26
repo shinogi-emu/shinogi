@@ -613,9 +613,9 @@ cp -r "$XA/pal" "$XAAESDIR/"
 # that line is uncommented as it stands rather than redirected.
 #
 # It pointed at Thing for a while, from when the tree carried Thing and
-# not TeraDesk. Thing is still shipped and still works, but TeraDesk is
-# the desktop this tree is configured for -- it is the one with the
-# colour icons and the theme below.
+# not TeraDesk. Thing is no longer shipped at all: TeraDesk is the one
+# desktop, the one with the colour icons and the theme below, and a
+# second desktop on the drive only raised the question of which runs.
 need "$XA/example.cnf"
 #
 # launchpath: the stock example points at u:\opt\GEM, which belongs to a
@@ -660,37 +660,6 @@ mv "$FONTSDIR/pl/ISO-8859-2.fnt" "$FONTSDIR/pl/iso88592.fnt"
 cp -r "$FREEMINT/sys/tbl"/* "$TBLDIR/"
 
 
-# --- desktop: Thing ----------------------------------------------------
-#
-# MyAES is an AES, not a desktop, and refuses to start without one -- its
-# own desktop.cnf points at c:\thing\thing.app and says so.
-#
-# This is Thing Neo, the current line: Arno Welzel, then Thomas Binder,
-# then Gerhard Stoll, and Olivier Landemarre since 2023 -- the same
-# author as MyAES, which is why the two fit together. GPL, so shipping it
-# is fine. Prebuilt, because the source needs PureC and our toolchain is
-# gcc.
-#
-# The archive carries a 68000 build alongside the default; we take the
-# default, matching the 68020 MyAES and the 68040 kernel.
-THING="${THING_DIR:-$HOME/tmp/thingneo/thing}"
-if [ -f "$THING/thing.app" ]; then
-    mkdir -p "$OUT/thing"
-    # Everything except the 68000 variant and the licence texts, whose
-    # names (gpl-3.0.txt) cannot exist on an 8.3 drive anyway.
-    for f in "$THING"/*; do
-        b=$(basename "$f")
-        case "$b" in
-            68000|LICENSE) continue ;;
-        esac
-        cp -r "$f" "$OUT/thing/"
-    done
-    dropped=$(prune_non_83 "$OUT/thing")
-    echo "desktop: thing/thing.app (Thing Neo), $dropped file(s) dropped as un-8.3"
-else
-    echo "note: no Thing at $THING - the AES will have no desktop to start" >&2
-fi
-
 # --- desktop: TeraDesk -------------------------------------------------
 #
 # The shell XaAES starts, and what "shell = c:\desktop\desktop.prg"
@@ -698,6 +667,10 @@ fi
 # exactly this reason; the FreeMiNT source tree does not carry it, so a
 # build from source would come up with XaAES running and nothing to
 # launch.
+#
+# It is the only desktop on the drive. Thing Neo used to ship beside it
+# in C:\THING and was dropped (2026-10), so there is one desktop and no
+# doubt about which one runs.
 #
 # CICONS.RSC is why this is worth doing: TeraDesk picks it up on its own
 # whenever the AES advertises colour icon support, with no setting to
@@ -748,9 +721,10 @@ MYAES_CPU="${MYAES_CPU:-68020}"
 if [ -n "${INSTALL_MYAES:-}" ] && [ -d "$MYAES/config/$MYAES_CPU/myaes" ]; then
     mkdir -p "$OUT/gemsys"
     cp -r "$MYAES/config/$MYAES_CPU/myaes" "$OUT/gemsys/"
-    # Its shell: Thing, which is what the stock config already selects.
+    # Its shell: TeraDesk. MyAES refuses to start without a desktop, and
+    # the stock config names Thing, which this tree no longer carries.
     if [ -f "$OUT/gemsys/myaes/desktop.cnf" ]; then
-        sed -i 's|^shell .*|shell c:\\thing\\thing.app|' \
+        sed -i 's|^shell .*|shell c:\\desktop\\desktop.prg|' \
             "$OUT/gemsys/myaes/desktop.cnf"
     fi
     # Olivier's extras: a taskbar, a resolution switcher, network setup.
@@ -795,8 +769,8 @@ edit('myaes.cnf', [
     # Shut down reports that the shutdown app was not found. Uncommenting
     # this line without stripping it looks right and does not work.
     #
-    # RSMASTER is the same idea for resolution: Thing looks it up, falls
-    # back to chgres.prg / CHGRES.PRG, and we ship no chgres.prg either.
+    # RSMASTER is the same idea for resolution: desktops such as Thing
+    # look it up and fall back to chgres.prg, and we ship no chgres.prg.
     # MyAES does not set it at all, so it is added here rather than
     # uncommented. yoprez.prg is MyAES's own resolution switcher, from the
     # goodies copied below.

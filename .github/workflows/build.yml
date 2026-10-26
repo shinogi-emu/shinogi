@@ -254,6 +254,10 @@ jobs:
             exit 1
           fi
           echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
+          # PATH alone is not enough: run-golden.sh refuses whatever
+          # qemu-system-m68k PATH finds, so it is not handed the
+          # distribution package by accident, and takes only SHINOGI_QEMU.
+          echo "SHINOGI_QEMU=$GITHUB_WORKSPACE/$BIN" >> "$GITHUB_ENV"
           "$BIN" --version
 
       - name: Build the fixtures

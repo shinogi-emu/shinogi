@@ -314,8 +314,11 @@ KERNEL="$FREEMINT/sys/.compile_$KERNEL_TARGET/$KERNEL_PRG"
 need "$KERNEL"
 cp "$KERNEL" "$AUTODIR/mint.prg"
 # A second copy in the sysdir, so the tree still records which kernel it
-# was built from once the AUTO copy is renamed or replaced.
-cp "$KERNEL" "$MINTDIR/$KERNEL_PRG"
+# was built from once the AUTO copy is renamed or replaced. Not under the
+# build's own name: mint0206h is nine characters, so the 8.3 check at
+# the end failed every build from e9057f2 on, after the tree was already
+# written -- the tree looked fine and the exit status said otherwise.
+cp "$KERNEL" "$MINTDIR/mint206h.prg"
 # The FAT/XHDI kernel, parked in the sysdir. Only one kernel may be
 # active, so this one stays out of AUTO.
 ALT="$FREEMINT/sys/.compile_$ALT_TARGET/$ALT_PRG"

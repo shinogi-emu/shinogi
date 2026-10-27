@@ -213,9 +213,148 @@ _start:
         cmpiw   #0x0008,%d1            /* N */
         bne     fail17
 
+        /* LPSTOP is F800 01C0 #imm. Any other second word is not an
+         * instruction, so it stays an unimplemented F-line. */
+        movel   linef_count,%d2
+        movel   #4,skip_bytes
+        .word   0xf800,0x0000
+        addql   #1,%d2
+        cmpl    linef_count,%d2
+        bne     fail27
+
+        /* LPSTOP is privileged. TRAP #0 brings the test back to
+         * supervisor mode whatever the user-mode attempt did. */
+        lea     priv_handler,%a0
+        movel   %a0,0x00000020
+        lea     super_handler,%a0
+        movel   %a0,0x00000080
+        lea     0x000f0000,%a0
+        movel   %a0,%usp
+        clrl    priv_count
+        movel   #6,skip_bytes
+        movew   #0x0000,%sr            /* user mode */
+        .word   0xf800,0x01c0,0x2700   /* lpstop #0x2700 */
+        trap    #0
+        cmpil   #1,priv_count
+        bne     fail28
+
+        /* In supervisor mode LPSTOP loads SR and waits for an
+         * interrupt: here the goldfish RTC alarm, one millisecond out,
+         * on PIC 6 (autovector level 6). IPL is 7 until LPSTOP lowers
+         * it, so the interrupt cannot arrive any earlier. */
+        movew   #0x2700,%sr
+        lea     rtc_handler,%a0
+        movel   %a0,0x00000078
+        clrl    rtc_count
+        movel   #1,0xff005010          /* PIC 6: enable RTC (irq 1) */
+        movel   0xff006000,%d0         /* TIME_LOW, latches TIME_HIGH */
+        movel   0xff006004,%d1         /* TIME_HIGH */
+        addil   #1000000,%d0           /* +1 ms, in ns */
+        moveq   #0,%d3
+        addxl   %d3,%d1
+        movel   %d1,0xff00600c         /* ALARM_HIGH */
+        movel   %d0,0xff006008         /* ALARM_LOW arms the alarm */
+        movel   #1,0xff006010          /* IRQ_ENABLED */
+        .word   0xf800,0x01c0,0x2000   /* lpstop #0x2000 */
+        movew   %sr,%d1
+        movew   #0x2700,%sr
+        cmpil   #1,rtc_count
+        bne     fail29
+        andiw   #0x0700,%d1            /* the IPL LPSTOP loaded */
+        bne     fail30
+
+        /* FPIAR holds the last instruction that could raise an FP
+         * exception. FMOVE of a control register and FMOVEM cannot, so
+         * they leave it alone (MC68060UM 6.1.4). The 060 software
+         * package depends on it: it saves the control registers first
+         * and then reads FPIAR to find the instruction to emulate. */
+        lea     fpiar_mark,%a1
+        lea     fpscratch,%a0
+fpiar_mark:
+        .word   0xf23c,0x4000          /* fmove.l #1,FP0 */
+        .long   1
+        .word   0xf200,0xa800          /* fmove.l FPSR,D0 */
+        .word   0xf210,0xf080          /* fmovem.x FP0,(A0) */
+        .word   0xf200,0xa400          /* fmove.l FPIAR,D0 */
+        cmpl    %a1,%d0
+        bne     fail31
+
+        /* FMOVEM of the control registers moves FPCR, FPSR, FPIAR, from
+         * the lowest address up, in every addressing mode; predecrement
+         * first lowers the register by the size of all of them
+         * (M68000PRM, FMOVEM). The 060 package saves and restores them
+         * this way on every emulated instruction. */
+        moveq   #0x10,%d0              /* round to zero */
+        .word   0xf200,0x9000          /* fmove.l D0,FPCR */
+        moveq   #0x08,%d0              /* accrued inexact */
+        .word   0xf200,0x8800          /* fmove.l D0,FPSR */
+        movel   #0x12345678,%d0
+        .word   0xf200,0x8400          /* fmove.l D0,FPIAR */
+        lea     fpscratch,%a0
+        .word   0xf210,0xbc00          /* fmovem.l FPCR/FPSR/FPIAR,(A0) */
+        cmpil   #0x10,(%a0)
+        bne     fail32
+        cmpil   #0x08,4(%a0)
+        bne     fail32
+        cmpil   #0x12345678,8(%a0)
+        bne     fail32
+
+        clrl    (%a0)
+        clrl    4(%a0)
+        clrl    8(%a0)
+        lea     fpscratch+12,%a0
+        .word   0xf220,0xbc00          /* fmovem.l FPCR/FPSR/FPIAR,-(A0) */
+        cmpal   #fpscratch,%a0
+        bne     fail33
+        cmpil   #0x10,(%a0)
+        bne     fail33
+        cmpil   #0x08,4(%a0)
+        bne     fail33
+        cmpil   #0x12345678,8(%a0)
+        bne     fail33
+
+        lea     fpscratch+12,%a0
+        .word   0xf220,0xb000          /* fmove.l FPCR,-(A0) */
+        cmpal   #fpscratch+8,%a0
+        bne     fail33
+        cmpil   #0x10,(%a0)
+        bne     fail33
+
+        lea     fpscratch,%a0
+        movel   #0x20,(%a0)            /* round to minus infinity */
+        clrl    4(%a0)
+        movel   #0xcafe0000,8(%a0)
+        .word   0xf210,0x9c00          /* fmovem.l (A0),FPCR/FPSR/FPIAR */
+        .word   0xf200,0xb000          /* fmove.l FPCR,D0 */
+        cmpil   #0x20,%d0
+        bne     fail34
+        .word   0xf200,0xa400          /* fmove.l FPIAR,D0 */
+        cmpil   #0xcafe0000,%d0
+        bne     fail34
+
+        moveq   #0,%d0
+        .word   0xf200,0x9000          /* fmove.l D0,FPCR */
+        .word   0xf200,0x8800          /* fmove.l D0,FPSR */
+
         lea     pass_msg,%a0
         bsr     puts
         bra     halt
+
+priv_handler:
+        addql   #1,priv_count
+        movel   skip_bytes,%d0
+        addl    %d0,2(%sp)
+        rte
+
+super_handler:
+        oriw    #0x2000,(%sp)          /* return in supervisor mode */
+        rte
+
+rtc_handler:
+        addql   #1,rtc_count
+        clrl    0xff006010             /* IRQ_ENABLED */
+        movel   #1,0xff00601c          /* CLEAR_INTERRUPT */
+        rte
 
 unimp_int_handler:
         addql   #1,unimp_count
@@ -273,6 +412,14 @@ fail23: lea f23_msg,%a6; bra fail
 fail24: lea f24_msg,%a6; bra fail
 fail25: lea f25_msg,%a6; bra fail
 fail26: lea f26_msg,%a6; bra fail
+fail27: lea f27_msg,%a6; bra fail
+fail28: lea f28_msg,%a6; bra fail
+fail29: lea f29_msg,%a6; bra fail
+fail30: lea f30_msg,%a6; bra fail
+fail31: lea f31_msg,%a6; bra fail
+fail32: lea f32_msg,%a6; bra fail
+fail33: lea f33_msg,%a6; bra fail
+fail34: lea f34_msg,%a6; bra fail
 
 fail:
         moveal  %a6,%a0
@@ -298,6 +445,8 @@ dest16:
         .space  16
 fpframe:
         .space  12
+fpscratch:
+        .space  12
 skip_bytes:
         .long   0
 unimp_count:
@@ -307,6 +456,10 @@ linef_count:
 illegal_count:
         .long   0
 unimp_ea_count:
+        .long   0
+priv_count:
+        .long   0
+rtc_count:
         .long   0
 pass_msg:
         .asciz  "M68060 TEST PASS\n"
@@ -338,3 +491,11 @@ f23_msg: .asciz "FAIL 23 FSQRT FPSR\n"
 f24_msg: .asciz "FAIL 24 FABS/FNEG FPSR\n"
 f25_msg: .asciz "FAIL 25 FMOVE OUT FPSR\n"
 f26_msg: .asciz "FAIL 26 FMOVE IN FPSR\n"
+f27_msg: .asciz "FAIL 27 F800 NOT LINEF\n"
+f28_msg: .asciz "FAIL 28 LPSTOP NOT PRIVILEGED\n"
+f29_msg: .asciz "FAIL 29 LPSTOP NO WAKE\n"
+f30_msg: .asciz "FAIL 30 LPSTOP SR\n"
+f31_msg: .asciz "FAIL 31 FPIAR CHANGED BY FMOVE/FMOVEM\n"
+f32_msg: .asciz "FAIL 32 FMOVEM.L CONTROL REGS STORE ORDER\n"
+f33_msg: .asciz "FAIL 33 FMOVEM.L CONTROL REGS -(AN)\n"
+f34_msg: .asciz "FAIL 34 FMOVEM.L CONTROL REGS LOAD ORDER\n"

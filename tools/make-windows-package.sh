@@ -59,7 +59,9 @@ NET_DRIVER="${SHINOGI_NET_DRIVER:-$HOME/git/freemint/sys/sockets/xif/virtio_net/
 SP060="${SHINOGI_060SP:-$HOME/git/freemint/sys/arch/060sp/060sp.prg}"
 DEFAULT_KERNEL="$HOME/git/freemint/sys/.compile_hat02060/mint0206h.prg"
 KERNEL="${SHINOGI_MINT_KERNEL:-$DEFAULT_KERNEL}"
-BUNDLE="${TMPDIR:-/tmp}/shinogi-win-$EDITION-$VERSION"
+# A fresh folder every run. A fixed name was reused by a second run in the
+# same TMPDIR, and the new drive C tree was moved INSIDE the old one.
+BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/shinogi-win-$EDITION-$VERSION.XXXXXX")
 
 [ -n "$VERSION" ] || { echo "VERSION is empty" >&2; exit 2; }
 if [ "$CPU" = m68060 ] && [ -z "${SHINOGI_ELF:-}" ]; then
@@ -110,6 +112,20 @@ echo "$EDITION $VERSION ($CPU) -> $OUTDIR"
 mkdir -p "$BUNDLE/qemu/share" "$BUNDLE/qemu/lib"
 cp -f "$QEMU_WIN/qemu-system-m68k.exe" "$QEMU_WIN/qemu-system-m68kw.exe" "$BUNDLE/qemu/"
 cp -f "$QEMU_WIN"/*.dll "$BUNDLE/qemu/"
+# QEMU's own SDL2.dll comes from Fedora's mingw64-SDL2, which is now
+# sdl2-compat: an SDL2.dll that loads SDL3.dll at run time. Nothing
+# imports SDL3.dll, so the import walk that collected QEMU's DLLs never
+# picked it up, and on Windows the emulator then stopped before it
+# started ("Failed loading SDL3 library", then error 0xc0000142).
+# Use the official SDL2 build the probe links against instead; it
+# exports every SDL function QEMU imports.
+cp -f "$SDL2/bin/SDL2.dll" "$BUNDLE/qemu/SDL2.dll"
+for f in "$BUNDLE/qemu/SDL2.dll" "$SDL2/bin/SDL2.dll"; do
+    if grep -aq 'sdl2-compat' "$f" && [ ! -f "$(dirname "$f")/SDL3.dll" ]; then
+        echo "$f is sdl2-compat, which needs an SDL3.dll beside it" >&2
+        exit 1
+    fi
+done
 # Only what the guest can actually reach. locale/ exists in the stock
 # download but not in our own build, which is configured without the
 # pieces that would use it, so its absence is not an error.

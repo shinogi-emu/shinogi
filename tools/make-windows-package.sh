@@ -224,6 +224,7 @@ x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
     "$ROOT/tools/win/resolution.c" \
     "$ROOT/tools/win/network.c" \
     "$ROOT/tools/win/network-config.c" \
+    "$ROOT/tools/win/window-controls.c" \
     "$BUNDLE/shinogi-res.o" \
     -DSHINOGI_VERSION="\"$VERSION\"" \
     -DSHINOGI_EDITION="\"$EDITION\"" \

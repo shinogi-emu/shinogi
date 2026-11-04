@@ -37,6 +37,16 @@ shortcuts always open the currently selected folder. Additional Atari
 drives are planned for a future release.
 
 Toggle full screen with left Ctrl + left Alt + F in the emulator window.
+Open Settings with Ctrl + Alt + S while the QEMU window is focused.
+This shortcut applies only to the running emulator. The guest keeps running;
+saved settings apply to the next launch. Press it again to bring an existing
+Settings window to the front.
+
+The display checks at 50 Hz during input and drawing, converting only changed
+screen regions. Still screens use fewer checks and need no repeated transfers.
+Normal starts skip filesystem regression tests and verbose directory tracing;
+the welcome screen pauses for one second and Shift can keep it displayed.
+Directory replies are batched when both the firmware and helper support it.
 The resolution is stored as res = WIDTHxHEIGHT in drive C's SHINOGI.INI,
 so the guest's resolution picker and Windows settings use the same value.
 The drive C location and full-screen choice are stored per Windows user
@@ -178,15 +188,9 @@ shinogi.exe uses QEMU's SDL display, the same as the Linux and macOS
 launchers, so all three behave alike. SDL is confirmed working on
 Windows: the pointer tracks correctly and there is no grab.
 
-You can switch to GTK with:
-
-    shinogi.exe gtk
-
-GTK adds a menubar
-and opens a larger window (the launcher passes zoom-to-fit=off and
-scale=1.5, neither of which SDL supports - grab-mod is SDL's only
-sub-option). On SDL the window opens at the selected resolution and can be resized by
-dragging it.
+The bundled Windows emulator includes SDL. Its window opens at the selected
+resolution and can be resized by dragging it. Open Settings with Ctrl+Alt+S
+to select the resolution for the next start.
 
 The reason the GTK option is there at all: on some Linux hosts SDL is
 unusable with this guest. With an absolute pointing device - which is

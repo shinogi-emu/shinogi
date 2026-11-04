@@ -82,6 +82,7 @@
 #include <shellapi.h>
 #include "settings.h"
 #include "network.h"
+#include "window-controls.h"
 
 /* Supplied by the build; see tools/make-windows-package.sh. Kept out of
  * the source so the version lives in exactly one file, VERSION. */
@@ -317,7 +318,7 @@ static void stop_helper(HANDLE helper, const char *ready)
  * without one. START_ERROR preserves a CreateProcess failure before
  * closing handles can overwrite the Windows error code.
  */
-static DWORD run_qemu(const char *dir, const char *logs, const char *display,
+static DWORD run_qemu(const char *dir, const char *launcher, const char *logs, const char *display,
                       const char *hostfs, const char *kernel, const char *network,
                       int res_w, int res_h, int fullscreen, DWORD *start_error,
                       char *cmdout, size_t cmdoutlen)
@@ -340,7 +341,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
      */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
-              " -name \"" SHINOGI_EDITION " " SHINOGI_VERSION "\""
+              " -name \"" SHINOGI_EDITION " " SHINOGI_VERSION " - Ctrl+Alt+S: Settings\""
               /* Sound is deferred. The maintained 060 QEMU does not
                * provide the older virt machine's audiodev property. */
               " -M virt"
@@ -392,7 +393,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
         CloseHandle(hlog);
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    window_controls_wait(pi.hProcess, pi.dwProcessId, launcher);
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
@@ -552,7 +553,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
          */
         _snprintf(hostfs, sizeof(hostfs),
                   " -chardev \"socket,id=hostfs,host=127.0.0.1,port=%s,"
-                  "server=off\""
+                  "server=off,nodelay=on\""
                   " -device virtio-serial-device"
                   " -device virtserialport,chardev=hostfs,"
                   "name=shinogi.hostfs",
@@ -560,7 +561,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         hostfs[sizeof(hostfs) - 1] = '\0';
     }
 
-    code = run_qemu(dir, logs, display, hostfs, kernel, network_options, res_w, res_h,
+    code = run_qemu(dir, exe, logs, display, hostfs, kernel, network_options, res_w, res_h,
                     settings.fullscreen, &start_error,
                     lastcmd, sizeof(lastcmd));
 

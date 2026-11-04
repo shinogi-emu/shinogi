@@ -1,0 +1,70 @@
+Additional drive design
+=======================
+
+The current Settings dialog configures only the host folder used as C.
+The next drive work should expose additional host folders first, followed
+by validated hard-disk images and then raw floppy images. Drive settings
+apply at the next start; live insert/eject needs separate guest media-change
+support. No placeholder controls are added before those paths work.
+
+Host folders
+------------
+
+Keep C as the boot folder. Add explicit D through Z folder mappings, with
+Browse and read-only choices, using one confined helper/channel per folder.
+Assign letters by the virtserialport name rather than device discovery order
+so adding a mapping cannot silently move another drive. Append transports
+after the existing C device to retain current device ordering.
+
+The guest currently has one link, current directory, handle namespace and
+directory-page cache. These need per-drive contexts, with open-file/DTA state
+retaining its originating drive. Each helper can keep the existing v1
+protocol, including negotiated directory batching. Cache keys include the
+drive context. Returning between C and D must not mix paths or helper handles.
+Read-only mappings must reject all mutation operations and preserve host
+attributes, including the helper's startup attribute-repair behavior.
+
+Hard-disk images
+----------------
+
+The guest already adopts up to four virtio-blk devices and parses Atari/DOS
+partitions and FAT volumes. The C-letter reservation now recognizes the
+actual virtio-serial host-folder transport, so the first extra image is no
+longer hidden behind C. A read-only raw FAT image is checked as D using an
+actual guest file read and a host image hash, with the old firmware failing
+the same test. This is a prerequisite, not a shipped image-picker UI.
+
+Start with explicit raw .img/.hdf files and read-only attachment. An image
+may contain several partitions, so its guest letters are assigned from the
+available range rather than assuming one image always means one letter.
+Use explicit QEMU format=raw and a correctly encoded filename argument.
+Show the path and access mode in Settings. Preserve C and existing mappings.
+
+Writable image support needs host-verified create, overwrite, rename,
+delete, directory and multi-frame tests, followed by clean shutdown/reopen
+and filesystem checks. The firmware's block-write switch is currently off
+because older vvfat write-back lost data. Only real image files should enter
+the new path; re-enabling that switch must not accidentally re-enable unsafe
+vvfat folder writes. Honor the backend's read-only feature per device and
+return write-protection errors consistently. A host folder remains served
+by hostfs rather than converted to a writable virtual FAT disk.
+
+Floppy images
+-------------
+
+Begin with uncompressed sector images (.st/.img), normal 512-byte sectors
+and standard 720KiB/1.44MiB FAT geometry. Route BIOS floppy A/B operations to
+designated image units; attaching a small image as an ordinary hard disk
+does not provide A/B semantics. Standard virtio-blk GET_ID plus a stable
+serial can identify the A/B units without depending on transport order.
+Keep floppy identification separate from hard-disk partition enumeration.
+
+Provide insert path, read-only, and eject controls only when BPB/geometry,
+media-change and guest cache invalidation are correct. Initially restart
+after changes; add live QMP media changes only with an actual supported
+backend and tested guest notification. Verify file reads, disk swaps and
+host image hashes on both EmuTOS and FreeMiNT.
+
+MSA requires explicit decompression/recompression handling; begin read-only
+if added. STX/protected-disk behavior needs a controller/timing model and is
+outside the initial sector-image implementation.

@@ -92,6 +92,8 @@ def stage(bundle):
     with zipfile.ZipFile(paths["SHINOGI_TAP_ARCHIVE"]) as archive:
         for name in ("devcon.exe", "OemVista.inf", "tap0901.cat", "tap0901.sys"):
             (driver / name).write_bytes(archive.read("dist.win10/amd64/" + name))
+    shutil.copyfile(Path(__file__).resolve().parent / "win/devcon-license.txt",
+                    driver / "DEVCON-LICENSE.txt")
     with tarfile.open(paths["SHINOGI_TAP_SOURCE"], "r:gz") as archive:
         for name in ("COPYING", "COPYRIGHT.GPL", "COPYRIGHT.MIT"):
             member = archive.extractfile("tap-windows6-9.27.0/" + name)
@@ -112,7 +114,10 @@ def stage(bundle):
     provenance.extend((
         "The TAP SYS/INF/CAT and devcon are unmodified official x64 package files.",
         "Windows verifies the package signature during explicit LAN setup.",
-        "TAP licensing: GPLv2 with the upstream WDK exception; see tap/COPYING.",
+        "TAP SYS/INF/CAT licensing: GPLv2 with the upstream WDK exception; see tap/COPYING.",
+        "devcon.exe is a separate Microsoft sample under MS-PL; see tap/DEVCON-LICENSE.txt.",
+        "devcon source: https://github.com/OpenVPN/Windows-driver-samples/tree/master/setup/devcon",
+        "devcon binary SHA256: " + hashlib.sha256((driver / "devcon.exe").read_bytes()).hexdigest(),
         "DHCP is the existing SpareMiNT ISC client; its source RPM includes the port patch.",
         "DHCP licensing: permissive ISC; see DHCP-LICENSE.txt.",
         "Matching original source packages are included in source/.",

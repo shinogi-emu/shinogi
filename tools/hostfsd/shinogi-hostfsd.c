@@ -225,6 +225,8 @@ static void conn_close(conn_t c)
 
 /* GetFinalPathNameByHandle is the only call that resolves junctions and
  * symlinks, which is exactly what the containment check needs. */
+#include "windows-path.h"
+
 static char *plat_realpath(const char *in, char *out)
 {
     HANDLE h;
@@ -245,9 +247,9 @@ static char *plat_realpath(const char *in, char *out)
         errno = ENOENT;
         return NULL;
     }
-    /* Strip the "\\?\" prefix so the containment comparison sees the
-     * same spelling for the root and for everything under it. */
-    strcpy(out, (strncmp(tmp, "\\\\?\\", 4) == 0) ? tmp + 4 : tmp);
+    /* DOS and UNC paths have different extended prefixes. A network
+     * path must retain its two leading slashes to remain absolute. */
+    hostfs_windows_path(out, tmp);
     return out;
 }
 
@@ -525,6 +527,8 @@ static int under_root(const char *resolved)
     /* The next character must be a separator, or "/srv/data-evil" would
      * pass as a child of "/srv/data". */
 #ifdef _WIN32
+    if (rootlen == 3 && root[1] == ':' && root[2] == '\\')
+        return 1;
     return resolved[rootlen] == '\\' || resolved[rootlen] == '/';
 #else
     return resolved[rootlen] == '/';
@@ -1808,7 +1812,13 @@ int main(int argc, char **argv)
      * by one; "/" itself is the only path where it is not trailing. */
     while (rootlen > 1 && (root[rootlen - 1] == '/'
                         || root[rootlen - 1] == '\\'))
+    {
+#ifdef _WIN32
+        if (rootlen == 3 && root[1] == ':')
+            break;
+#endif
         root[--rootlen] = '\0';
+    }
 
     make_label(root);
 

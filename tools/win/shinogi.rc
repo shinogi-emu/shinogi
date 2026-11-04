@@ -11,7 +11,28 @@
  * that have no rasterizer.
  */
 
+#include <windows.h>
+#include "settings.h"
+
 1 ICON "shinogi.ico"
+
+IDD_SETTINGS DIALOGEX 0, 0, 340, 186
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Shinogi Settings"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "Drive C folder:", -1, 12, 12, 300, 12
+    EDITTEXT IDC_DRIVEC, 12, 28, 254, 14, ES_AUTOHSCROLL
+    PUSHBUTTON "Browse...", IDC_BROWSE, 272, 27, 56, 16
+    LTEXT "Choose an existing drive C. Changing this folder does not move files.", -1, 12, 48, 316, 22
+    LTEXT "Start resolution:", -1, 12, 78, 90, 12
+    COMBOBOX IDC_RESOLUTION, 110, 75, 115, 100, CBS_DROPDOWN | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX "Start full screen", IDC_FULLSCREEN, 12, 102, 200, 14
+    LTEXT "Toggle full screen: left Ctrl + left Alt + F", -1, 12, 124, 316, 12
+    LTEXT "Changes apply the next time Shinogi starts.", -1, 12, 140, 316, 12
+    DEFPUSHBUTTON "Save", IDOK, 212, 162, 56, 16
+    PUSHBUTTON "Cancel", IDCANCEL, 272, 162, 56, 16
+END
 
 /*
  * Without a manifest Windows applies its compatibility shims by

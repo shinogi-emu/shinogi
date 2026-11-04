@@ -213,11 +213,13 @@ fi
   && x86_64-w64-mingw32-windres shinogi.rc -O coff -o "$BUNDLE/shinogi-res.o" )
 
 x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
+    "$ROOT/tools/win/settings.c" \
+    "$ROOT/tools/win/resolution.c" \
     "$BUNDLE/shinogi-res.o" \
     -DSHINOGI_VERSION="\"$VERSION\"" \
     -DSHINOGI_EDITION="\"$EDITION\"" \
     -DSHINOGI_CPU="\"$CPU\"" \
-    -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra
+    -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra -lshell32 -lole32
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$BUNDLE/shinogi-res.o"
 
 # The host end of drive C. Console subsystem, but the launcher starts it

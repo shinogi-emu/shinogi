@@ -10,7 +10,7 @@ remove personal files or settings in drive C.
 
     shinogi.exe          launch it
     shinogi-hostfsd.exe  serves drive C, started for you
-    emutos-virt.elf      the guest (EmuTOS), 1280x720 truecolor
+    emutos-virt.elf      the guest (EmuTOS), 1024x768 truecolor by default
     qemu\                the bundled QEMU for Windows
     BUILD.txt            exact CPU and QEMU version in this build
     sdl-grab-probe.exe   diagnostic, see below
@@ -23,8 +23,30 @@ Drive C: is a folder on your host:
 
     %USERPROFILE%\shinogi-drive-c
 
-It is created on first run. Put files there and they appear on the Atari
-desktop; the 8.3 names you see are what the mapping gives them.
+The installer asks for this location. Choose your existing drive C, or an
+empty folder to receive the bundled system. Choose the folder containing
+AUTO and MINT, rather than the parent folder of an extracted zip.
+
+Put files there and they appear on the Atari desktop; the 8.3 names you
+see are what the mapping gives them.
+
+Open Shinogi Settings from the Start menu to change the drive C folder,
+start resolution or "Start full screen". Changes apply on the next start.
+Choosing another folder does not copy or move your files. The drive C
+shortcuts always open the currently selected folder. Additional Atari
+drives are planned for a future release.
+
+Toggle full screen with left Ctrl + left Alt + F in the emulator window.
+The resolution is stored as res = WIDTHxHEIGHT in drive C's SHINOGI.INI,
+so the guest's resolution picker and Windows settings use the same value.
+The drive C location and full-screen choice are stored per Windows user
+in %APPDATA%\shinogi\settings.ini. Uninstalling keeps these settings and
+the drive C folder. Command-line resolution overrides still work.
+
+If the folder is missing, the launcher opens Settings so you can locate
+it. Startup errors show the selected folder and helper diagnostic, or
+refer to shinogi-qemu.log in %LOCALAPPDATA%\shinogi for a QEMU failure.
+The QEMU log is replaced on each start.
 
 It is READ/WRITE. The guest can create, write, delete, rename files and
 make directories, and the changes appear in the folder immediately.

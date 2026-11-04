@@ -13,7 +13,7 @@
  *
  * Drive C is a folder on the host:
  *
- *     %USERPROFILE%\shinogi-drive-c
+ *     %USERPROFILE%\shinogi-drive-c (default; chosen in Settings)
  *
  * It reaches the guest over a virtio-serial port. shinogi-hostfsd.exe
  * sits on the host end of that port and does the real open/read/readdir
@@ -30,12 +30,6 @@
  * the deleted one's length while the guest is told the write succeeded.
  * Nothing in the new path can do that: every operation is an explicit
  * request that either completed or did not.
- *
- * (Drive C is still read-only in practice at b5, but for a different and
- * far better reason: the guest's own GEMDOS layer refuses Fwrite with
- * EACCDN until its write path lands. The host end already implements
- * WRITE, CREATE, DELETE, RENAME, MKDIR and RMDIR, so nothing here has to
- * change when it does.)
  *
  * 9p is not an option on Windows and never was: QEMU cannot build
  * virtfs there at all -- meson.build requires host_os to be linux,
@@ -65,10 +59,8 @@
  * drive depending on the machine, which is the whole failure this
  * arrangement exists to remove.
  *
- * If the helper never becomes ready, QEMU is started WITHOUT the drive
- * rather than not at all, and the user is told. An emulator with no
- * drive C is a working emulator; a dialog box instead of a desktop is
- * not.
+ * If the helper never becomes ready, show its diagnostic and leave the
+ * selected folder intact. QEMU startup failures are reported separately.
  *
  * =========================================================================
  *
@@ -87,6 +79,8 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <shellapi.h>
+#include "settings.h"
 
 /* Supplied by the build; see tools/make-windows-package.sh. Kept out of
  * the source so the version lives in exactly one file, VERSION. */
@@ -105,10 +99,6 @@
  * answers must not stop the emulator starting. */
 #define READY_TIMEOUT_MS  5000
 #define READY_POLL_MS       10
-
-/* A QEMU that fails this quickly failed to start rather than ran and
- * quit, which is the signal to retry without the drive. */
-#define EARLY_EXIT_MS     10000
 
 /* Dynamic/private Windows ports live in the IANA private range. The launcher
  * derives one from its PID; this avoids a filesystem socket path entirely. */
@@ -216,7 +206,7 @@ static HANDLE start_helper(const char *dir, const char *drivec,
      */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\shinogi-hostfsd.exe\""
-              " --root \"%s\" --listen-tcp %s --ready-file \"%s\""
+              " --root \"%s\\.\" --listen-tcp %s --ready-file \"%s\""
               " --once",
               dir, drivec, port, ready);
     cmd[sizeof(cmd) - 1] = '\0';
@@ -261,9 +251,24 @@ static HANDLE start_helper(const char *dir, const char *drivec,
             return pi.hProcess;
         }
         if (GetExitCodeProcess(pi.hProcess, &code) && code != STILL_ACTIVE) {
+            char detail[512] = "", current[512];
+            FILE *log;
+
+            if (hlog != INVALID_HANDLE_VALUE) {
+                CloseHandle(hlog);
+                hlog = INVALID_HANDLE_VALUE;
+            }
+            log = fopen(logpath, "r");
+            if (log) {
+                while (fgets(current, sizeof(current), log)) {
+                    current[strcspn(current, "\r\n")] = '\0';
+                    if (*current) lstrcpynA(detail, current, sizeof(detail));
+                }
+                fclose(log);
+            }
             _snprintf(failure, failure_len,
                       "shinogi-hostfsd.exe exited before its socket was ready "
-                      "(exit code %lu).\r\n", (unsigned long)code);
+                      "(exit code %lu).\r\n%s\r\n", (unsigned long)code, detail);
             failure[failure_len - 1] = '\0';
             helper_log_line(hlog, failure);
             if (hlog != INVALID_HANDLE_VALUE) {
@@ -308,12 +313,12 @@ static void stop_helper(HANDLE helper, const char *ready)
  * Run QEMU to completion.
  *
  * HOSTFS is the chardev and device triple for drive C, or "" for a run
- * without one. Fills ELAPSED with how long QEMU lived, which is how the
- * caller tells "failed to start" from "started and was closed".
+ * without one. START_ERROR preserves a CreateProcess failure before
+ * closing handles can overwrite the Windows error code.
  */
 static DWORD run_qemu(const char *dir, const char *logs, const char *display,
                       const char *hostfs, const char *kernel,
-                      int res_w, int res_h, DWORD *elapsed,
+                      int res_w, int res_h, int fullscreen, DWORD *start_error,
                       char *cmdout, size_t cmdoutlen)
 {
     char cmd[4096], logpath[MAX_PATH];
@@ -321,7 +326,9 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     HANDLE hlog;
-    DWORD start, code = 0;
+    DWORD code = 0;
+
+    *start_error = 0;
 
     /*
      * ORDER ON THE COMMAND LINE IS LOAD-BEARING. QEMU fills the
@@ -364,10 +371,11 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
               " -device virtio-keyboard-device"
               " -device virtio-tablet-device"
               "%s"
-              " -display %s"
+              " -display %s%s"
               " -serial \"file:%s\\shinogi-serial.log\""
               " -d guest_errors -D \"%s\\shinogi-guest-errors.log\"",
-              dir, kernel, res_w, res_h, hostfs, display, logs, logs);
+              dir, kernel, res_w, res_h, hostfs, display,
+              fullscreen ? " -full-screen" : "", logs, logs);
     cmd[sizeof(cmd) - 1] = '\0';
 
     lstrcpynA(cmdout, cmd, (int)cmdoutlen);
@@ -381,9 +389,8 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
     sa.bInheritHandle = TRUE;
     hlog = CreateFileA(logpath, GENERIC_WRITE,
                        FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
-                       OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hlog != INVALID_HANDLE_VALUE) {
-        SetFilePointer(hlog, 0, NULL, FILE_END);
         si.dwFlags = STARTF_USESTDHANDLES;
         si.hStdInput = NULL;
         si.hStdOutput = hlog;
@@ -391,14 +398,13 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
     }
     ZeroMemory(&pi, sizeof(pi));
 
-    start = GetTickCount();
     if (!CreateProcessA(NULL, cmd, NULL, NULL,
                         hlog != INVALID_HANDLE_VALUE,
                         0, NULL, dir, &si, &pi)) {
+        *start_error = GetLastError();
         if (hlog != INVALID_HANDLE_VALUE) {
             CloseHandle(hlog);
         }
-        *elapsed = 0;
         return (DWORD)-1;
     }
     if (hlog != INVALID_HANDLE_VALUE) {
@@ -410,7 +416,6 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
-    *elapsed = GetTickCount() - start;
     return code;
 }
 
@@ -420,14 +425,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     char drivec[MAX_PATH], ready[MAX_PATH], port[16];
     char kernel[MAX_PATH];
     char helper_failure[768];
-    int res_w, res_h, res_given;
+    int res_w, res_h;
     char hostfs[1024], lastcmd[4096];
     const char *display;
     HANDLE helper = NULL;
-    DWORD len, code, elapsed;
+    DWORD len, code, start_error;
+    Settings settings;
     char *slash;
 
-    (void)inst; (void)prev; (void)show;
+    (void)prev; (void)show;
 
     len = GetModuleFileNameA(NULL, exe, sizeof(exe));
     if (len == 0 || len >= sizeof(exe)) {
@@ -443,6 +449,28 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         return 1;
     }
     *slash = '\0';
+
+    if (!settings_load(&settings, dir)) {
+        MessageBoxA(NULL, "Could not open your settings folder.", "shinogi", MB_ICONERROR);
+        return 1;
+    }
+    if (lstrcmpiA(cmdline, "--settings") == 0)
+        return settings_dialog(inst, &settings) ? 0 : 1;
+    if (lstrcmpiA(cmdline, "--open-drive-c") == 0) {
+        if ((INT_PTR)ShellExecuteA(NULL, "open", settings.drivec, NULL, NULL, SW_SHOWNORMAL) <= 32)
+            note("Could not open drive C. Choose its folder in Shinogi Settings.");
+        return 0;
+    }
+    if (!settings_drive_valid(settings.drivec)) {
+        char message[768];
+        snprintf(message, sizeof(message),
+                 "Drive C folder is not available:\n%s\n\n"
+                 "Choose the folder containing your drive C in Shinogi Settings.",
+                 settings.drivec);
+        note(message);
+        if (!settings_dialog(inst, &settings)) return 1;
+    }
+    lstrcpynA(drivec, settings.drivec, sizeof(drivec));
 
     /*
      * gtk needs zoom-to-fit turned off, because it defaults to on for
@@ -460,9 +488,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
      * computes its stride from it. QEMU's own default is 1280x800 and
      * would apply if we passed nothing, so it is always passed.
      */
-    res_w = 1024;
-    res_h = 768;
-    res_given = 0;
+    res_w = settings.width;
+    res_h = settings.height;
     if (cmdline && *cmdline) {
         int w = 0, h = 0;
 
@@ -470,7 +497,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
             w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
             res_w = w;
             res_h = h;
-            res_given = 1;
             cmdline = "";       /* consumed; not a display backend */
         }
     }
@@ -483,47 +509,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         display = cmdline;
     }
     log_dir(logs, sizeof(logs));
-
-    /* The host folder the guest sees as drive C:. Kept somewhere the
-     * user can find it without being told twice. */
-    {
-        const char *profile = getenv("USERPROFILE");
-        _snprintf(drivec, sizeof(drivec), "%s\\shinogi-drive-c",
-                  (profile && *profile) ? profile : dir);
-        drivec[sizeof(drivec) - 1] = '\0';
-        CreateDirectoryA(drivec, NULL);
-
-        /*
-         * Resolution from SHINOGI.INI in the drive C folder.
-         *
-         * Nothing inside the emulator can resize a virtio-gpu scanout that
-         * is already up, so the guest changes the mode by writing this file
-         * and asking to be shut down; we read it on the way back in.  A
-         * size on the command line still wins, for testing.
-         */
-        if (!res_given) {
-            char ini[MAX_PATH], line[256];
-            FILE *f;
-
-            _snprintf(ini, sizeof(ini), "%s\\SHINOGI.INI", drivec);
-            ini[sizeof(ini) - 1] = '\0';
-            if ((f = fopen(ini, "r")) != NULL) {
-                while (fgets(line, sizeof(line), f)) {
-                    int w = 0, h = 0;
-
-                    if (sscanf(line, " res = %dx%d", &w, &h) == 2 ||
-                        sscanf(line, " res=%dx%d", &w, &h) == 2) {
-                        if (w >= 320 && h >= 200 && w <= 1920 && h <= 1080) {
-                            res_w = w;
-                            res_h = h;
-                        }
-                        break;
-                    }
-                }
-                fclose(f);
-            }
-        }
-    }
 
     /*
      * The guest image, which the user may replace without reinstalling.
@@ -582,15 +567,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         char msg[1400];
 
         _snprintf(msg, sizeof(msg),
-                  "Drive C is not available: the helper that serves the\n"
-                  "host folder did not start.\n\n%s\n"
+                  "Could not open drive C:\n%s\n\n%s\n"
                   "See shinogi-hostfsd.log in:\n"
                   "%%LOCALAPPDATA%%\\shinogi\n\n"
-                  "Everything else works; only the host folder is missing.",
+                  "You can change the folder using Shinogi Settings.",
+                  drivec,
                   helper_failure[0] ? helper_failure :
                   "No diagnostic was returned by the helper.");
         msg[sizeof(msg) - 1] = '\0';
         note(msg);
+        return 1;
     } else {
         /*
          * server=off: QEMU is the CLIENT and the helper above is already
@@ -607,26 +593,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         hostfs[sizeof(hostfs) - 1] = '\0';
     }
 
-    code = run_qemu(dir, logs, display, hostfs, kernel, res_w, res_h, &elapsed,
+    code = run_qemu(dir, logs, display, hostfs, kernel, res_w, res_h,
+                    settings.fullscreen, &start_error,
                     lastcmd, sizeof(lastcmd));
-
-    /*
-     * A QEMU that died almost at once, on a run that asked for the
-     * drive, most likely could not make the connection at all -- a
-     * socket connection. Try again without the drive rather than leaving
-     * the user with nothing.
-     */
-    if (code != 0 && hostfs[0] && elapsed < EARLY_EXIT_MS) {
-        stop_helper(helper, ready);
-        helper = NULL;
-        hostfs[0] = '\0';
-        note("Drive C could not be attached, so it has been left out.\n\n"
-             "The emulator is starting again without it. Everything else\n"
-             "works; see shinogi-guest-errors.log in:\n"
-             "%LOCALAPPDATA%\\shinogi");
-        code = run_qemu(dir, logs, display, hostfs, kernel, res_w, res_h, &elapsed,
-                        lastcmd, sizeof(lastcmd));
-    }
 
     stop_helper(helper, ready);
 
@@ -634,7 +603,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         char msg[4608];
         _snprintf(msg, sizeof(msg),
                   "Could not start the bundled QEMU (error %lu).\n\n%s",
-                  (unsigned long)GetLastError(), lastcmd);
+                  (unsigned long)start_error, lastcmd);
         msg[sizeof(msg) - 1] = '\0';
         MessageBoxA(NULL, msg, "shinogi", MB_ICONERROR);
         return 1;
@@ -643,7 +612,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     if (code != 0) {
         char msg[512];
         _snprintf(msg, sizeof(msg),
-                  "QEMU exited with code %lu.\n\nLogs are in:\n%s",
+                  "QEMU exited with code %lu.\n\n"
+                  "See shinogi-qemu.log for the startup error.\n"
+                  "Logs are in:\n%s",
                   (unsigned long)code, logs);
         msg[sizeof(msg) - 1] = '\0';
         MessageBoxA(NULL, msg, "shinogi", MB_ICONWARNING);

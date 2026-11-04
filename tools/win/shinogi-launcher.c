@@ -81,6 +81,7 @@
 #include <string.h>
 #include <shellapi.h>
 #include "settings.h"
+#include "network.h"
 
 /* Supplied by the build; see tools/make-windows-package.sh. Kept out of
  * the source so the version lives in exactly one file, VERSION. */
@@ -317,7 +318,7 @@ static void stop_helper(HANDLE helper, const char *ready)
  * closing handles can overwrite the Windows error code.
  */
 static DWORD run_qemu(const char *dir, const char *logs, const char *display,
-                      const char *hostfs, const char *kernel,
+                      const char *hostfs, const char *kernel, const char *network,
                       int res_w, int res_h, int fullscreen, DWORD *start_error,
                       char *cmdout, size_t cmdoutlen)
 {
@@ -355,18 +356,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
               " -cpu " SHINOGI_CPU
               " -m 128"
               " -kernel \"%s\""
-              /*
-               * Networking. slirp gives the guest a NAT'd connection
-               * with no setup and no privileges -- it is not a host on
-               * the LAN and nothing can reach in, but name resolution
-               * and outbound connections work anywhere, which a TAP
-               * device would not without the user installing a driver
-               * first. The guest configuration is IPv4-only, so keeping
-               * slirp's unused IPv6 stack enabled can only add work and
-               * misleading IPv6 DNS/address results.
-               */
-              " -netdev user,id=net0,ipv6=off"
-              " -device virtio-net-device,netdev=net0"
+              "%s"
               " -device virtio-gpu-device,xres=%d,yres=%d"
               " -device virtio-keyboard-device"
               " -device virtio-tablet-device"
@@ -374,7 +364,7 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
               " -display %s%s"
               " -serial \"file:%s\\shinogi-serial.log\""
               " -d guest_errors -D \"%s\\shinogi-guest-errors.log\"",
-              dir, kernel, res_w, res_h, hostfs, display,
+              dir, kernel, network, res_w, res_h, hostfs, display,
               fullscreen ? " -full-screen" : "", logs, logs);
     cmd[sizeof(cmd) - 1] = '\0';
 
@@ -431,6 +421,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     HANDLE helper = NULL;
     DWORD len, code, start_error;
     Settings settings;
+    char network_options[1024], network_error[768];
     char *slash;
 
     (void)prev; (void)show;
@@ -510,37 +501,22 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     }
     log_dir(logs, sizeof(logs));
 
-    /*
-     * The guest image, which the user may replace without reinstalling.
-     * Drop a newer EmuTOS into the drive C folder as EMUTOS.IMG and it is
-     * used instead of the bundled one; delete it and the bundled one comes
-     * back. The guest cannot load this itself -- drive C only exists once
-     * EmuTOS is running -- but nothing stops US from reading it, and the
-     * drive C folder is the one directory the user already knows.
-     *
-     * EMUTOS.IMG, not EMUTOS.ELF, because .IMG is the name every EmuTOS
-     * release already uses and the one a user arriving with a downloaded
-     * build will recognise. The extension is cosmetic here: this target's
-     * emutos.img keeps its ELF wrapper (see emutos.ld under
-     * TARGET_QEMU_VIRT) and emutos-virt.elf is a copy of it, so the two
-     * names have always held identical bytes.
-     *
-     * EMUTOS.ELF is deliberately NOT honoured any more. The install tree
-     * used to ship one, so a drive C snapshot taken at any point carried an
-     * override that silently outranked a newer installer -- and on 68060
-     * that is fatal rather than merely surprising, because an EmuTOS built
-     * before the 64-bit DIVU workaround panics with exception 61 during
-     * boot. Anyone who deliberately wants an override renames it.
-     *
-     * Only a REGULAR FILE counts. A directory of that name would otherwise
-     * be handed to -kernel and QEMU would fail to start, with the cause
-     * sitting in a log the user has no reason to open.
-     */
+    if (!network_prepare(&settings.network, drivec, network_options, sizeof(network_options),
+                          network_error, sizeof(network_error))) {
+        note(network_error);
+        return 1;
+    }
+
+    /* Boot the firmware paired with this application build. CUSTOM.IMG
+     * is an explicit user override and has never been installed in drive C.
+     * Older bundles shipped EMUTOS.IMG there, so treating that name as an
+     * override silently kept every upgraded install on its original firmware.
+     * Preserve those files; only a deliberate CUSTOM.IMG overrides the bundle. */
     {
         char user_img[MAX_PATH];
         DWORD attrs;
 
-        _snprintf(user_img, sizeof(user_img), "%s\\EMUTOS.IMG", drivec);
+        _snprintf(user_img, sizeof(user_img), "%s\\CUSTOM.IMG", drivec);
         user_img[sizeof(user_img) - 1] = '\0';
 
         attrs = GetFileAttributesA(user_img);
@@ -593,7 +569,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         hostfs[sizeof(hostfs) - 1] = '\0';
     }
 
-    code = run_qemu(dir, logs, display, hostfs, kernel, res_w, res_h,
+    code = run_qemu(dir, logs, display, hostfs, kernel, network_options, res_w, res_h,
                     settings.fullscreen, &start_error,
                     lastcmd, sizeof(lastcmd));
 

@@ -16,7 +16,7 @@
 
 1 ICON "shinogi.ico"
 
-IDD_SETTINGS DIALOGEX 0, 0, 340, 186
+IDD_SETTINGS DIALOGEX 0, 0, 340, 330
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Shinogi Settings"
 FONT 9, "Segoe UI"
@@ -29,9 +29,39 @@ BEGIN
     COMBOBOX IDC_RESOLUTION, 110, 75, 115, 100, CBS_DROPDOWN | WS_VSCROLL | WS_TABSTOP
     AUTOCHECKBOX "Start full screen", IDC_FULLSCREEN, 12, 102, 200, 14
     LTEXT "Toggle full screen: left Ctrl + left Alt + F", -1, 12, 124, 316, 12
-    LTEXT "Changes apply the next time Shinogi starts.", -1, 12, 140, 316, 12
-    DEFPUSHBUTTON "Save", IDOK, 212, 162, 56, 16
-    PUSHBUTTON "Cancel", IDCANCEL, 272, 162, 56, 16
+    GROUPBOX "Networking", -1, 8, 144, 324, 146
+    LTEXT "Connection:", -1, 16, 162, 80, 12
+    COMBOBOX IDC_NETWORK_MODE, 102, 158, 218, 80, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT "Ethernet adapter:", -1, 16, 186, 84, 12
+    COMBOBOX IDC_ETHERNET, 102, 182, 218, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "Atari obtains its LAN address automatically (DHCP).", IDC_ADDRESS_MODE_LABEL, 16, 206, 220, 18
+    PUSHBUTTON "Advanced...", IDC_LAN_ADVANCED, 244, 204, 76, 16
+    PUSHBUTTON "Set up LAN...", IDC_LAN_SETUP, 16, 228, 90, 16
+    PUSHBUTTON "Remove LAN...", IDC_LAN_REMOVE, 114, 228, 90, 16
+    LTEXT "Automatic setup supports Ethernet with DHCP on Windows. Wi-Fi is not supported.", -1, 16, 250, 304, 18
+    LTEXT "Last Atari LAN address: unavailable", IDC_LAST_LAN_ADDRESS, 16, 272, 304, 12
+    LTEXT "Saved settings apply the next time Shinogi starts.", -1, 12, 292, 316, 12
+    DEFPUSHBUTTON "Save", IDOK, 212, 310, 56, 16
+    PUSHBUTTON "Cancel", IDCANCEL, 272, 310, 56, 16
+END
+
+IDD_LAN_ADVANCED DIALOGEX 0, 0, 320, 148
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Advanced LAN Settings"
+FONT 9, "Segoe UI"
+BEGIN
+    AUTOCHECKBOX "Obtain Atari address automatically (DHCP)", IDC_DHCP, 12, 12, 296, 14
+    LTEXT "Atari IPv4:", -1, 12, 46, 48, 12
+    EDITTEXT IDC_IP_ADDRESS, 62, 42, 90, 14, ES_AUTOHSCROLL
+    LTEXT "Mask:", -1, 166, 46, 38, 12
+    EDITTEXT IDC_NETMASK, 208, 42, 100, 14, ES_AUTOHSCROLL
+    LTEXT "Router:", -1, 12, 70, 48, 12
+    EDITTEXT IDC_GATEWAY, 62, 66, 90, 14, ES_AUTOHSCROLL
+    LTEXT "DNS:", -1, 166, 70, 38, 12
+    EDITTEXT IDC_DNS, 208, 66, 100, 14, ES_AUTOHSCROLL
+    LTEXT "For static addressing, choose an unused address on your LAN. These settings affect Atari; Windows addressing is kept automatic.", -1, 12, 92, 296, 24
+    DEFPUSHBUTTON "OK", IDOK, 192, 124, 56, 16
+    PUSHBUTTON "Cancel", IDCANCEL, 252, 124, 56, 16
 END
 
 /*

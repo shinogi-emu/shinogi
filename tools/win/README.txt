@@ -81,12 +81,61 @@ checked to be untouched, and the folder's parent is checked to be sure
 nothing was written outside it.
 
 
+Networking
+----------
+
+Internet (NAT) is the default and needs no driver or Windows network setup.
+Optional LAN mode makes Atari reachable from other machines on your network,
+including incoming ping and server connections.
+
+In Shinogi Settings, choose LAN (Ethernet), select your Ethernet adapter and
+choose Set up LAN. Approve the Windows administrator prompt. Setup installs
+the bundled signed TAP-Windows6 driver and creates a dedicated Windows bridge;
+your Ethernet connection may disconnect briefly. Atari then obtains its
+address, router and DNS automatically using DHCP. Save Settings and restart
+Shinogi. Advanced offers static Atari addressing when needed.
+Settings also shows the last Atari LAN address reported by DHCP, so you can
+see what address to ping. This is explicitly the last known address, not a
+live connection check.
+
+Automatic setup currently supports a connected physical Ethernet adapter with
+Windows addressing set to automatic (DHCP). Wi-Fi, static Windows host
+addressing and unrelated existing Windows bridges are not changed by setup.
+Internet mode remains available on those machines. To change the Ethernet
+adapter after setup, choose Remove LAN, select the new adapter, then Set up
+LAN. Returning to Internet mode keeps the bridge available for later reuse;
+Remove LAN restores Ethernet, and uninstall also removes the managed bridge.
+The shared TAP driver and dedicated adapter are kept for other installations.
+
+Host setup happens only when you choose Set up LAN or Remove LAN. Launching
+in LAN mode checks that the selected adapter and managed bridge still exist;
+it reports a problem instead of silently changing to Internet mode.
+Setup diagnostics are in %PROGRAMDATA%\shinogi\lan-setup.log.
+
+LAN setup preserves a backup of the original guest MINT.CNF as SHNNET.BAK
+before adding its network hook. Later mode changes update only SHNNET.SH.
+Custom guest network commands are not overwritten. The networking files keep
+8.3 names and the DHCP resolver configuration lives in the guest ramfs.
+Driver/client licenses, provenance and matching original source packages are
+installed in the network\ directory beside the launcher.
+
+Firmware updates
+----------------
+
+Normal starts use the EmuTOS image bundled with the installed Shinogi build,
+including after an upgrade. For a deliberate custom firmware override, put it
+in the selected drive C folder as CUSTOM.IMG. Older EMUTOS.IMG and EMUTOS.ELF
+files are preserved but no longer override the installed firmware. If you
+previously used EMUTOS.IMG as an intentional override, copy it to CUSTOM.IMG.
+Remove CUSTOM.IMG to return to the bundled image.
+
+
 Running
 -------
 
 Double-click shinogi.exe, or use the Start Menu / Desktop shortcut.
 
-You should get a 1280x720 Atari GEM desktop. The mouse pointer tracks
+You should get an Atari GEM desktop at the chosen resolution (1024x768 by default). The mouse pointer tracks
 your host pointer directly - there is no pointer grab and no need to
 press anything to release it - and typing goes to the guest.
 
@@ -99,18 +148,12 @@ Logs are written to:
 Program Files).
 
 
-Networking
-----------
+Guest system updates
+--------------------
 
-The guest uses an IPv4 NAT connection requiring no Windows network
-driver, administrator setup or firewall exception. Outbound TCP, UDP,
-DNS and ping to the virtual gateway work; other machines on the LAN
-cannot initiate connections to the guest.
-
-Both the 68040 and 68060 editions include an updated VIRTIONE.XIF. The
-installer puts it in the existing FreeMiNT tree under shinogi-drive-c
-automatically. Its 20 ms receive polling avoids the roughly one-second
-latency caused by FreeMiNT's generic slow network timer.
+Both CPU editions install the bundled VIRTIONE.XIF in the selected drive C's
+FreeMiNT tree. BUILD.txt records the kernel, firmware and network driver
+checksums used by this installer.
 
 Each installer also updates AUTO\MINT.PRG with the matching native
 FreeMiNT kernel. Installing the other edition switches the same drive C
@@ -136,10 +179,10 @@ You can switch to GTK with:
 
     shinogi.exe gtk
 
-or the "shinogi (GTK display)" Start Menu shortcut. GTK adds a menubar
+GTK adds a menubar
 and opens a larger window (the launcher passes zoom-to-fit=off and
 scale=1.5, neither of which SDL supports - grab-mod is SDL's only
-sub-option). On SDL the window opens at 1280x720 and can be resized by
+sub-option). On SDL the window opens at the selected resolution and can be resized by
 dragging it.
 
 The reason the GTK option is there at all: on some Linux hosts SDL is

@@ -40,6 +40,7 @@ ShowInstDetails show
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "x64.nsh"
 
 Var DriveC
 Var DriveCField
@@ -236,6 +237,9 @@ install_files:
   File "${BUNDLE}\SDL2.dll"
   File "${BUNDLE}\README.txt"
   File "${BUNDLE}\BUILD.txt"
+  SetOutPath "$INSTDIR\network"
+  File /r "${BUNDLE}\network\*.*"
+  SetOutPath "$INSTDIR"
 
   ; A first install lays down the whole system tree -- EmuTOS, fVDI,
   ; FreeMiNT, XaAES and the bundled GEM applications -- so one download
@@ -254,6 +258,14 @@ install_files:
     File /r "${BUNDLE}\drive-c\*.*"
     SetOutPath "$INSTDIR"
   driveCExists:
+
+  ; DHCP makes optional LAN mode automatic inside Atari as well. These
+  ; files do not run in Internet mode and do not change Windows networking.
+  SetOutPath "$DriveC\MINT\1-19-CUR\SYS-ROOT\BIN"
+  File /oname=DHCLIENT "${BUNDLE}\DHCLIENT"
+  SetOutPath "$DriveC\MINT\1-19-CUR"
+  File /oname=SHNDHCP.SH "${BUNDLE}\SHNDHCP.SH"
+  SetOutPath "$INSTDIR"
 
   ; Both CPU editions carry the updated virtio-net driver. Put it where
   ; the existing FreeMiNT tree loads it so neither edition is left using
@@ -348,6 +360,21 @@ install_files:
 SectionEnd
 
 Section "Uninstall"
+  ; Restore only the bridge registered by Shinogi before removing its
+  ; setup helper. A shared TAP driver is never uninstalled here.
+  SetRegView 64
+  ReadRegStr $0 HKLM "Software\shinogi\LAN" "EthernetGuid"
+  SetRegView 32
+  ${If} $0 != ""
+    ${DisableX64FSRedirection}
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\network\lan-setup.ps1" -EthernetGuid $0 -Remove'
+    Pop $1
+    ${EnableX64FSRedirection}
+    ${If} $1 != "0"
+      MessageBox MB_ICONSTOP "Could not restore Ethernet before uninstalling. Open Shinogi Settings and choose Remove LAN, then uninstall again. See %PROGRAMDATA%\shinogi\lan-setup.log."
+      Abort
+    ${EndIf}
+  ${EndIf}
   Delete "$DESKTOP\shinogi.lnk"
   Delete "$DESKTOP\Shinogi-040.lnk"
   Delete "$DESKTOP\Shinogi-060.lnk"
@@ -372,6 +399,9 @@ Section "Uninstall"
   Delete "$INSTDIR\BUILD.txt"
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\qemu"
+  ; Application upgrades leave the host bridge intact; uninstall restored
+  ; its Ethernet configuration above. The shared TAP driver is kept.
+  RMDir /r "$INSTDIR\network"
   RMDir "$INSTDIR"
 
   DeleteRegKey HKLM \

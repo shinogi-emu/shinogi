@@ -161,11 +161,9 @@ if [ "$CPU" = m68060 ]; then
 else
     rm -f "$BUNDLE/drive-c/AUTO/060SP.PRG"
 fi
-# EMUTOS.IMG too. The launcher prefers drive C's copy over the bundled
-# guest -- that is the documented way a user swaps firmware -- so leaving
-# the tree's own copy in place means the edition's guest image is built,
-# shipped and then never booted. It only looked right because the tree
-# carried an 020-60 image, which runs on both CPUs.
+# Keep a matching image in the exported drive tree. The Windows launcher
+# normally boots its bundled firmware; only a deliberate CUSTOM.IMG in
+# drive C overrides that choice, so upgrades cannot pick up a stale image.
 cp -f "$ELF" "$BUNDLE/drive-c/EMUTOS.IMG"
 cp -f "$KERNEL" "$BUNDLE/drive-c/AUTO/MINT.PRG"
 cp -f "$NET_DRIVER" "$BUNDLE/drive-c/MINT/1-19-CUR/VIRTIONE.XIF"
@@ -174,6 +172,13 @@ cp -f "$ROOT/tools/win/README.txt" "$BUNDLE/README.txt"
 
 cp -f "$NET_DRIVER" "$BUNDLE/VIRTIONE.XIF"
 cp -f "$KERNEL" "$BUNDLE/MINT.PRG"
+
+# Keep the original signed TAP package and corresponding source together.
+# Local pinned inputs may be supplied for an offline/reproducible rebuild.
+python3 "$ROOT/tools/fetch-network-inputs.py" "$BUNDLE"
+cp -f "$ROOT/tools/win/lan-setup.ps1" "$BUNDLE/network/lan-setup.ps1"
+cp -f "$ROOT/tools/guest/shndhcp.sh" "$BUNDLE/SHNDHCP.SH"
+cp -f "$BUNDLE/SHNDHCP.SH" "$BUNDLE/drive-c/MINT/1-19-CUR/SHNDHCP.SH"
 
 SP060_DEFINE=
 if [ "$CPU" = m68060 ]; then
@@ -194,12 +199,13 @@ fi
         printf 'Compatibility: FreeMiNT/Motorola 68060 software package\r\n'
     fi
     printf 'FreeMiNT kernel: shared 020-060 OLDTOSFS build\r\n'
-    printf 'Network driver: bundled 20 ms receive-poll build\r\n'
+    printf 'Network driver: bundled VIRTIONE.XIF\r\n'
     # Checksums of the two pieces that decide how the machine behaves.
     # Without them, "which kernel is in this build?" can only be answered
     # by rebuilding and comparing, and a stale one shipped once already.
     printf 'Guest image sha256: %s\r\n' "$(sha256sum "$ELF" | cut -d' ' -f1)"
     printf 'FreeMiNT kernel sha256: %s\r\n' "$(sha256sum "$KERNEL" | cut -d' ' -f1)"
+    printf 'Network driver sha256: %s\r\n' "$(sha256sum "$NET_DRIVER" | cut -d' ' -f1)"
 } > "$BUNDLE/BUILD.txt"
 
 # The icon and manifest. windres is run from tools/win so the .rc can name
@@ -215,11 +221,14 @@ fi
 x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
     "$ROOT/tools/win/settings.c" \
     "$ROOT/tools/win/resolution.c" \
+    "$ROOT/tools/win/network.c" \
+    "$ROOT/tools/win/network-config.c" \
     "$BUNDLE/shinogi-res.o" \
     -DSHINOGI_VERSION="\"$VERSION\"" \
     -DSHINOGI_EDITION="\"$EDITION\"" \
     -DSHINOGI_CPU="\"$CPU\"" \
-    -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra -lshell32 -lole32
+    -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra \
+    -lshell32 -lole32 -liphlpapi -lbcrypt -lws2_32
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$BUNDLE/shinogi-res.o"
 
 # The host end of drive C. Console subsystem, but the launcher starts it

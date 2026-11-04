@@ -341,18 +341,9 @@ static DWORD run_qemu(const char *dir, const char *logs, const char *display,
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\qemu\\qemu-system-m68kw.exe\""
               " -name \"" SHINOGI_EDITION " " SHINOGI_VERSION "\""
-              /*
-               * Sound. The DMA sound device is only created when the
-               * machine is given an audiodev, and it answers the guest's
-               * probe only when it exists -- so with no audiodev the
-               * guest correctly reports no sound rather than a device
-               * that stays silent.
-               *
-               * dsound is the native Windows backend and QEMU's default
-               * there.
-               */
-              " -audiodev dsound,id=snd0"
-              " -M virt,audiodev=snd0"
+              /* Sound is deferred. The maintained 060 QEMU does not
+               * provide the older virt machine's audiodev property. */
+              " -M virt"
               " -cpu " SHINOGI_CPU
               " -m 128"
               " -kernel \"%s\""
@@ -586,12 +577,27 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     }
 
     if (code != 0) {
-        char msg[512];
+        char msg[1400], logpath[MAX_PATH], detail[768] = "", line[768];
+        FILE *log;
+
+        _snprintf(logpath, sizeof(logpath), "%s\\shinogi-qemu.log", logs);
+        logpath[sizeof(logpath) - 1] = '\0';
+        log = fopen(logpath, "r");
+        if (log) {
+            while (fgets(line, sizeof(line), log)) {
+                size_t n = strlen(line);
+                while (n && (line[n - 1] == '\r' || line[n - 1] == '\n'))
+                    line[--n] = '\0';
+                if (n) lstrcpynA(detail, line, sizeof(detail));
+            }
+            fclose(log);
+        }
         _snprintf(msg, sizeof(msg),
-                  "QEMU exited with code %lu.\n\n"
-                  "See shinogi-qemu.log for the startup error.\n"
-                  "Logs are in:\n%s",
-                  (unsigned long)code, logs);
+                  "QEMU exited with code %lu.\n\n%s\n\n"
+                  "Full log:\n%s",
+                  (unsigned long)code,
+                  detail[0] ? detail : "No diagnostic was written by QEMU.",
+                  logpath);
         msg[sizeof(msg) - 1] = '\0';
         MessageBoxA(NULL, msg, "shinogi", MB_ICONWARNING);
     }

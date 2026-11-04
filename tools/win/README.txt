@@ -45,8 +45,11 @@ the drive C folder. Command-line resolution overrides still work.
 
 If the folder is missing, the launcher opens Settings so you can locate
 it. Startup errors show the selected folder and helper diagnostic, or
-refer to shinogi-qemu.log in %LOCALAPPDATA%\shinogi for a QEMU failure.
+show the last QEMU diagnostic with its full log path for a QEMU failure.
 The QEMU log is replaced on each start.
+
+Sound support is planned for a future release. The launcher starts without
+audio so that unsupported sound options cannot prevent Atari from booting.
 
 It is READ/WRITE. The guest can create, write, delete, rename files and
 make directories, and the changes appear in the folder immediately.

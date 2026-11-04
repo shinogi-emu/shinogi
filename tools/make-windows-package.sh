@@ -48,7 +48,7 @@ case "$CPU" in
 esac
 
 ELF="${SHINOGI_ELF:-$HOME/git/emutos/emutos-virt.elf}"
-QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64-patched}"
+QEMU_WIN="${QEMU_WIN:-$HOME/shinogi-build/qemu-w64-060}"
 SDL2="${SDL2_MINGW:-$HOME/mingw-sdl2/x86_64-w64-mingw32}"
 # The system tree the guest boots into. Shipped as a published artifact
 # rather than rebuilt here: tools/make-mint-install.sh reproduces it, but
@@ -191,6 +191,7 @@ fi
     printf 'Edition: %s\r\n' "$EDITION"
     printf 'CPU: %s\r\n' "$CPU"
     printf 'QEMU: %s\r\n' "$(cat "$QEMU_WIN/VERSION")"
+    printf 'QEMU sha256: %s\r\n' "$(sha256sum "$BUNDLE/qemu/qemu-system-m68kw.exe" | cut -d' ' -f1)"
     if [ "$CPU" != m68040 ]; then
         printf 'Distribution: private development build; do not redistribute\r\n'
     fi

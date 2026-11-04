@@ -169,6 +169,7 @@ def run_guest(folder, log):
     cmd = [
         QEMU, "-M", "virt", "-m", "128",
         "-kernel", ELF,
+        "-append", "shinogi.selftest=1",
         "-device", "virtio-gpu-device",
         "-drive", "file=fat:rw:%s,format=raw,if=none,id=hostblk" % folder,
         "-device", "virtio-blk-device,drive=hostblk",

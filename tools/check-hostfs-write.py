@@ -64,7 +64,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QEMU = os.environ.get("QEMU", "qemu-system-m68k")
 ELF = os.environ.get("SHINOGI_ELF",
                      os.path.expanduser("~/git/emutos/emutos-virt.elf"))
-HOSTFSD = os.path.join(ROOT, "tools", "hostfsd", "shinogi-hostfsd")
+HOSTFSD = os.environ.get("SHINOGI_HOSTFSD", os.path.join(ROOT, "tools", "hostfsd", "shinogi-hostfsd"))
 GOLDEN = os.path.join(ROOT, "tests", "golden", "phase5-write.expected")
 BOOT_WAIT = int(os.environ.get("BOOT_WAIT", "60"))
 
@@ -142,8 +142,9 @@ def run_guest(folder, work, log):
     sock = os.path.join(sockdir, "h.sock")
 
     cmd = [
-        QEMU, "-M", "virt", "-m", "128",
+        QEMU, "-M", "virt", "-cpu", os.environ.get("SHINOGI_CPU", "m68040"), "-m", "128",
         "-kernel", ELF,
+        "-append", "shinogi.selftest=1",
         "-device", "virtio-gpu-device",
         "-fsdev", "local,id=hostfs9p,path=%s,security_model=mapped-xattr"
                   % folder,

@@ -83,7 +83,12 @@
 #define HOSTFS_OP_RMDIR         14
 #define HOSTFS_OP_SETATTR       15
 #define HOSTFS_OP_DFREE         16
-#define HOSTFS_OP_MAX           16
+#define HOSTFS_OP_CAPS          17
+#define HOSTFS_OP_READDIR_BATCH 18
+#define HOSTFS_OP_MAX           18
+
+/* Optional v1 operations. Old helpers reject CAPS; guests then use READDIR. */
+#define HOSTFS_CAP_READDIR_BATCH 1UL
 
 /*
  * Per-operation field use. `data` is the remainder of the frame; a path
@@ -113,6 +118,11 @@
  *  RMDIR     data = path                      --
  *  SETATTR   a = attribute byte, data = path  --
  *  DFREE     --                               a = free KB, b = total KB
+ *  CAPS      --                               a = capability bits
+ *  READDIR_BATCH a = handle, b = cookie       a = last cookie, b = count
+ *                                             data = repeated little-endian
+ *                                             u32 next cookie, u16 name length,
+ *                                             then exactly name length bytes
  *
  * mtime is seconds since the Unix epoch, UTC. The guest converts; see
  * the note in hostfs.c on why UTC and not the host's local time.

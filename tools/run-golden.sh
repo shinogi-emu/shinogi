@@ -69,7 +69,7 @@ GOLDEN_SORTED="${GOLDEN_SORTED:-0}"
 # it, and the name is short: a Unix socket path is limited to about 100
 # bytes by sockaddr_un, which is far less than a path is generally
 # allowed and is a limit a long TMPDIR really can reach.
-HOSTFSD="$ROOT/tools/hostfsd/shinogi-hostfsd"
+HOSTFSD="${SHINOGI_HOSTFSD:-$ROOT/tools/hostfsd/shinogi-hostfsd}"
 SOCK="$WORK/hostfs.sock"
 
 [ -f "$ELF" ]    || { echo "no guest image at $ELF" >&2; exit 2; }
@@ -181,6 +181,7 @@ CPU="${SHINOGI_CPU:-m68040}"
 "$QEMU" \
     -M virt -cpu "$CPU" -m 128 \
     -kernel "$ELF" \
+    -append shinogi.selftest=1 \
     -device virtio-gpu-device \
     -fsdev "local,id=hostfs9p,path=$FOLDER,security_model=mapped-xattr" \
     -device virtio-9p-device,fsdev=hostfs9p,mount_tag=shinogi \

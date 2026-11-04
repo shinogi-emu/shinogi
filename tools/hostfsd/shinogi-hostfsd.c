@@ -177,7 +177,19 @@ static int listener_open_tcp(listener_t *l, const char *port_text)
 
 static conn_t listener_accept(listener_t *l)
 {
-    return accept(l->fd, NULL, NULL);
+    SOCKET connection = accept(l->fd, NULL, NULL);
+    struct sockaddr_storage address;
+    int length = sizeof(address);
+    int enabled = 1;
+
+    /* File operations are synchronous request/reply messages. Do not hold
+     * a short reply behind TCP's batching/delayed-ACK interaction. */
+    if (connection != INVALID_SOCKET &&
+        getsockname(connection, (struct sockaddr *)&address, &length) == 0 &&
+        address.ss_family == AF_INET)
+        setsockopt(connection, IPPROTO_TCP, TCP_NODELAY,
+                   (const char *)&enabled, sizeof(enabled));
+    return connection;
 }
 
 static void listener_close(listener_t *l)
@@ -1055,6 +1067,10 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
 
     switch (op)
     {
+    case HOSTFS_OP_CAPS:
+        ra = HOSTFS_CAP_READDIR_BATCH;
+        break;
+
     case HOSTFS_OP_HELLO:
         if (a != HOSTFS_PROTO_VERSION)
         {
@@ -1274,9 +1290,11 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
     }
 
     case HOSTFS_OP_READDIR:
+    case HOSTFS_OP_READDIR_BATCH:
     {
         dirhandle *d = dir_of(a);
         unsigned long idx = b;
+        unsigned entries = 0;
 
         if (!d)
         {
@@ -1302,11 +1320,29 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             if (stat(full, &st) != 0)
                 continue;
 
-            outlen = (unsigned)strlen(name);
-            memcpy(out, name, outlen);
+            if (op == HOSTFS_OP_READDIR_BATCH)
+            {
+                unsigned length = (unsigned)strlen(name);
+                if (outlen + 6 + length > HOSTFS_MAX_REP_DATA)
+                    break;
+                put32(out + outlen, idx);
+                put16(out + outlen + 4, length);
+                memcpy(out + outlen + 6, name, length);
+                outlen += 6 + length;
+                entries++;
+                rb = entries;
+            }
+            else
+            {
+                outlen = (unsigned)strlen(name);
+                memcpy(out, name, outlen);
+            }
             ra = idx;           /* the cookie for the NEXT call */
             status = HOSTFS_E_OK;
-            break;
+            /* Name lookup often stops early: avoid statting a whole large
+             * directory when a short page removes most round trips. */
+            if (op == HOSTFS_OP_READDIR || entries == 16)
+                break;
         }
         break;
     }

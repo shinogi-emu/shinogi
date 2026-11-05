@@ -386,6 +386,11 @@ static DWORD run_qemu(const char *dir, const char *launcher, const char *logs, c
     }
     ZeroMemory(&pi, sizeof(pi));
 
+    if (!window_controls_configure_sdl()) {
+        *start_error = GetLastError();
+        if (hlog != INVALID_HANDLE_VALUE) CloseHandle(hlog);
+        return (DWORD)-1;
+    }
     if (!CreateProcessA(NULL, cmd, NULL, NULL,
                         hlog != INVALID_HANDLE_VALUE,
                         0, NULL, dir, &si, &pi)) {

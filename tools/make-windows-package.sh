@@ -192,9 +192,6 @@ fi
     printf 'CPU: %s\r\n' "$CPU"
     printf 'QEMU: %s\r\n' "$(cat "$QEMU_WIN/VERSION")"
     printf 'QEMU sha256: %s\r\n' "$(sha256sum "$BUNDLE/qemu/qemu-system-m68kw.exe" | cut -d' ' -f1)"
-    if [ "$CPU" != m68040 ]; then
-        printf 'Distribution: private development build; do not redistribute\r\n'
-    fi
     if [ "$CPU" = m68060 ]; then
         printf 'Guest image: 020-060 EmuTOS on m68060\r\n'
         printf 'Compatibility: FreeMiNT/Motorola 68060 software package\r\n'

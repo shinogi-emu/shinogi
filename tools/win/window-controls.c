@@ -3,6 +3,15 @@
 
 #define SETTINGS_HOTKEY 0x5348
 
+BOOL window_controls_configure_sdl(void)
+{
+    /* QEMU requests SDL keyboard grab as well as mouse grab. On Windows
+     * SDL's low-level hook consumes Ctrl/Alt before RegisterHotKey sees
+     * them. Environment hints outrank QEMU's SDL_SetHint, keeping the
+     * host shortcut usable while the mouse remains controlled by SDL. */
+    return SetEnvironmentVariableA("SDL_GRAB_KEYBOARD", "0");
+}
+
 typedef struct {
     DWORD qemu_pid;
     int registered;

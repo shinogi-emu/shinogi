@@ -48,3 +48,14 @@ and requires guest folder/image/floppy reads and host-verified folder writes.
 Upgrading/uninstalling the first edition must leave the other running
 editions, shortcuts, settings and guest files intact. Link with -lshell32
 -lole32 -luuid. This requires an isolated profile, never a user's desktop.
+
+SDL keyboard grab regression
+----------------------------
+
+test_sdl_keyboard.c links SDL2 and window-controls.c. Run beside the complete
+DLL set from the assembled package, whose official SDL2.dll replaces the
+build tree's SDL2 compatibility DLL.
+--baseline must fail because QEMU's SDL_GRAB_KEYBOARD=1 captures modifiers;
+normal mode must pass with keyboard grab off and mouse grab still on. This
+checks actual SDL grab state even when Wine's hotkey behavior differs from
+Windows. The launcher applies this environment override before CreateProcess.

@@ -48,7 +48,7 @@ if [ "$CPU" = m68060 ] && [ ! -f "$SP060" ]; then
     echo "no 68060 software package at $SP060" >&2; exit 2
 fi
 
-APP="$OUTDIR/shinogi.app"
+APP="$OUTDIR/$EDITION.app"
 MACOS="$APP/Contents/MacOS"
 RES="$APP/Contents/Resources"
 
@@ -176,9 +176,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>              <string>shinogi</string>
-  <key>CFBundleDisplayName</key>       <string>shinogi</string>
-  <key>CFBundleIdentifier</key>        <string>no.shinogi.emulator</string>
+  <key>CFBundleName</key>              <string>$EDITION</string>
+  <key>CFBundleDisplayName</key>       <string>$EDITION</string>
+  <key>CFBundleIdentifier</key>        <string>no.shinogi.emulator.$CPU</string>
   <key>CFBundleVersion</key>           <string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key>        <string>shinogi</string>

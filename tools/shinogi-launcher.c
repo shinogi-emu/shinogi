@@ -56,6 +56,7 @@
  * tell -- an unknown session is treated as local, because SDL is the
  * intended default and GTK is the exception.
  */
+#ifndef __APPLE__
 static int session_is_remote(void)
 {
 #ifdef __APPLE__
@@ -85,6 +86,8 @@ static int session_is_remote(void)
     return remote;
 #endif
 }
+
+#endif
 
 /*
  * Everything this program has to say, to the terminal AND to a log file.
@@ -147,7 +150,6 @@ static int dir_is_empty_or_absent(const char *path)
 /* The directory holding this executable. */
 static int self_dir(char *out, size_t n)
 {
-    ssize_t len;
     char *slash;
 
 #ifdef __APPLE__
@@ -156,10 +158,9 @@ static int self_dir(char *out, size_t n)
         uint32_t sz = (uint32_t)n;
         if (_NSGetExecutablePath(out, &sz) != 0)
             return -1;
-        len = (ssize_t)strlen(out);
     }
 #else
-    len = readlink("/proc/self/exe", out, n - 1);
+    ssize_t len = readlink("/proc/self/exe", out, n - 1);
     if (len <= 0)
         return -1;
     out[len] = '\0';
@@ -180,7 +181,7 @@ int main(int argc, char *argv[])
     char logerr[PATH_MAX + 8];
     char serial[PATH_MAX + 8];
     char sock[PATH_MAX + 32], ready[PATH_MAX + 40];
-    char chardev[PATH_MAX + 64], hostfsd[PATH_MAX + 32];
+    char chardev[PATH_MAX + 96], hostfsd[PATH_MAX + 32];
     char display[128];
     char datadir[PATH_MAX + 32];
     char pristine[PATH_MAX + 32];
@@ -235,22 +236,37 @@ int main(int argc, char *argv[])
     /* The host folder the guest sees as drive C:. */
     if (getenv("SHINOGI_HOSTFS"))
         snprintf(hostfs, sizeof(hostfs), "%s", getenv("SHINOGI_HOSTFS"));
-    else
-        snprintf(hostfs, sizeof(hostfs), "%s/shinogi-drive-c",
-                 home ? home : ".");
+    else {
+#ifdef __APPLE__
+        char parent[PATH_MAX];
+        snprintf(parent, sizeof(parent), "%s/" SHINOGI_EDITION, home ? home : ".");
+        if (mkdir(parent, 0755) && errno != EEXIST) {
+            note("shinogi: cannot create %s: %s\n", parent, strerror(errno));
+            return 1;
+        }
+        snprintf(hostfs, sizeof(hostfs), "%s/" SHINOGI_EDITION "/drive-c", home ? home : ".");
+#else
+        snprintf(hostfs, sizeof(hostfs), "%s/shinogi-drive-c", home ? home : ".");
+#endif
+    }
     if (dir_is_empty_or_absent(hostfs)) {
         snprintf(pristine, sizeof(pristine), "%s/../Resources/drive-c", dir);
         if (stat(pristine, &st) == 0) {
-            char cmd[2 * PATH_MAX + 64];
+            char source[PATH_MAX + 40];
+            pid_t copy;
+            int status;
             note("shinogi: creating drive C at %s\n", hostfs);
             fflush(stdout);
             /* Copy the CONTENTS, so an existing empty folder is filled
              * rather than nested inside itself. */
             mkdir(hostfs, 0755);
-            snprintf(cmd, sizeof(cmd), "cp -a '%s/.' '%s/'", pristine, hostfs);
-            if (system(cmd) != 0)
-                note("shinogi: could not lay down drive C at "
-                        "%s\n", hostfs);
+            snprintf(source, sizeof(source), "%s/.", pristine);
+            copy = fork();
+            if (copy == 0) { execlp("cp", "cp", "-a", source, hostfs, (char *)NULL); _exit(127); }
+            if (copy < 0 || waitpid(copy, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status)) {
+                note("shinogi: could not lay down drive C at %s\n", hostfs);
+                return 1;
+            }
         } else {
             mkdir(hostfs, 0755);
             note("shinogi: drive C at %s is empty and this bundle has no "
@@ -275,13 +291,13 @@ int main(int argc, char *argv[])
      */
     {
         const char *res = getenv("SHINOGI_RES");
-        char line[256];
+        char line[256], ini_path[PATH_MAX + 16];
         int rw = 1024, rh = 768, w, h;
         FILE *ini;
 
         if (!res) {
-            snprintf(line, sizeof(line), "%s/SHINOGI.INI", hostfs);
-            if ((ini = fopen(line, "r")) != NULL) {
+            snprintf(ini_path, sizeof(ini_path), "%s/SHINOGI.INI", hostfs);
+            if ((ini = fopen(ini_path, "r")) != NULL) {
                 while (fgets(line, sizeof(line), ini)) {
                     /* "res = 1280x720", spaces optional, anything else ignored */
                     if (sscanf(line, " res = %dx%d", &w, &h) == 2 ||
@@ -305,30 +321,9 @@ int main(int argc, char *argv[])
     }
 
 
-    /*
-     * The guest image, which the user may replace without reinstalling.
-     * Drop a newer EmuTOS into the drive C folder as EMUTOS.IMG and it is
-     * used instead of the bundled one; remove it and the bundled one comes
-     * back. The guest cannot load this itself -- drive C only exists once
-     * EmuTOS is running -- but nothing stops US from reading it, and the
-     * drive C folder is the one directory the user already knows.
-     *
-     * EMUTOS.IMG, not EMUTOS.ELF, because .IMG is the name every EmuTOS
-     * release already uses. The extension is cosmetic: this target's
-     * emutos.img keeps its ELF wrapper and emutos-virt.elf is a copy of
-     * it, so the two names have always held identical bytes.
-     *
-     * EMUTOS.ELF is deliberately no longer honoured. The install tree used
-     * to ship one, so any drive C snapshot carried an override that
-     * silently outranked a newer installer -- fatal on 68060, where an
-     * EmuTOS built before the 64-bit DIVU workaround panics with exception
-     * 61 during boot.
-     *
-     * Only a REGULAR file counts: a directory of that name would be handed
-     * to -kernel, and QEMU would fail to start for a reason the user has
-     * no way to guess.
-     */
-    snprintf(elf, sizeof(elf), "%s/EMUTOS.IMG", hostfs);
+    /* CUSTOM.IMG is an explicit user firmware override. The system tree's
+     * EMUTOS.IMG is a packaged copy and must not hide newer app firmware. */
+    snprintf(elf, sizeof(elf), "%s/CUSTOM.IMG", hostfs);
     if (stat(elf, &st) != 0 || !S_ISREG(st.st_mode)) {
         snprintf(elf, sizeof(elf), "%s/emutos-virt.elf", dir);
         if (stat(elf, &st) != 0) {

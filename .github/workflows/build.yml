@@ -669,6 +669,7 @@ jobs:
     env:
       HAVE_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
       HAVE_NOTARY: ${{ secrets.MACOS_NOTARY_KEY_P8 != '' }}
+      APP_PATH: ${{ github.workspace }}/dist/${{ matrix.edition }}.app
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
@@ -721,6 +722,10 @@ jobs:
       # Signing and notarisation only run when the secrets exist, so a
       # fork or a pull request still produces an unsigned bundle that can
       # be tested locally with `xattr -d com.apple.quarantine`.
+      - name: Require signing credentials for a public release
+        if: startsWith(github.ref, 'refs/tags/b')
+        run: test "$HAVE_CERT" = true && test "$HAVE_NOTARY" = true
+
       - name: Import the signing certificate
         if: env.HAVE_CERT == 'true'
         env:
@@ -745,7 +750,7 @@ jobs:
         if: env.HAVE_CERT == 'true'
         env:
           IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-        run: ./tools/sign-macos.sh "${{ github.workspace }}/dist/shinogi.app"
+        run: ./tools/sign-macos.sh "$APP_PATH"
 
       - name: Notarise
         if: env.HAVE_NOTARY == 'true'
@@ -756,15 +761,15 @@ jobs:
         run: |
           set -eu
           echo "$KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          ditto -c -k --keepParent dist/shinogi.app "$RUNNER_TEMP/shinogi.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/shinogi.zip"
           xcrun notarytool submit "$RUNNER_TEMP/shinogi.zip" \
             --issuer "$ISSUER" --key-id "$KEY_ID" \
             --key "$RUNNER_TEMP/notary.p8" --wait
           # The ticket has to be stapled to the bundle, or a machine that
           # is offline when it first runs the app still sees it as
           # unnotarised.
-          xcrun stapler staple dist/shinogi.app
-          xcrun stapler validate dist/shinogi.app
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
           rm -f "$RUNNER_TEMP/notary.p8"
 
       # Run the thing we are about to ship, on a real Mac, and require
@@ -804,7 +809,7 @@ jobs:
           SERIAL="${TMPDIR:-/tmp}/shinogi-serial.log"
           rm -f "$SERIAL" "$HOME/shinogi-launcher.log"
 
-          dist/shinogi.app/Contents/MacOS/shinogi &
+          "$APP_PATH/Contents/MacOS/shinogi" &
           LPID=$!
 
           panic=0
@@ -860,7 +865,7 @@ jobs:
           export SHINOGI_HOSTFS="$RUNNER_TEMP/cocoa-drive-c"
           rm -f "$HOME/shinogi-launcher.log"
 
-          dist/shinogi.app/Contents/MacOS/shinogi &
+          "$APP_PATH/Contents/MacOS/shinogi" &
           LPID=$!
           sleep 25
 
@@ -883,10 +888,10 @@ jobs:
         run: |
           set -eu
           VERSION=$(cat VERSION)
-          ditto -c -k --keepParent dist/shinogi.app \
+          ditto -c -k --keepParent "$APP_PATH" \
             "dist/$EDITION-$VERSION-macos-arm64.zip"
-          shasum -a 256 "dist/$EDITION-$VERSION-macos-arm64.zip" \
-            > "dist/$EDITION-$VERSION-macos-arm64.zip.sha256"
+          ( cd dist && shasum -a 256 "$EDITION-$VERSION-macos-arm64.zip" \
+            > "$EDITION-$VERSION-macos-arm64.zip.sha256" )
 
       - uses: actions/upload-artifact@v5
         with:
@@ -924,20 +929,8 @@ jobs:
       # Four packages and their checksums. Fewer means a matrix leg
       # failed without failing this job, and a release missing an edition
       # would quietly bias exactly the comparison it exists to make.
-      - name: Check every package is present
-        run: |
-          set -eu
-          ls -l dist/
-          missing=
-          for f in Shinogi-040-*-win64-setup.exe \
-                   Shinogi-060-*-win64-setup.exe \
-                   Shinogi-040-*-macos-arm64.zip \
-                   Shinogi-060-*-macos-arm64.zip; do
-            # shellcheck disable=SC2086
-            set -- dist/$f
-            [ -e "$1" ] || missing="$missing $f"
-          done
-          [ -z "$missing" ] || { echo "missing packages:$missing" >&2; exit 1; }
+      - name: Check every public package and checksum
+        run: python3 tools/check-release-assets.py dist "$(cat VERSION)"
 
       - name: Publish the release
         env:
@@ -949,10 +942,10 @@ jobs:
           cat > notes.md <<NOTES
           Shinogi $VERSION, for macOS (Apple Silicon) and Windows x64.
 
-          Two editions, differing only in the emulated CPU. Both carry the
-          same system tree and the same desktop.
+          Public 040 and 060 editions, with separate application names and
+          default boot folders. Both carry the same desktop.
 
-          - **Shinogi-060** - the default. Start here.
+          - **Shinogi-060** - the primary edition. Start here.
           - **Shinogi-040** - a control, and a fallback if something
             misbehaves on the 060.
 
@@ -961,12 +954,24 @@ jobs:
           applications. An existing drive C keeps your files and your edited
           configs - only the kernel and drivers are refreshed.
 
+          Windows: Ctrl+Alt+S opens Settings while the emulator is focused.
+          Additional drives supports folder mappings, raw hard-disk images,
+          and raw 720 KB/1.44 MB floppy images. Save and restart to apply.
+
           The macOS builds are signed, notarised and stapled. Check a
           download against its .sha256 before running it.
 
           Built from $GITHUB_SHA.
           NOTES
-          gh release create "$TAG" dist/* \
+          [ "$TAG" = "$VERSION" ] || { echo "tag/version mismatch" >&2; exit 1; }
+          set --
+          for edition in Shinogi-040 Shinogi-060; do
+            for suffix in win64-setup.exe macos-arm64.zip; do
+              asset="dist/$edition-$VERSION-$suffix"
+              set -- "$@" "$asset" "$asset.sha256"
+            done
+          done
+          gh release create "$TAG" "$@" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Shinogi $VERSION" \
             --prerelease \

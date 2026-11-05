@@ -64,7 +64,8 @@ run together without changing each other's system files.
 
 Toggle full screen with left Ctrl + left Alt + F in the emulator window.
 Open Settings with Ctrl + Alt + S while the QEMU window is focused.
-This shortcut applies only to the running emulator. The guest keeps running;
+This shortcut applies only to the running emulator. SDL keeps host keyboard
+shortcuts available, including Ctrl+Alt+S and Alt+Tab. The guest keeps running;
 saved settings apply to the next launch. Press it again to bring an existing
 Settings window to the front.
 

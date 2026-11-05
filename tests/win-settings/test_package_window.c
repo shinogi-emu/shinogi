@@ -33,8 +33,8 @@ static BOOL CALLBACK find_emulator(HWND window, LPARAM unused)
 
 int main(int argc, char **argv)
 {
-    char appdata[MAX_PATH], folder[MAX_PATH + 16], ini[MAX_PATH + 32];
-    char command[MAX_PATH + 4];
+    char appdata[MAX_PATH], folder[MAX_PATH + 128], ini[MAX_PATH + 160];
+    char command[MAX_PATH + 4], edition[80], settings_title[100];
     STARTUPINFOA startup = {0};
     PROCESS_INFORMATION launcher = {0};
     INPUT input[6] = {0};
@@ -46,8 +46,11 @@ int main(int argc, char **argv)
     if (argc == 5 && strcmp(argv[4], "--no-shortcut")) return 2;
     report("Package test started");
     wanted = argv[3];
+    snprintf(edition, sizeof(edition), "%s", argv[3]);
+    edition[strcspn(edition, " ")] = 0;
+    snprintf(settings_title, sizeof(settings_title), "%s Settings", edition);
     if (FAILED(SHGetFolderPathA(NULL, CSIDL_APPDATA | CSIDL_FLAG_CREATE, NULL, 0, appdata))) return 2;
-    snprintf(folder, sizeof(folder), "%s\\shinogi", appdata);
+    snprintf(folder, sizeof(folder), "%s\\%s", appdata, edition);
     snprintf(ini, sizeof(ini), "%s\\settings.ini", folder);
     if (GetFileAttributesA(ini) != INVALID_FILE_ATTRIBUTES) {
         puts("Use a fresh test profile; existing settings will not be changed.");
@@ -68,7 +71,12 @@ int main(int argc, char **argv)
     if (!emulator) { puts("No SDL window"); return 1; }
     report("SDL window found");
     SetForegroundWindow(emulator);
-    Sleep(300);
+    {
+        RECT area;
+        GetWindowRect(emulator, &area);
+        SetCursorPos((area.left + area.right) / 2, (area.top + area.bottom) / 2);
+    }
+    Sleep(500);
     if (GetForegroundWindow() != emulator) { puts("SDL window did not acquire focus"); return 1; }
     GetWindowThreadProcessId(emulator, &pid);
     process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -82,7 +90,7 @@ int main(int argc, char **argv)
         if (SendInput(6, input, sizeof(INPUT)) != 6) return 2;
         report("Shortcut sent");
         for (i = 0; i < 200 && !dialog; i++) {
-            dialog = FindWindowA("#32770", "Shinogi Settings");
+            dialog = FindWindowA("#32770", settings_title);
             if (dialog && !GetDlgItem(dialog, 101)) dialog = NULL;
             Sleep(50);
         }

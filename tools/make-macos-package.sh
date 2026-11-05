@@ -12,10 +12,8 @@
 # and a relocated copy of QEMU with its dylibs, so the app runs on a
 # machine with no Homebrew.
 #
-# UNVERIFIED: written without access to a Mac. The structure and the
-# dylib relocation follow standard practice, but the first real run is
-# the test. Expect the failures to be a missing dylib or a signature
-# that does not cover something -- both show up at launch, not at build.
+# GitHub macOS runners verify assembly, signing, notarization, headless
+# boot and Cocoa startup before release.
 #
 set -eu
 

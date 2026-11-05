@@ -64,13 +64,13 @@ but expect to find things that are broken.
 | 5 | Host filesystem as system drive | done |
 | 6 | FreeMiNT + XaAES desktop | done |
 | 7 | Networking via virtio-net | done |
-| 8 | Optional virtio-blk for mounting existing Atari images | |
-| 9 | Packaged for Linux, macOS, Windows | Linux and Windows done, macOS in progress |
+| 8 | Raw hard-disk images and floppy A/B | done; Windows drive editor |
+| 9 | Packaged for Linux, macOS, Windows | CI builds and checks public CPU editions |
 
 ## Editions
 
-Two builds, differing only in the emulated CPU. Both ship the same guest,
-the same drive C and the same desktop.
+Two public CPU editions share the operating-system stack and desktop.
+Windows and macOS use separate application names and default boot folders.
 
 | Edition | CPU | For |
 |---------|-----|-----|
@@ -134,13 +134,19 @@ checkout plus the m68k cross toolchain:
 | Windows | `tools/make-windows-package.sh` | an NSIS installer |
 | macOS | `tools/make-macos-package.sh` | a signed `.app` bundle |
 
-The Linux and Windows scripts pick their edition from `SHINOGI_CPU`
+The packaging scripts pick their edition from `SHINOGI_CPU`
 (`m68040` or `m68060`), so both builds come out of one tree. The guest
 itself — EmuTOS with the machine port — is a submodule; the FreeMiNT side is
 built by `tools/make-mint-install.sh`.
 
-The macOS bundle is the unfinished one. It was written without a Mac to test
-on, so its first honest run is the one in CI.
+macOS produces `Shinogi-040.app` and `Shinogi-060.app`; the GitHub workflow
+signs, notarizes and smoke-tests both before publishing. Their default boot
+folders are `~/Shinogi-040/drive-c` and `~/Shinogi-060/drive-c`. A deliberate
+`CUSTOM.IMG` in the boot folder overrides the bundled firmware; the packaged
+`EMUTOS.IMG` does not hide firmware updates.
+
+On Windows, Ctrl+Alt+S opens Settings from the focused emulator. Save drive
+mapping changes and restart the emulator to apply them.
 
 ## License
 

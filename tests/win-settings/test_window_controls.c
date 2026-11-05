@@ -37,7 +37,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM
         SetForegroundWindow((HWND)wp);
         return 0;
     }
-    if (message == WM_KEYDOWN && wp == 'S') {
+    if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && wp == 'S') {
         char title[80];
         GetWindowTextA(window, title, sizeof(title));
         if (!strcmp(title, "Shortcut other")) mark("other-keys.txt");

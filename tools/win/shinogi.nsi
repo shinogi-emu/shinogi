@@ -115,7 +115,15 @@ Function ValidateDriveC
     MessageBox MB_ICONSTOP "Choose a full folder path, such as D:\Atari\Drive C."
     Abort
   ${EndIf}
-  GetFullPathName $DriveC $DriveC
+  ; NSIS GetFullPathName uses long-name expansion and can fail for a
+  ; folder that does not exist yet. Win32 normalization supports new paths.
+  System::Call 'kernel32::GetFullPathNameW(w "$DriveC", i ${NSIS_MAX_STRLEN}, w .r2, p 0) i .r0'
+  ${If} $0 == 0
+  ${OrIf} $0 >= ${NSIS_MAX_STRLEN}
+    MessageBox MB_ICONSTOP "Could not resolve the drive C folder path."
+    Abort
+  ${EndIf}
+  StrCpy $DriveC $2
   StrLen $0 $DriveC
   ${If} $0 > 220
     MessageBox MB_ICONSTOP "The full folder path is too long. Choose a shorter path."
@@ -129,7 +137,12 @@ Function ValidateDriveC
       Abort
     ${EndIf}
   ${EndIf}
-  GetFullPathName $2 $INSTDIR
+  System::Call 'kernel32::GetFullPathNameW(w "$INSTDIR", i ${NSIS_MAX_STRLEN}, w .r2, p 0) i .r0'
+  ${If} $0 == 0
+  ${OrIf} $0 >= ${NSIS_MAX_STRLEN}
+    MessageBox MB_ICONSTOP "Could not resolve the program folder path."
+    Abort
+  ${EndIf}
   StrLen $0 $2
   StrCpy $1 $DriveC $0
   ${If} $1 == $2

@@ -168,7 +168,7 @@ cp -f "$ELF" "$BUNDLE/drive-c/EMUTOS.IMG"
 cp -f "$KERNEL" "$BUNDLE/drive-c/AUTO/MINT.PRG"
 cp -f "$NET_DRIVER" "$BUNDLE/drive-c/MINT/1-19-CUR/VIRTIONE.XIF"
 cp -f "$SDL2/bin/SDL2.dll" "$BUNDLE/"
-cp -f "$ROOT/tools/win/README.txt" "$BUNDLE/README.txt"
+sed "s/@EDITION@/$EDITION/g" "$ROOT/tools/win/README.txt" > "$BUNDLE/README.txt"
 
 cp -f "$NET_DRIVER" "$BUNDLE/VIRTIONE.XIF"
 cp -f "$KERNEL" "$BUNDLE/MINT.PRG"
@@ -221,6 +221,7 @@ fi
 
 x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
     "$ROOT/tools/win/settings.c" \
+    "$ROOT/tools/win/drives.c" \
     "$ROOT/tools/win/resolution.c" \
     "$ROOT/tools/win/network.c" \
     "$ROOT/tools/win/network-config.c" \
@@ -230,7 +231,7 @@ x86_64-w64-mingw32-gcc "$ROOT/tools/win/shinogi-launcher.c" \
     -DSHINOGI_EDITION="\"$EDITION\"" \
     -DSHINOGI_CPU="\"$CPU\"" \
     -o "$BUNDLE/shinogi.exe" -mwindows -O2 -Wall -Wextra \
-    -lshell32 -lole32 -liphlpapi -lbcrypt -lws2_32
+    -lcomdlg32 -lshell32 -lole32 -liphlpapi -lbcrypt -lws2_32
 python3 -c "import os,sys; os.remove(sys.argv[1])" "$BUNDLE/shinogi-res.o"
 
 # The host end of drive C. Console subsystem, but the launcher starts it

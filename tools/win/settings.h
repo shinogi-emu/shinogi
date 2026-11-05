@@ -23,15 +23,15 @@
 #ifndef RC_INVOKED
 #include <windows.h>
 #include "network-config.h"
+#include "drives.h"
 
-/* Leave room for filenames below drive C within the Win32 path limit. */
-#define DRIVE_PATH_MAX 220
 
 typedef struct {
     char file[MAX_PATH];
     char drivec[MAX_PATH];
     int width, height, fullscreen;
     NetworkSettings network;
+    DriveSettings drives;
 } Settings;
 
 int settings_load(Settings *settings, const char *program_dir);

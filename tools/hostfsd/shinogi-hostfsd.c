@@ -146,6 +146,7 @@ static int listener_open(listener_t *l, const char *path)
  * support varies with the QEMU build and the Windows socket provider. The
  * Windows launcher uses this loopback-only listener; it never exposes drive
  * C beyond the local machine. */
+static unsigned listener_port;
 static int listener_open_tcp(listener_t *l, const char *port_text)
 {
     struct sockaddr_in sa;
@@ -154,7 +155,7 @@ static int listener_open_tcp(listener_t *l, const char *port_text)
 
     errno = 0;
     port = strtoul(port_text, &end, 10);
-    if (errno || !*port_text || *end || port == 0 || port > 65535)
+    if (errno || !*port_text || *end || port > 65535)
         return -1;
 
     l->fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -171,6 +172,13 @@ static int listener_open_tcp(listener_t *l, const char *port_text)
         closesocket(l->fd);
         l->fd = INVALID_SOCKET;
         return -1;
+    }
+    {
+        int length = sizeof(sa);
+        if (getsockname(l->fd, (struct sockaddr *)&sa, &length) == SOCKET_ERROR) {
+            closesocket(l->fd); l->fd = INVALID_SOCKET; return -1;
+        }
+        listener_port = ntohs(sa.sin_port);
     }
     return 0;
 }
@@ -478,6 +486,7 @@ typedef struct
 
 static char root[FULLPATH_MAX];         /* resolved, no trailing separator */
 static size_t rootlen;
+static int read_only;
 static char label[16];                  /* folder basename, for HELLO */
 static filehandle files[MAX_FILES];
 static dirhandle dirs[MAX_DIRS];
@@ -1065,6 +1074,17 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
     unsigned outlen = 0;
     char path[FULLPATH_MAX];
 
+    if (read_only && (op == HOSTFS_OP_WRITE || op == HOSTFS_OP_CREATE ||
+        op == HOSTFS_OP_DELETE || op == HOSTFS_OP_RENAME || op == HOSTFS_OP_MKDIR ||
+        op == HOSTFS_OP_RMDIR || op == HOSTFS_OP_SETATTR ||
+        (op == HOSTFS_OP_OPEN && a != HOSTFS_O_RDONLY)))
+    {
+        put16(rep, HOSTFS_REP_HDR);
+        put16(rep + 2, (unsigned short)HOSTFS_EACCDN);
+        put32(rep + 4, 0); put32(rep + 8, 0);
+        return HOSTFS_REP_HDR;
+    }
+
     switch (op)
     {
     case HOSTFS_OP_CAPS:
@@ -1258,7 +1278,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
          * that changes when files are added to the folder. */
         ra = S_ISDIR(st.st_mode) ? 0UL : (unsigned long)st.st_size;
         rb = (unsigned long)st.st_mtime;
-        out[0] = (unsigned char)attr_of(&st, path);
+        out[0] = (unsigned char)(attr_of(&st, path) | (read_only ? HOSTFS_FA_RO : 0));
         outlen = 1;
         break;
     }
@@ -1577,9 +1597,9 @@ static void usage(void)
 #ifdef _WIN32
         "                       [--listen-tcp PORT]\n"
 #endif
-        "                       [--once] [--verbose]\n"
+        "                       [--read-only] [--once] [--verbose]\n"
         "\n"
-        "  --root DIR      the folder served as the guest's drive C\n"
+        "  --root DIR      the folder served as an Atari drive\n"
         "  --listen PATH   listen on a Unix socket and serve each client\n"
         "                  in turn\n"
 #ifdef _WIN32
@@ -1587,6 +1607,7 @@ static void usage(void)
 #endif
         "  --connect PATH  connect to PATH instead -- QEMU's chardev with\n"
         "                  server=on is the listener in that arrangement\n"
+        "  --read-only     refuse writes and leave host attributes unchanged\n"
         "  --once          exit after the first client disconnects\n"
         "  --ready-file P  create P once the channel is up, and only\n"
         "                  then -- the launcher waits for it rather than\n"
@@ -1612,8 +1633,12 @@ static void signal_ready(const char *path)
     if (!path)
         return;
     f = fopen(path, "wb");
-    if (f)
+    if (f) {
+#ifdef _WIN32
+        if (listener_port) fprintf(f, "%u\n", listener_port);
+#endif
         fclose(f);
+    }
 }
 
 /*
@@ -1732,8 +1757,7 @@ static void report_writable_result(void)
 static DWORD WINAPI make_writable_worker(LPVOID unused)
 {
     (void)unused;
-    make_writable(root, 0);
-    report_writable_result();
+    if (!read_only) { make_writable(root, 0); report_writable_result(); }
     return 0;
 }
 
@@ -1816,6 +1840,8 @@ int main(int argc, char **argv)
             readyfile = argv[++i];
         else if (!strcmp(argv[i], "--once"))
             once = 1;
+        else if (!strcmp(argv[i], "--read-only"))
+            read_only = 1;
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
         else
@@ -1862,8 +1888,7 @@ int main(int argc, char **argv)
      * Windows does the same work after readiness on a worker thread, because
      * antivirus scanning can otherwise exceed the launcher's deadline. */
 #ifndef _WIN32
-    make_writable(root, 0);
-    report_writable_result();
+    if (!read_only) { make_writable(root, 0); report_writable_result(); }
 #endif
     if (plat_init() != 0)
     {
@@ -1883,7 +1908,7 @@ int main(int argc, char **argv)
         }
         signal_ready(readyfile);
 #ifdef _WIN32
-        start_writable_worker();
+        if (!read_only) start_writable_worker();
 #endif
         dbg("hostfsd: serving %s to %s\n", label, sockpath);
         serve_client(c);
@@ -1905,7 +1930,7 @@ int main(int argc, char **argv)
 
     signal_ready(readyfile);
 #ifdef _WIN32
-    start_writable_worker();
+    if (!read_only) start_writable_worker();
 #endif
     dbg("hostfsd: serving %s on %s\n", label, sockpath);
 

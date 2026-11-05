@@ -38,29 +38,24 @@ int settings_load(Settings *s, const char *program_dir)
     if (FAILED(SHGetFolderPathA(NULL, CSIDL_APPDATA | CSIDL_FLAG_CREATE,
                               NULL, 0, base)))
         return 0;
-    if (!child_path(s->file, sizeof(s->file), base, "shinogi")) return 0;
+    if (!child_path(s->file, sizeof(s->file), base, SHINOGI_EDITION)) return 0;
     if (!CreateDirectoryA(s->file, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
         return 0;
-    if (!child_path(s->file, sizeof(s->file), base, "shinogi\\settings.ini") ||
+    if (!child_path(s->file, sizeof(s->file), base, SHINOGI_EDITION "\\settings.ini") ||
         !child_path(fallback, sizeof(fallback),
-                    profile && *profile ? profile : program_dir, "shinogi-drive-c"))
+                    profile && *profile ? profile : program_dir, SHINOGI_EDITION "\\drive-c"))
         return 0;
     GetPrivateProfileStringA("Drives", "C", fallback,
                              s->drivec, sizeof(s->drivec), s->file);
     s->fullscreen = GetPrivateProfileIntA("Display", "Fullscreen", 0, s->file) != 0;
     settings_resolution(s);
-    return network_load(&s->network, s->file, network_error, sizeof(network_error));
+    return drives_load(&s->drives, s->file) &&
+        network_load(&s->network, s->file, network_error, sizeof(network_error));
 }
 
 int settings_drive_valid(const char *path)
 {
-    DWORD attrs;
-    if (!*path || strlen(path) > DRIVE_PATH_MAX || strchr(path, '"')) return 0;
-    if (!((strlen(path) >= 3 && path[1] == ':' &&
-           (path[2] == '\\' || path[2] == '/')) ||
-          (path[0] == '\\' && path[1] == '\\'))) return 0;
-    attrs = GetFileAttributesA(path);
-    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+    return drives_folder_valid(path);
 }
 
 /* Keep guest settings and comments; replace only the res line. Commit the
@@ -253,6 +248,7 @@ static INT_PTR CALLBACK dialog_proc(HWND dialog, UINT message, WPARAM wp, LPARAM
         char text[32];
         size_t i;
         s = (Settings *)lp;
+        SetWindowTextA(dialog, SHINOGI_EDITION " Settings");
         SetWindowLongPtrA(dialog, DWLP_USER, lp);
         SendDlgItemMessageA(dialog, IDC_DRIVEC, EM_SETLIMITTEXT, DRIVE_PATH_MAX, 0);
         SendDlgItemMessageA(dialog, IDC_RESOLUTION, CB_LIMITTEXT, 32, 0);
@@ -315,6 +311,12 @@ static INT_PTR CALLBACK dialog_proc(HWND dialog, UINT message, WPARAM wp, LPARAM
         network_controls(dialog);
         return TRUE;
     }
+    if (LOWORD(wp) == IDC_DRIVES) {
+        char boot[MAX_PATH];
+        GetDlgItemTextA(dialog, IDC_DRIVEC, boot, sizeof(boot));
+        drives_dialog((HINSTANCE)GetWindowLongPtrA(dialog, GWLP_HINSTANCE), dialog, &s->drives, boot);
+        return TRUE;
+    }
     if (LOWORD(wp) == IDC_BROWSE) { browse(dialog); return TRUE; }
     if (LOWORD(wp) == IDOK) {
         Settings next = *s;
@@ -352,7 +354,12 @@ static INT_PTR CALLBACK dialog_proc(HWND dialog, UINT message, WPARAM wp, LPARAM
             MessageBoxA(dialog, network_error, "Shinogi Settings", MB_ICONWARNING);
             return TRUE;
         }
+        if (!drives_valid(&next.drives, next.drivec, network_error, sizeof(network_error))) {
+            MessageBoxA(dialog, network_error, "Additional drives", MB_ICONWARNING);
+            return TRUE;
+        }
         if (!save_resolution(&next) ||
+            !drives_save(&next.drives, next.file) ||
             !WritePrivateProfileStringA("Display", "Fullscreen", next.fullscreen ? "1" : "0", next.file) ||
             !WritePrivateProfileStringA("Drives", "C", next.drivec, next.file) ||
             !network_save(&next.network, next.file)) {
@@ -371,9 +378,11 @@ static INT_PTR CALLBACK dialog_proc(HWND dialog, UINT message, WPARAM wp, LPARAM
 int settings_dialog(HINSTANCE instance, Settings *s)
 {
     INT_PTR result;
+    Settings draft = *s;
     HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     result = DialogBoxParamA(instance, MAKEINTRESOURCEA(IDD_SETTINGS), NULL,
-                             dialog_proc, (LPARAM)s);
+                             dialog_proc, (LPARAM)&draft);
+    if (result == IDOK) *s = draft;
     if (SUCCEEDED(initialized)) CoUninitialize();
     if (result == -1)
         MessageBoxA(NULL, "Could not open Shinogi Settings.", "shinogi", MB_ICONERROR);

@@ -1,70 +1,68 @@
-Additional drive design
-=======================
+Additional drives
+=================
 
-The current Settings dialog configures only the host folder used as C.
-The next drive work should expose additional host folders first, followed
-by validated hard-disk images and then raw floppy images. Drive settings
-apply at the next start; live insert/eject needs separate guest media-change
-support. No placeholder controls are added before those paths work.
+Windows Settings > Additional drives configures fixed folder letters,
+four raw hard-disk image slots and floppy A/B. Changes apply at the next
+start. Removing a mapping keeps the host data. The editor edits a draft;
+Cancel in either dialog discards changes. Each CPU edition has separate
+program, settings, logs, shortcuts and default drive C folders.
 
 Host folders
 ------------
 
-Keep C as the boot folder. Add explicit D through Z folder mappings, with
-Browse and read-only choices, using one confined helper/channel per folder.
-Assign letters by the virtserialport name rather than device discovery order
-so adding a mapping cannot silently move another drive. Append transports
-after the existing C device to retain current device ordering.
+C remains the boot folder. D through Z are explicit additional mappings,
+except U, reserved for FreeMiNT's unified filesystem. One confined helper
+per folder serves the existing v1 protocol and optional directory batching.
+The legacy shinogi.hostfs port names C; shinogi.hostfs.d through .z name
+additional letters, independent of transport order. All ports share one
+virtio-serial controller appended after the existing display/input devices.
 
-The guest currently has one link, current directory, handle namespace and
-directory-page cache. These need per-drive contexts, with open-file/DTA state
-retaining its originating drive. Each helper can keep the existing v1
-protocol, including negotiated directory batching. Cache keys include the
-drive context. Returning between C and D must not mix paths or helper handles.
-Read-only mappings must reject all mutation operations and preserve host
-attributes, including the helper's startup attribute-repair behavior.
+The guest keeps per-drive transport queues, receive storage, directory page
+cache and current path. Open files and DTA scans retain their drive. The
+shared directory snapshot records its drive and is rebuilt when another
+scan displaced it. Channel death preserves drive ownership so calls cannot
+fall into stock FAT routing or accidentally close another helper's handle.
+Control RX has32 descriptors. DEVICE_ADD messages are drained before each
+PORT_READY reply, preventing QEMU from dropping names during enumeration.
+Read-only helpers refuse all mutation operations and skip attribute repair.
 
 Hard-disk images
 ----------------
 
-The guest already adopts up to four virtio-blk devices and parses Atari/DOS
-partitions and FAT volumes. The C-letter reservation now recognizes the
-actual virtio-serial host-folder transport, so the first extra image is no
-longer hidden behind C. A read-only raw FAT image is checked as D using an
-actual guest file read and a host image hash, with the old firmware failing
-the same test. This is a prerequisite, not a shipped image-picker UI.
+Up to four existing, formatted raw .img/.hdf files use explicit format=raw
+and cache=writethrough. QEMU keyval commas are escaped and Windows paths
+are quoted. Settings rejects duplicate backing-file identities, malformed
+paths and device paths. Read-only is the default. Partitions consume free
+letters, skipping C, mapped folders and U; images may have several partitions.
+The guest understands existing Atari/DOS partition and FAT12/FAT16 layouts.
 
-Start with explicit raw .img/.hdf files and read-only attachment. An image
-may contain several partitions, so its guest letters are assigned from the
-available range rather than assuming one image always means one letter.
-Use explicit QEMU format=raw and a correctly encoded filename argument.
-Show the path and access mode in Settings. Preserve C and existing mappings.
-
-Writable image support needs host-verified create, overwrite, rename,
-delete, directory and multi-frame tests, followed by clean shutdown/reopen
-and filesystem checks. The firmware's block-write switch is currently off
-because older vvfat write-back lost data. Only real image files should enter
-the new path; re-enabling that switch must not accidentally re-enable unsafe
-vvfat folder writes. Honor the backend's read-only feature per device and
-return write-protection errors consistently. A host folder remains served
-by hostfs rather than converted to a writable virtual FAT disk.
+Standard virtio-blk GET_ID identifies launcher serials shinogi.disk1..4,
+keeping image slot order independent of transport discovery. These tagged
+image units may write; ordinary untagged/vvfat devices still follow the
+disabled developer write switch. VIRTIO_BLK_F_RO is negotiated and enforced
+per device even when write support is enabled. Host folders never use vvfat.
 
 Floppy images
 -------------
 
-Begin with uncompressed sector images (.st/.img), normal 512-byte sectors
-and standard 720KiB/1.44MiB FAT geometry. Route BIOS floppy A/B operations to
-designated image units; attaching a small image as an ordinary hard disk
-does not provide A/B semantics. Standard virtio-blk GET_ID plus a stable
-serial can identify the A/B units without depending on transport order.
-Keep floppy identification separate from hard-disk partition enumeration.
+Formatted raw .st/.img sector images provide actual BIOS A/B semantics.
+Initial geometries are720KB and1.44MB,512-byte sectors,80 tracks,two sides.
+Settings validates the size and boot geometry. Stable GET_ID serials
+shinogi.floppya/b route these units outside hard-disk partition scanning.
+BIOS and XBIOS reads/writes use the selected image; read-only returns EWRPRO.
+Flopver uses sector reads; formatting through a controller is unsupported.
 
-Provide insert path, read-only, and eject controls only when BPB/geometry,
-media-change and guest cache invalidation are correct. Initially restart
-after changes; add live QMP media changes only with an actual supported
-backend and tested guest notification. Verify file reads, disk swaps and
-host image hashes on both EmuTOS and FreeMiNT.
+Images are fixed for an emulator run: Mediach reports no external change,
+and restarting rebuilds BIOS/BPB and filesystem cache state. Tests swap
+both media and geometries across restarts on EmuTOS and FreeMiNT. Live QMP
+insert/eject requires explicit backend notification/cache invalidation before
+it can be exposed. MSA compression and STX/protected-disk controllers remain
+separate work, outside this initial sector-image path.
 
-MSA requires explicit decompression/recompression handling; begin read-only
-if added. STX/protected-disk behavior needs a controller/timing model and is
-outside the initial sector-image implementation.
+Validation
+----------
+
+See tests/drives/README.txt for independent host content/hash/fsck checks,
+reopen and restart-swap tests, all-folder capacity tests and Windows dialog
+and side-by-side installer lifecycle checks. These tests use disposable
+copies of the system tree and fresh images; they never write to a user disk.

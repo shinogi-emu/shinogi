@@ -77,6 +77,7 @@
  */
 
 #include <windows.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <string.h>
 #include <shellapi.h>
@@ -102,14 +103,12 @@
 #define READY_TIMEOUT_MS  5000
 #define READY_POLL_MS       10
 
-/* Dynamic/private Windows ports live in the IANA private range. The launcher
- * derives one from its PID; this avoids a filesystem socket path entirely. */
-#define HOSTFS_PORT_BASE 49152
-#define HOSTFS_PORT_COUNT 16384
+/* Each helper asks Winsock for an available loopback port and reports it
+ * in its readiness file, so concurrent CPU editions cannot collide. */
 
 static void note(const char *text)
 {
-    MessageBoxA(NULL, text, "shinogi", MB_ICONWARNING);
+    MessageBoxA(NULL, text, SHINOGI_EDITION, MB_ICONWARNING);
 }
 
 static void helper_log_line(HANDLE log, const char *text)
@@ -155,7 +154,7 @@ static void log_dir(char *out, size_t n)
         base = ".";
     }
 
-    _snprintf(out, n, "%s\\shinogi", base);
+    _snprintf(out, n, "%s\\" SHINOGI_EDITION, base);
     out[n - 1] = '\0';
     CreateDirectoryA(out, NULL);
 }
@@ -169,8 +168,8 @@ static void log_dir(char *out, size_t n)
  * the write handle to be inheritable and named in STARTUPINFO.
  */
 static HANDLE start_helper(const char *dir, const char *drivec,
-                           const char *port, const char *ready,
-                           const char *logs, char *failure,
+                           char *port, const char *ready,
+                           const char *logs, int drive, int readonly, char *failure,
                            size_t failure_len)
 {
     char cmd[2048], logpath[MAX_PATH], line[768];
@@ -185,7 +184,7 @@ static HANDLE start_helper(const char *dir, const char *drivec,
     /* A leftover ready file from a previous run would be believed. */
     DeleteFileA(ready);
 
-    _snprintf(logpath, sizeof(logpath), "%s\\shinogi-hostfsd.log", logs);
+    _snprintf(logpath, sizeof(logpath), "%s\\shinogi-hostfsd-%c.log", logs, 'A' + drive);
     logpath[sizeof(logpath) - 1] = '\0';
 
     ZeroMemory(&sa, sizeof(sa));
@@ -209,8 +208,8 @@ static HANDLE start_helper(const char *dir, const char *drivec,
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\shinogi-hostfsd.exe\""
               " --root \"%s\\.\" --listen-tcp %s --ready-file \"%s\""
-              " --once",
-              dir, drivec, port, ready);
+              " --once%s",
+              dir, drivec, "0", ready, readonly ? " --read-only" : "");
     cmd[sizeof(cmd) - 1] = '\0';
 
     ZeroMemory(&si, sizeof(si));
@@ -246,7 +245,14 @@ static HANDLE start_helper(const char *dir, const char *drivec,
     for (waited = 0; waited < READY_TIMEOUT_MS; waited += READY_POLL_MS) {
         DWORD code = 0;
 
-        if (GetFileAttributesA(ready) != INVALID_FILE_ATTRIBUTES) {
+        FILE *ready_file = fopen(ready, "r");
+        unsigned chosen = 0;
+        if (ready_file) {
+            if (fscanf(ready_file, "%u", &chosen) != 1) chosen = 0;
+            fclose(ready_file);
+        }
+        if (chosen > 0 && chosen <= 65535) {
+            snprintf(port, 16, "%u", chosen);
             if (hlog != INVALID_HANDLE_VALUE) {
                 CloseHandle(hlog);  /* the child holds its own copy */
             }
@@ -323,7 +329,7 @@ static DWORD run_qemu(const char *dir, const char *launcher, const char *logs, c
                       int res_w, int res_h, int fullscreen, DWORD *start_error,
                       char *cmdout, size_t cmdoutlen)
 {
-    char cmd[4096], logpath[MAX_PATH];
+    char cmd[32768], logpath[MAX_PATH];
     SECURITY_ATTRIBUTES sa;
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -401,16 +407,49 @@ static DWORD run_qemu(const char *dir, const char *launcher, const char *logs, c
     return code;
 }
 
+/* An installer upgrade may stop only processes from its own edition tree.
+ * Image-name taskkill would also terminate other CPU editions. */
+static int stop_edition(const char *dir)
+{
+    PROCESSENTRY32 entry;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    int ok = 1;
+    size_t n = strlen(dir);
+    if (snapshot == INVALID_HANDLE_VALUE) return 1;
+    entry.dwSize = sizeof(entry);
+    if (Process32First(snapshot, &entry)) do {
+        HANDLE process;
+        char path[MAX_PATH];
+        DWORD size = sizeof(path);
+        if (entry.th32ProcessID == GetCurrentProcessId()) continue;
+        if (lstrcmpiA(entry.szExeFile, "shinogi.exe") &&
+            lstrcmpiA(entry.szExeFile, "shinogi-hostfsd.exe") &&
+            lstrcmpiA(entry.szExeFile, "qemu-system-m68kw.exe") &&
+            lstrcmpiA(entry.szExeFile, "qemu-system-m68k.exe")) continue;
+        process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+                              FALSE, entry.th32ProcessID);
+        if (!process) continue;
+        if (QueryFullProcessImageNameA(process, 0, path, &size) &&
+            size > n && !_strnicmp(path, dir, n) && path[n] == '\\') {
+            if (!TerminateProcess(process, 0) || WaitForSingleObject(process, 5000) != WAIT_OBJECT_0) ok = 0;
+        }
+        CloseHandle(process);
+    } while (Process32Next(snapshot, &entry));
+    CloseHandle(snapshot);
+    return ok ? 0 : 1;
+}
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 {
     char exe[MAX_PATH], dir[MAX_PATH], logs[MAX_PATH];
-    char drivec[MAX_PATH], ready[MAX_PATH], port[16];
+    char drivec[MAX_PATH], ready[24][MAX_PATH], port[16];
+    HANDLE helpers[24] = {0};
+    int d;
     char kernel[MAX_PATH];
     char helper_failure[768];
     int res_w, res_h;
-    char hostfs[1024], lastcmd[4096];
+    char hostfs[DRIVE_OPTIONS_MAX], lastcmd[32768], images[8192], drive_error[512];
     const char *display;
-    HANDLE helper = NULL;
     DWORD len, code, start_error;
     Settings settings;
     char network_options[1024], network_error[768];
@@ -421,20 +460,22 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     len = GetModuleFileNameA(NULL, exe, sizeof(exe));
     if (len == 0 || len >= sizeof(exe)) {
         MessageBoxA(NULL, "Could not determine the program location.",
-                    "shinogi", MB_ICONERROR);
+                    SHINOGI_EDITION, MB_ICONERROR);
         return 1;
     }
 
     lstrcpynA(dir, exe, sizeof(dir));
     slash = strrchr(dir, '\\');
     if (!slash) {
-        MessageBoxA(NULL, "Unexpected program path.", "shinogi", MB_ICONERROR);
+        MessageBoxA(NULL, "Unexpected program path.", SHINOGI_EDITION, MB_ICONERROR);
         return 1;
     }
     *slash = '\0';
 
+    if (!lstrcmpiA(cmdline, "--stop-edition")) return stop_edition(dir);
+
     if (!settings_load(&settings, dir)) {
-        MessageBoxA(NULL, "Could not open your settings folder.", "shinogi", MB_ICONERROR);
+        MessageBoxA(NULL, "Could not open your settings folder.", SHINOGI_EDITION, MB_ICONERROR);
         return 1;
     }
     if (lstrcmpiA(cmdline, "--settings") == 0)
@@ -451,6 +492,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
                  "Choose the folder containing your drive C in Shinogi Settings.",
                  settings.drivec);
         note(message);
+        if (!settings_dialog(inst, &settings)) return 1;
+    }
+    if (!drives_valid(&settings.drives, settings.drivec, drive_error, sizeof(drive_error))) {
+        note(drive_error);
         if (!settings_dialog(inst, &settings)) return 1;
     }
     lstrcpynA(drivec, settings.drivec, sizeof(drivec));
@@ -521,51 +566,44 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         }
     }
 
-    _snprintf(ready, sizeof(ready), "%s\\hostfs.ready", logs);
-    ready[sizeof(ready) - 1] = '\0';
-    _snprintf(port, sizeof(port), "%u",
-              HOSTFS_PORT_BASE +
-              (unsigned)(GetCurrentProcessId() % HOSTFS_PORT_COUNT));
-    port[sizeof(port) - 1] = '\0';
-
     hostfs[0] = '\0';
-    helper = start_helper(dir, drivec, port, ready, logs,
-                          helper_failure, sizeof(helper_failure));
-    if (!helper) {
-        char msg[1400];
-
-        _snprintf(msg, sizeof(msg),
-                  "Could not open drive C:\n%s\n\n%s\n"
-                  "See shinogi-hostfsd.log in:\n"
-                  "%%LOCALAPPDATA%%\\shinogi\n\n"
-                  "You can change the folder using Shinogi Settings.",
-                  drivec,
-                  helper_failure[0] ? helper_failure :
-                  "No diagnostic was returned by the helper.");
-        msg[sizeof(msg) - 1] = '\0';
-        note(msg);
-        return 1;
-    } else {
-        /*
-         * server=off: QEMU is the CLIENT and the helper above is already
-         * listening on loopback, so the connection is made while QEMU parses
-         * its command line, before the guest can probe the port.
-         */
-        _snprintf(hostfs, sizeof(hostfs),
-                  " -chardev \"socket,id=hostfs,host=127.0.0.1,port=%s,"
-                  "server=off,nodelay=on\""
-                  " -device virtio-serial-device"
-                  " -device virtserialport,chardev=hostfs,"
-                  "name=shinogi.hostfs",
-                  port);
-        hostfs[sizeof(hostfs) - 1] = '\0';
+    for (d = 2; d < 26; d++) {
+        const char *folder = d == 2 ? drivec : settings.drives.mapping[d - 3].path;
+        int readonly = d == 2 ? 0 : settings.drives.mapping[d - 3].readonly;
+        size_t used = strlen(hostfs);
+        int n;
+        char name[32];
+        if (!*folder) continue;
+        n = snprintf(ready[d - 2], sizeof(ready[0]), "%s\\hostfs-%c.ready", logs, 'A' + d);
+        if (n < 0 || (size_t)n >= sizeof(ready[0])) { note("The log folder path is too long."); goto drive_failure; }
+        helpers[d - 2] = start_helper(dir, folder, port, ready[d - 2], logs, d, readonly,
+                                      helper_failure, sizeof(helper_failure));
+        if (!helpers[d - 2]) {
+            char msg[1400];
+            snprintf(msg, sizeof(msg), "Could not open drive %c:\n%s\n\n%s\n"
+                     "Choose its folder in Shinogi Settings. Logs: %s", 'A' + d, folder, helper_failure, logs);
+            note(msg);
+            goto drive_failure;
+        }
+        snprintf(name, sizeof(name), d == 2 ? "shinogi.hostfs" : "shinogi.hostfs.%c", 'a' + d);
+        n = snprintf(hostfs + used, sizeof(hostfs) - used,
+                     "%s -chardev socket,id=fs%d,host=127.0.0.1,port=%s,server=off,nodelay=on"
+                     " -device virtserialport,bus=folders.0,chardev=fs%d,name=%s",
+                     d == 2 ? " -device virtio-serial-device,id=folders,max_ports=26" : "",
+                     d, port, d, name);
+        if (n < 0 || (size_t)n >= sizeof(hostfs) - used) { note("Too many drive options."); goto drive_failure; }
     }
+    if (!drives_image_options(&settings.drives, images, sizeof(images)) ||
+        strlen(images) + strlen(hostfs) >= sizeof(hostfs)) {
+        note("The drive configuration is too long."); goto drive_failure;
+    }
+    strcat(hostfs, images);
 
     code = run_qemu(dir, exe, logs, display, hostfs, kernel, network_options, res_w, res_h,
                     settings.fullscreen, &start_error,
                     lastcmd, sizeof(lastcmd));
 
-    stop_helper(helper, ready);
+    for (d = 0; d < 24; d++) stop_helper(helpers[d], ready[d]);
 
     if (code == (DWORD)-1) {
         char msg[4608];
@@ -573,7 +611,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
                   "Could not start the bundled QEMU (error %lu).\n\n%s",
                   (unsigned long)start_error, lastcmd);
         msg[sizeof(msg) - 1] = '\0';
-        MessageBoxA(NULL, msg, "shinogi", MB_ICONERROR);
+        MessageBoxA(NULL, msg, SHINOGI_EDITION, MB_ICONERROR);
         return 1;
     }
 
@@ -600,8 +638,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
                   detail[0] ? detail : "No diagnostic was written by QEMU.",
                   logpath);
         msg[sizeof(msg) - 1] = '\0';
-        MessageBoxA(NULL, msg, "shinogi", MB_ICONWARNING);
+        MessageBoxA(NULL, msg, SHINOGI_EDITION, MB_ICONWARNING);
     }
 
     return (int)code;
+
+drive_failure:
+    for (d = 0; d < 24; d++) stop_helper(helpers[d], ready[d]);
+    return 1;
 }

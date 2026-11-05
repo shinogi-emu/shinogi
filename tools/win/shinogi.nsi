@@ -30,8 +30,8 @@
 Name "${EDITION} ${VERSION}"
 OutFile "${OUTFILE}"
 Unicode True
-InstallDir "$PROGRAMFILES64\shinogi"
-InstallDirRegKey HKLM "Software\shinogi" "InstallDir"
+InstallDir "$PROGRAMFILES64\${EDITION}"
+InstallDirRegKey HKLM "Software\shinogi\Editions\${EDITION}" "InstallDir"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
@@ -47,10 +47,15 @@ Var DriveCField
 Var SettingsFile
 
 Function .onInit
-  StrCpy $SettingsFile "$APPDATA\shinogi\settings.ini"
+  SetRegView 64
+  ReadRegStr $0 HKLM "Software\shinogi\Editions\${EDITION}" "InstallDir"
+  ${If} $0 != ""
+    StrCpy $INSTDIR $0
+  ${EndIf}
+  StrCpy $SettingsFile "$APPDATA\${EDITION}\settings.ini"
   ReadINIStr $DriveC $SettingsFile "Drives" "C"
   ${If} $DriveC == ""
-    StrCpy $DriveC "$PROFILE\shinogi-drive-c"
+    StrCpy $DriveC "$PROFILE\${EDITION}\drive-c"
   ${EndIf}
   ; Also usable for unattended installation: /DRIVEC="D:\Atari\Drive C"
   ${GetParameters} $0
@@ -195,6 +200,13 @@ Page custom DriveCPage DriveCLeave
 
 Section "shinogi" SecMain
   SectionIn RO
+  ; A custom installation folder must never replace another CPU edition.
+  ReadINIStr $0 "$INSTDIR\edition.ini" "Install" "Edition"
+  ${If} $0 != ""
+  ${AndIf} $0 != "${EDITION}"
+    MessageBox MB_ICONSTOP "This folder belongs to $0. Choose a separate ${EDITION} program folder."
+    Abort
+  ${EndIf}
   ; Custom pages do not run for /S installations.
   Call ValidateDriveC
   ; Check the selected destination before replacing the installed app.
@@ -208,16 +220,15 @@ Section "shinogi" SecMain
     MessageBox MB_ICONSTOP "Cannot write to $DriveC. Choose a writable drive C folder."
     Abort
   driveCWritable:
-  ; Stop an installed copy before replacing it. Ending the launcher alone
-  ; does not end its QEMU child, and either process can keep files open.
-  nsExec::Exec 'taskkill /F /IM shinogi.exe'
-  Pop $0
-  nsExec::Exec 'taskkill /F /IM qemu-system-m68kw.exe'
-  Pop $0
-  nsExec::Exec 'taskkill /F /IM qemu-system-m68k.exe'
-  Pop $0
-  nsExec::Exec 'taskkill /F /IM shinogi-hostfsd.exe'
-  Pop $0
+  ; Stop this edition only; other CPU editions may be running alongside it.
+  IfFileExists "$INSTDIR\shinogi.exe" 0 editionStopped
+    nsExec::Exec '"$INSTDIR\shinogi.exe" --stop-edition'
+    Pop $0
+    ${If} $0 != 0
+      MessageBox MB_ICONSTOP "Close ${EDITION} before updating this installation."
+      Abort
+    ${EndIf}
+  editionStopped:
 
   ; Replace the application as one coherent tree so DLLs and QEMU data from
   ; an older build cannot survive an upgrade. Require two Shinogi-specific
@@ -306,28 +317,16 @@ install_files:
 
   SetOutPath "$INSTDIR"
 
-  CreateDirectory "$SMPROGRAMS\shinogi"
-  ; One shared program tree means installing the other CPU edition switches
-  ; it in place. Remove the previous edition's launch links before creating
-  ; the current clearly named one.
-  Delete "$SMPROGRAMS\shinogi\Shinogi-040.lnk"
-  Delete "$SMPROGRAMS\shinogi\Shinogi-060.lnk"
-  Delete "$DESKTOP\Shinogi-040.lnk"
-  Delete "$DESKTOP\Shinogi-060.lnk"
-  Delete "$SMPROGRAMS\shinogi\shinogi.lnk"
-  Delete "$DESKTOP\shinogi.lnk"
-  CreateShortcut "$SMPROGRAMS\shinogi\${EDITION}.lnk" "$INSTDIR\shinogi.exe"
-  CreateShortcut "$SMPROGRAMS\shinogi\Shinogi Settings.lnk" "$INSTDIR\shinogi.exe" "--settings"
-  CreateShortcut "$SMPROGRAMS\shinogi\Read me.lnk" "$INSTDIR\README.txt"
-  CreateShortcut "$SMPROGRAMS\shinogi\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+  CreateDirectory "$SMPROGRAMS\${EDITION}"
+  CreateShortcut "$SMPROGRAMS\${EDITION}\${EDITION}.lnk" "$INSTDIR\shinogi.exe"
+  CreateShortcut "$SMPROGRAMS\${EDITION}\${EDITION} Settings.lnk" "$INSTDIR\shinogi.exe" "--settings"
+  CreateShortcut "$SMPROGRAMS\${EDITION}\Read me.lnk" "$INSTDIR\README.txt"
+  CreateShortcut "$SMPROGRAMS\${EDITION}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\${EDITION}.lnk" "$INSTDIR\shinogi.exe"
+  CreateShortcut "$SMPROGRAMS\${EDITION}\${EDITION} drive C.lnk" "$INSTDIR\shinogi.exe" "--open-drive-c"
+  CreateShortcut "$DESKTOP\${EDITION} drive C.lnk" "$INSTDIR\shinogi.exe" "--open-drive-c"
 
-  CreateShortcut "$SMPROGRAMS\shinogi\shinogi drive C.lnk" \
-                 "$INSTDIR\shinogi.exe" "--open-drive-c"
-  CreateShortcut "$DESKTOP\shinogi drive C.lnk" \
-                 "$INSTDIR\shinogi.exe" "--open-drive-c"
-
-  CreateDirectory "$APPDATA\shinogi"
+  CreateDirectory "$APPDATA\${EDITION}"
   ClearErrors
   WriteINIStr $SettingsFile "Drives" "C" "$DriveC"
   IfErrors 0 settingsSaved
@@ -335,27 +334,28 @@ install_files:
     Abort
   settingsSaved:
 
-  WriteRegStr HKLM "Software\shinogi" "InstallDir" "$INSTDIR"
-  WriteRegStr HKLM "Software\shinogi" "Version" "${VERSION}"
+  WriteRegStr HKLM "Software\shinogi\Editions\${EDITION}" "InstallDir" "$INSTDIR"
+  WriteRegStr HKLM "Software\shinogi\Editions\${EDITION}" "Version" "${VERSION}"
   WriteRegStr HKLM \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${EDITION}" \
     "DisplayName" "${EDITION} ${VERSION} - Atari GEM on QEMU"
   WriteRegStr HKLM \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${EDITION}" \
     "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegStr HKLM \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${EDITION}" \
     "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKLM \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${EDITION}" \
     "NoModify" 1
   WriteRegDWORD HKLM \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${EDITION}" \
     "NoRepair" 1
   WriteRegStr HKLM \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi" \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${EDITION}" \
     "DisplayVersion" "${VERSION}"
 
+  WriteINIStr "$INSTDIR\edition.ini" "Install" "Edition" "${EDITION}"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd
 
@@ -363,9 +363,26 @@ Section "Uninstall"
   ; Restore only the bridge registered by Shinogi before removing its
   ; setup helper. A shared TAP driver is never uninstalled here.
   SetRegView 64
+  StrCpy $2 0
+  StrCpy $3 0
+  editionLoop:
+    EnumRegKey $4 HKLM "Software\shinogi\Editions" $3
+    ${If} $4 == ""
+      Goto editionLoopEnd
+    ${EndIf}
+    ${If} $4 != "${EDITION}"
+      StrCpy $2 1
+    ${EndIf}
+    IntOp $3 $3 + 1
+    Goto editionLoop
+  editionLoopEnd:
+  ReadRegStr $5 HKLM "Software\shinogi" "InstallDir"
+  ${If} $5 != ""
+    StrCpy $2 1 ; a legacy shared installation may still use the bridge
+  ${EndIf}
   ReadRegStr $0 HKLM "Software\shinogi\LAN" "EthernetGuid"
-  SetRegView 32
   ${If} $0 != ""
+  ${AndIf} $2 == 0
     ${DisableX64FSRedirection}
     nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\network\lan-setup.ps1" -EthernetGuid $0 -Remove'
     Pop $1
@@ -375,20 +392,20 @@ Section "Uninstall"
       Abort
     ${EndIf}
   ${EndIf}
-  Delete "$DESKTOP\shinogi.lnk"
-  Delete "$DESKTOP\Shinogi-040.lnk"
-  Delete "$DESKTOP\Shinogi-060.lnk"
-  Delete "$DESKTOP\shinogi drive C.lnk"
-  Delete "$SMPROGRAMS\shinogi\shinogi.lnk"
-  Delete "$SMPROGRAMS\shinogi\Shinogi-040.lnk"
-  Delete "$SMPROGRAMS\shinogi\Shinogi-060.lnk"
-  Delete "$SMPROGRAMS\shinogi\shinogi drive C.lnk"
-  Delete "$SMPROGRAMS\shinogi\Shinogi Settings.lnk"
-  ; Left behind by installs up to b7, which offered a GTK display entry.
-  Delete "$SMPROGRAMS\shinogi\shinogi (GTK display).lnk"
-  Delete "$SMPROGRAMS\shinogi\Read me.lnk"
-  Delete "$SMPROGRAMS\shinogi\Uninstall.lnk"
-  RMDir "$SMPROGRAMS\shinogi"
+  nsExec::Exec '"$INSTDIR\shinogi.exe" --stop-edition'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP "Close ${EDITION} before uninstalling."
+    Abort
+  ${EndIf}
+  Delete "$DESKTOP\${EDITION}.lnk"
+  Delete "$DESKTOP\${EDITION} drive C.lnk"
+  Delete "$SMPROGRAMS\${EDITION}\${EDITION}.lnk"
+  Delete "$SMPROGRAMS\${EDITION}\${EDITION} drive C.lnk"
+  Delete "$SMPROGRAMS\${EDITION}\${EDITION} Settings.lnk"
+  Delete "$SMPROGRAMS\${EDITION}\Read me.lnk"
+  Delete "$SMPROGRAMS\${EDITION}\Uninstall.lnk"
+  RMDir "$SMPROGRAMS\${EDITION}"
 
   Delete "$INSTDIR\shinogi.exe"
   Delete "$INSTDIR\shinogi-hostfsd.exe"
@@ -397,6 +414,7 @@ Section "Uninstall"
   Delete "$INSTDIR\SDL2.dll"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\BUILD.txt"
+  Delete "$INSTDIR\edition.ini"
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\qemu"
   ; Application upgrades leave the host bridge intact; uninstall restored
@@ -405,6 +423,6 @@ Section "Uninstall"
   RMDir "$INSTDIR"
 
   DeleteRegKey HKLM \
-    "Software\Microsoft\Windows\CurrentVersion\Uninstall\shinogi"
-  DeleteRegKey HKLM "Software\shinogi"
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${EDITION}"
+  DeleteRegKey HKLM "Software\shinogi\Editions\${EDITION}"
 SectionEnd

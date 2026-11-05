@@ -1,12 +1,13 @@
-shinogi - Atari GEM on QEMU (Windows)
+@EDITION@ - Atari GEM on QEMU (Windows)
 =====================================
 
 A complete, self-contained package: the guest, the emulator and the
 launcher all ship together. Nothing else needs installing.
 
-The two CPU editions are named Shinogi-040 and Shinogi-060. Installing one
-switches the shared program tree and drive C to that edition; it does not
-remove personal files or settings in drive C.
+This is @EDITION@. CPU editions install side by side, each with its own
+program folder, desktop shortcut, Start menu folder, settings and default
+boot drive. Upgrading or uninstalling one leaves the others installed.
+The optional LAN bridge and signed TAP driver are shared across editions.
 
     shinogi.exe          launch it
     shinogi-hostfsd.exe  serves drive C, started for you
@@ -21,7 +22,7 @@ Drive C
 
 Drive C: is a folder on your host:
 
-    %USERPROFILE%\shinogi-drive-c
+    %USERPROFILE%\@EDITION@\drive-c
 
 The installer asks for this location. Choose your existing drive C, or an
 empty folder to receive the bundled system. Choose the folder containing
@@ -33,8 +34,33 @@ see are what the mapping gives them.
 Open Shinogi Settings from the Start menu to change the drive C folder,
 start resolution or "Start full screen". Changes apply on the next start.
 Choosing another folder does not copy or move your files. The drive C
-shortcuts always open the currently selected folder. Additional Atari
-drives are planned for a future release.
+shortcuts always open the currently selected folder.
+
+Additional drives opens a separate editor. Choose a slot, browse for its
+folder or image, select Read-only if wanted, and press OK then Save.
+Switching slots retains edits. Remove mapping disconnects that slot after
+the next restart; it does not delete the folder or image.
+
+Folder drives D: through Z: (except FreeMiNT's reserved U:) have fixed letters, independent of discovery
+order. Each uses a separate confined helper. Read-only mappings refuse all
+writes and attribute changes, including startup attribute repair.
+
+Up to four raw hard-disk images (.img/.hdf) may be attached. They must be
+formatted already; FAT12/FAT16 and Atari/DOS partition tables are supported.
+Partitions take available drive letters, skipping C: and mapped folders.
+Images default to read-only; clear that option to enable persistent writes.
+The same image cannot occupy two slots. QEMU also locks writable images
+against another emulator instance. Host folders are never writable vvfat.
+
+Floppy A: and B: accept formatted raw .st/.img images, 720 KB or 1.44 MB
+with 512-byte sectors. Read-only defaults on. Attachment, removal and swaps
+require a restart so BIOS/BPB and filesystem caches are rebuilt. Live eject,
+MSA/STX images and floppy-controller/protected-disk emulation are not provided.
+
+Older shared installations and %USERPROFILE%\shinogi-drive-c are kept.
+New editions start with separate boot folders. Browse to an existing drive
+only if you intend to share it; separate writable boot folders let editions
+run together without changing each other's system files.
 
 Toggle full screen with left Ctrl + left Alt + F in the emulator window.
 Open Settings with Ctrl + Alt + S while the QEMU window is focused.
@@ -50,7 +76,7 @@ Directory replies are batched when both the firmware and helper support it.
 The resolution is stored as res = WIDTHxHEIGHT in drive C's SHINOGI.INI,
 so the guest's resolution picker and Windows settings use the same value.
 The drive C location and full-screen choice are stored per Windows user
-in %APPDATA%\shinogi\settings.ini. Uninstalling keeps these settings and
+in %APPDATA%\@EDITION@\settings.ini. Uninstalling keeps these settings and
 the drive C folder. Command-line resolution overrides still work.
 
 If the folder is missing, the launcher opens Settings so you can locate
@@ -154,8 +180,8 @@ press anything to release it - and typing goes to the guest.
 
 Logs are written to:
 
-    %LOCALAPPDATA%\shinogi\shinogi-serial.log
-    %LOCALAPPDATA%\shinogi\shinogi-guest-errors.log
+    %LOCALAPPDATA%\@EDITION@\shinogi-serial.log
+    %LOCALAPPDATA%\@EDITION@\shinogi-guest-errors.log
 
 (not next to the program, which may be read-only when installed under
 Program Files).

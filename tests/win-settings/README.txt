@@ -29,3 +29,22 @@ with the unchanged beta12 launcher and without invoking Settings. That
 shutdown/progress limitation is separate from shortcut validation; the test
 keeps reporting failure rather than treating an active process as clean exit.
 Actual Windows SDL quit behavior needs the laptop smoke test.
+
+Additional drive checks
+------------------------
+
+test_drives.c links the real drives.c and the launcher's resource object.
+It checks slot switching, OK/Cancel, read-only defaults, INI persistence and
+removal, file identity validation and escaped image paths. Cross-compile
+with -lcomdlg32 -lshell32 -lole32 and run on a disposable Windows profile.
+
+test_editions.c accepts three edition/installer pairs, the compiled guest
+windows-boot.c probe, a formatted raw hard image and a720KB/1.44MB raw floppy.
+The image SAME.TXT contains WINDOWS IMAGE followed by LF; the floppy's
+SAME.TXT contains WINDOWS FLOPPY followed by LF. It installs all editions,
+checks separate default folders/settings/desktop and Start shortcuts, boots
+all three actual Windows launchers/helpers/QEMU simultaneously headlessly,
+and requires guest folder/image/floppy reads and host-verified folder writes.
+Upgrading/uninstalling the first edition must leave the other running
+editions, shortcuts, settings and guest files intact. Link with -lshell32
+-lole32 -luuid. This requires an isolated profile, never a user's desktop.

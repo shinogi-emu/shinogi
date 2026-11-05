@@ -37,6 +37,8 @@ def validate_linux(file, edition, version):
         metadata = dict(line.split(': ', 1) for line in read('BUILD.txt').decode().splitlines() if ': ' in line)
         if metadata.get('Edition') != edition or metadata.get('CPU') != EDITIONS[edition]:
             raise ValueError(f'{file.name}: wrong Linux edition identity')
+        if read('lib/libEGL.so.1')[:4] != b'\x7fELF':
+            raise ValueError(f'{file.name}: invalid EGL runtime')
         for name in ('shinogi', 'bin/qemu-system-m68k', 'bin/shinogi-hostfsd',
                      'bin/shinogi-monitor', 'bin/shinogi-shot', 'lib/glibc/ld-linux-x86-64.so.2'):
             data = read(name)

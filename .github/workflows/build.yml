@@ -515,7 +515,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc libc6-dev file unzip xvfb xauth python3-pil \
             libpixman-1-0 libglib2.0-0 libcap-ng0 libsdl2-2.0-0 libgtk-3-0 \
-            libslirp0 libpulse0
+            libslirp0 libpulse0 libegl1
       - name: Fetch the drive C system tree
         run: |
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
@@ -974,7 +974,7 @@ jobs:
   # 040 against 060 and the three host platforms answerable.
   release:
     name: release
-    if: startsWith(github.ref, 'refs/tags/b') && !endsWith(github.ref_name, '-linux')
+    if: startsWith(github.ref, 'refs/tags/b') && !contains(github.ref_name, '-linux')
     needs: [ windows, macos, linux ]
     runs-on: ubuntu-24.04
     permissions:
@@ -1053,12 +1053,12 @@ jobs:
             --prerelease \
             --notes-file notes.md
 
-  # A VERSION-linux tag adds Linux to an existing release without moving
+  # A VERSION-linux tag (or VERSION-linux-N retry) adds Linux without moving
   # its original tag or replacing Windows/macOS assets. Normal future
   # releases already include all three platforms above.
   linux-release:
     name: add Linux to existing release
-    if: startsWith(github.ref, 'refs/tags/b') && endsWith(github.ref_name, '-linux')
+    if: startsWith(github.ref, 'refs/tags/b') && contains(github.ref_name, '-linux')
     needs: [ linux ]
     runs-on: ubuntu-24.04
     permissions:
@@ -1082,7 +1082,10 @@ jobs:
         run: |
           set -eu
           VERSION=$(cat VERSION)
-          [ "$TAG" = "$VERSION-linux" ] || { echo "tag/version mismatch" >&2; exit 1; }
+          case "$TAG" in
+            "$VERSION-linux"|"$VERSION-linux-"*) ;;
+            *) echo "tag/version mismatch" >&2; exit 1 ;;
+          esac
           git merge-base --is-ancestor "$VERSION" HEAD
           gh release view "$VERSION" --json body > release.json
           set --

@@ -27,7 +27,7 @@ class Assets(unittest.TestCase):
     def linux(self, file, edition, cpu, omit=None, unsafe=False):
         elf=b'\x7fELF\x02\x01'+bytes(12)+b'\x3e\x00'+bytes(4)
         files={name:elf for name in ('bin/qemu-system-m68k','bin/shinogi-hostfsd','bin/shinogi-monitor','bin/shinogi-shot','lib/glibc/ld-linux-x86-64.so.2')}
-        files.update({'shinogi':b'#!/bin/sh\n', 'guest/emutos-virt.elf':b'guest',
+        files.update({'lib/libEGL.so.1':elf, 'shinogi':b'#!/bin/sh\n', 'guest/emutos-virt.elf':b'guest',
                       'guest/drive-c/AUTO/MINT.PRG':b'kernel',
                       'guest/drive-c/MINT/1-19-CUR/VIRTIONE.XIF':b'net'})
         if edition=='Shinogi-060':files['guest/drive-c/AUTO/060SP.PRG']=b'sp'
@@ -61,6 +61,10 @@ class Assets(unittest.TestCase):
         file=self.folder/'Shinogi-060-beta15-linux-x86_64.tar.gz'
         self.linux(file,'Shinogi-060','m68060',omit='bin/shinogi-hostfsd');self.rehash(file)
         with self.assertRaisesRegex(ValueError,'missing'):assets.validate(self.folder,'beta15')
+    def test_missing_linux_egl(self):
+        file=self.folder/'Shinogi-060-beta15-linux-x86_64.tar.gz'
+        self.linux(file,'Shinogi-060','m68060',omit='lib/libEGL.so.1');self.rehash(file)
+        with self.assertRaisesRegex(ValueError,'missing.*EGL'):assets.validate(self.folder,'beta15')
     def test_unexpected_edition(self):
         (self.folder/'OtherCPU-beta15-win64-setup.exe').write_bytes(b'MZ')
         with self.assertRaisesRegex(ValueError,'extra='):assets.validate(self.folder,'beta15')

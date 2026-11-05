@@ -63,6 +63,10 @@ if [ "$CPU" = m68060 ] && [ ! -f "$SP060" ]; then
     echo "no 68060 software package at $SP060" >&2; exit 2
 fi
 command -v unzip >/dev/null || { echo "unzip missing" >&2; exit 2; }
+# libepoxy opens EGL at runtime, so ldd on QEMU alone misses this hard
+# dependency even for a plain SDL window with guest OpenGL disabled.
+EGL=$(ldconfig -p | awk '/libEGL.so.1 .*x86-64/{print $NF; exit}')
+[ -f "$EGL" ] || { echo "libEGL.so.1 missing - install libegl1" >&2; exit 2; }
 
 OUT="$OUTDIR/$NAME.tar.gz"
 # Refuse to overwrite a released archive, for the reason recorded in
@@ -93,7 +97,8 @@ mkdir -p "$BUNDLE/bin" "$BUNDLE/lib" "$BUNDLE/guest" "$BUNDLE/share/qemu"
 # and the bundled attempt names lib/glibc explicitly.
 mkdir -p "$BUNDLE/lib/glibc"
 cp -f "$QEMU_LINUX" "$BUNDLE/bin/qemu-system-m68k"
-ldd "$QEMU_LINUX" | awk '/=> \//{print $3}' | sort -u | while read -r so; do
+{ ldd "$QEMU_LINUX"; ldd "$EGL"; printf '%s => %s\n' libEGL.so.1 "$EGL"; } |
+awk '/=> \//{print $3}' | sort -u | while read -r so; do
     case "${so##*/}" in
         libc.so.*|libm.so.*|libmvec.so.*|libpthread.so.*|libdl.so.*|\
         librt.so.*|libresolv.so.*|libnsl.so.*|libutil.so.*|libanl.so.*)
@@ -169,7 +174,7 @@ cp -f "$ROOT/tools/linux/README.txt" "$BUNDLE/README.txt"
     echo "CPU: $CPU"
     echo "Host: linux-x86_64"
     echo "QEMU: $("$QEMU_LINUX" --version | head -1)"
-    echo "Built against glibc: $(ldd --version | head -1 | sed 's/^ldd //')"
+    echo "Built against glibc: $(ldd --version | sed -n '1p')"
     if [ "$CPU" = m68060 ]; then
         echo "Guest image: 020-060 EmuTOS on m68060"
         echo "Compatibility: FreeMiNT/Motorola 68060 software package"

@@ -70,7 +70,7 @@ but expect to find things that are broken.
 ## Editions
 
 Two public CPU editions share the operating-system stack and desktop.
-Windows and macOS use separate application names and default boot folders.
+All platforms use separate edition names and default boot folders.
 
 | Edition | CPU | For |
 |---------|-----|-----|
@@ -133,6 +133,11 @@ checkout plus the m68k cross toolchain:
 | Linux | `tools/make-linux-package.sh` | a self-contained directory + launcher |
 | Windows | `tools/make-windows-package.sh` | an NSIS installer |
 | macOS | `tools/make-macos-package.sh` | a signed `.app` bundle |
+
+Linux x86_64 releases include the emulator, libraries and guest system in
+a `.tar.gz`. Extract the matching edition and run `./shinogi doctor`, then
+`./shinogi run`. The default data folders are `~/Shinogi-040` and
+`~/Shinogi-060`. For headless use, run `./shinogi start` and `./shinogi stop`.
 
 The packaging scripts pick their edition from `SHINOGI_CPU`
 (`m68040` or `m68060`), so both builds come out of one tree. The guest

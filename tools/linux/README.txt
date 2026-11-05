@@ -10,7 +10,8 @@ nothing outside this directory is needed to start it.
     ./shinogi doctor        # check the bundle against this machine
     ./shinogi run           # boot with a window
 
-The guest takes roughly a minute to reach the GEM desktop.
+Both the 040 and 060 editions are available as Linux x86_64 archives.
+Each includes its own emulator, libraries and guest system.
 
 
 Headless and scripted use
@@ -100,11 +101,17 @@ Drive C
 -------
 
 The guest's drive C is an ordinary host directory, created on first start
-at ~/.shinogi/drive-c from the pristine copy inside the bundle. Put
+at ~/Shinogi-040/drive-c or ~/Shinogi-060/drive-c from the pristine copy
+inside the matching bundle. Put
 Atari programs there and they appear on C: inside the guest. Print the
 path with:
 
     ./shinogi drive-c
+
+The two editions keep separate folders and can run side by side. The old
+~/.shinogi folder is preserved. Set SHINOGI_HOME=$HOME/.shinogi explicitly
+to reuse it with one edition. A deliberate CUSTOM.IMG in drive C overrides
+the bundled firmware; an old EMUTOS.IMG does not hide firmware updates.
 
 If the guest's C: gets into a state you would rather abandon:
 
@@ -164,14 +171,13 @@ Where things are
     ./lib/glibc/             the C library and the loader, kept separate
     ./guest/emutos-virt.elf  the ROM image
     ./guest/drive-c/         the pristine drive C
-    ~/.shinogi/drive-c       the drive C the guest actually uses
-    ~/.shinogi/logs/         serial console, guest errors, emulator output,
+    ~/Shinogi-060/drive-c    the drive C the 060 edition actually uses
+    ~/Shinogi-060/logs/      serial console, guest errors, emulator output,
                              drive C helper output
-    ~/.shinogi/run/          pid file and monitor socket
+    ~/Shinogi-060/run/       pid file and monitor socket
 
-Set SHINOGI_HOME to move all of the runtime state somewhere else - two
-bundles pointed at two different SHINOGI_HOMEs run side by side without
-interfering.
+The 040 edition uses ~/Shinogi-040 instead. Set SHINOGI_HOME to move all
+of an edition's runtime state somewhere else.
 
 
 A window under WSL

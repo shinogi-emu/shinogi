@@ -142,16 +142,12 @@ unzip -q "$DRIVE_C_ZIP" -d "$BUNDLE/guest"
     echo "$DRIVE_C_ZIP did not contain freemint-install/" >&2; exit 2; }
 mv "$BUNDLE/guest/freemint-install" "$BUNDLE/guest/drive-c"
 
-# The same three overlays the Windows installer applies: the shipped tree
-# carries an older kernel and driver, and no 060 software package at all.
-# EMUTOS.IMG too. The launcher prefers drive C's copy over the bundled
-# guest -- that is the documented way a user swaps firmware -- so leaving
-# the tree's own copy in place means the edition's guest image is built,
-# shipped and then never booted. It only looked right because the tree
-# carried an 020-60 image, which runs on both CPUs.
+# Match the current firmware, kernel and network driver. CUSTOM.IMG is
+# the explicit firmware override; old EMUTOS.IMG files never hide updates.
 cp -f "$ELF" "$BUNDLE/guest/drive-c/EMUTOS.IMG"
 cp -f "$KERNEL" "$BUNDLE/guest/drive-c/AUTO/MINT.PRG"
 cp -f "$NET_DRIVER" "$BUNDLE/guest/drive-c/MINT/1-19-CUR/VIRTIONE.XIF"
+cp -f "$ROOT/tools/guest/shndhcp.sh" "$BUNDLE/guest/drive-c/MINT/1-19-CUR/SHNDHCP.SH"
 if [ "$CPU" = m68060 ]; then
     cp -f "$SP060" "$BUNDLE/guest/drive-c/AUTO/060SP.PRG"
 else
@@ -174,17 +170,16 @@ cp -f "$ROOT/tools/linux/README.txt" "$BUNDLE/README.txt"
     echo "Host: linux-x86_64"
     echo "QEMU: $("$QEMU_LINUX" --version | head -1)"
     echo "Built against glibc: $(ldd --version | head -1 | sed 's/^ldd //')"
-    if [ "$CPU" != m68040 ]; then
-        echo "Distribution: private development build; do not redistribute"
-    fi
     if [ "$CPU" = m68060 ]; then
         echo "Guest image: 020-060 EmuTOS on m68060"
         echo "Compatibility: FreeMiNT/Motorola 68060 software package"
     fi
     echo "FreeMiNT kernel: shared 020-060 OLDTOSFS build"
-    echo "Network driver: bundled 20 ms receive-poll build"
+    echo "Network driver: bundled VIRTIONE.XIF"
+    echo "QEMU sha256: $(sha256sum "$QEMU_LINUX" | cut -d' ' -f1)"
     echo "EmuTOS image sha256: $(sha256sum "$ELF" | cut -d' ' -f1)"
     echo "FreeMiNT kernel sha256: $(sha256sum "$KERNEL" | cut -d' ' -f1)"
+    echo "Network driver sha256: $(sha256sum "$NET_DRIVER" | cut -d' ' -f1)"
 } > "$BUNDLE/BUILD.txt"
 
 # --- archive -----------------------------------------------------------

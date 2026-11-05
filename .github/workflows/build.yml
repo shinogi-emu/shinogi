@@ -484,6 +484,73 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  linux:
+    name: linux package (${{ matrix.edition }})
+    needs: [ guest, test, freemint, qemu ]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: Shinogi-040
+            cpu: m68040
+          - edition: Shinogi-060
+            cpu: m68060
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: guest-${{ matrix.cpu }}
+          path: guest
+      - uses: actions/download-artifact@v5
+        with:
+          name: mint
+          path: mint
+      - uses: actions/download-artifact@v5
+        with:
+          name: qemu-host
+          path: qemu-install
+      - name: Install packaging and display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libc6-dev file unzip xvfb xauth python3-pil \
+            libpixman-1-0 libglib2.0-0 libcap-ng0 libsdl2-2.0-0 libgtk-3-0 \
+            libslirp0 libpulse0
+      - name: Fetch the drive C system tree
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+            "$DRIVE_C_URL" -o freemint-install.zip
+          echo "$DRIVE_C_SHA256  freemint-install.zip" | sha256sum -c -
+      - name: Build the package
+        env:
+          SHINOGI_CPU: ${{ matrix.cpu }}
+          SHINOGI_ELF: ${{ github.workspace }}/guest/emutos-virt.elf
+          SHINOGI_MINT_KERNEL: ${{ github.workspace }}/mint/mint0206h.prg
+          SHINOGI_060SP: ${{ github.workspace }}/mint/060sp.prg
+          SHINOGI_NET_DRIVER: ${{ github.workspace }}/mint/virtio_net.xif
+          SHINOGI_DRIVE_C_ZIP: ${{ github.workspace }}/freemint-install.zip
+        run: |
+          set -eu
+          export QEMU_LINUX=$(find "$PWD/qemu-install" -type f -name qemu-system-m68k | head -1)
+          export SHINOGI_KEYMAPS=$(find "$PWD/qemu-install" -type d -name keymaps | head -1)
+          chmod +x "$QEMU_LINUX"
+          ./tools/make-linux-package.sh "$PWD/dist"
+      - name: Test the extracted download
+        env:
+          EDITION: ${{ matrix.edition }}
+        run: |
+          set -eu
+          VERSION=$(cat VERSION)
+          mkdir extracted
+          tar xzf "dist/$EDITION-$VERSION-linux-x86_64.tar.gz" -C extracted
+          xvfb-run -a sh tests/release/smoke-linux.sh "extracted/$EDITION-$VERSION-linux-x86_64"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux-${{ matrix.cpu }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   windows:
     name: windows package (${{ matrix.edition }})
     needs: [ guest, test, freemint, qemu-win ]
@@ -904,11 +971,11 @@ jobs:
   # attaches them to a GitHub prerelease. Prerelease rather than latest,
   # so a tag does not silently become the thing the repo front page
   # recommends. Asset download counts are per file, which is what makes
-  # 040 against 060 and macOS against Windows answerable.
+  # 040 against 060 and the three host platforms answerable.
   release:
     name: release
-    if: startsWith(github.ref, 'refs/tags/b')
-    needs: [ windows, macos ]
+    if: startsWith(github.ref, 'refs/tags/b') && !endsWith(github.ref_name, '-linux')
+    needs: [ windows, macos, linux ]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -925,8 +992,13 @@ jobs:
           pattern: macos-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: linux-*
+          path: dist
+          merge-multiple: true
 
-      # Four packages and their checksums. Fewer means a matrix leg
+      # Six packages and their checksums. Fewer means a matrix leg
       # failed without failing this job, and a release missing an edition
       # would quietly bias exactly the comparison it exists to make.
       - name: Check every public package and checksum
@@ -940,7 +1012,7 @@ jobs:
           set -eu
           VERSION=$(cat VERSION)
           cat > notes.md <<NOTES
-          Shinogi $VERSION, for macOS (Apple Silicon) and Windows x64.
+          Shinogi $VERSION, for Linux x86_64, macOS (Apple Silicon) and Windows x64.
 
           Public 040 and 060 editions, with separate application names and
           default boot folders. Both carry the same desktop.
@@ -961,12 +1033,16 @@ jobs:
           The macOS builds are signed, notarised and stapled. Check a
           download against its .sha256 before running it.
 
+          Linux: extract the matching .tar.gz, run ./shinogi doctor, then
+          ./shinogi run. Each edition keeps its files in ~/Shinogi-040 or
+          ~/Shinogi-060. The emulator, libraries and guest system are included.
+
           Built from $GITHUB_SHA.
           NOTES
           [ "$TAG" = "$VERSION" ] || { echo "tag/version mismatch" >&2; exit 1; }
           set --
           for edition in Shinogi-040 Shinogi-060; do
-            for suffix in win64-setup.exe macos-arm64.zip; do
+            for suffix in win64-setup.exe macos-arm64.zip linux-x86_64.tar.gz; do
               asset="dist/$edition-$VERSION-$suffix"
               set -- "$@" "$asset" "$asset.sha256"
             done
@@ -976,3 +1052,58 @@ jobs:
             --title "Shinogi $VERSION" \
             --prerelease \
             --notes-file notes.md
+
+  # A VERSION-linux tag adds Linux to an existing release without moving
+  # its original tag or replacing Windows/macOS assets. Normal future
+  # releases already include all three platforms above.
+  linux-release:
+    name: add Linux to existing release
+    if: startsWith(github.ref, 'refs/tags/b') && endsWith(github.ref_name, '-linux')
+    needs: [ linux ]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: linux-*
+          path: dist
+          merge-multiple: true
+      - name: Validate both public Linux editions
+        run: python3 tools/check-release-assets.py dist "$(cat VERSION)" --platform linux
+      - name: Add Linux downloads and instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          VERSION=$(cat VERSION)
+          [ "$TAG" = "$VERSION-linux" ] || { echo "tag/version mismatch" >&2; exit 1; }
+          git merge-base --is-ancestor "$VERSION" HEAD
+          gh release view "$VERSION" --json body > release.json
+          set --
+          for edition in Shinogi-040 Shinogi-060; do
+            asset="dist/$edition-$VERSION-linux-x86_64.tar.gz"
+            set -- "$@" "$asset" "$asset.sha256"
+          done
+          # No --clobber: a published download is immutable.
+          gh release upload "$VERSION" "$@"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          body = json.loads(Path('release.json').read_text())['body']
+          body += ('\n\nLinux x86_64 downloads are also available for both public CPU editions. '
+                   'Extract the matching .tar.gz and run `./shinogi doctor`, then `./shinogi run`. '
+                   'The emulator, libraries and guest system are included. '
+                   'Data folders are `~/Shinogi-040` and `~/Shinogi-060`. '
+                   'Verify the download with its .sha256. '
+                   'Both extracted packages passed headless and SDL boot checks, '
+                   'including the bundled loader.\n\nLinux packaging source: '
+                   + os.environ['GITHUB_SHA'] + '.\n')
+          Path('notes.md').write_text(body)
+          PY
+          gh release edit "$VERSION" --notes-file notes.md

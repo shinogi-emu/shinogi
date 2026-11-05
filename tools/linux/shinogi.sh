@@ -30,7 +30,7 @@ GUEST="$PKG/guest"
 # Runtime state - drive C, logs, the pid file and the monitor socket -
 # lives outside the bundle so the bundle stays read-only and a second
 # copy of it does not fight over the same files.
-HOME_DIR="${SHINOGI_HOME:-$HOME/.shinogi}"
+HOME_DIR="${SHINOGI_HOME:-$HOME/@EDITION@}"
 DRIVE_C="${SHINOGI_DRIVE_C:-$HOME_DIR/drive-c}"
 RUNDIR="$HOME_DIR/run"
 PIDFILE="$RUNDIR/qemu.pid"
@@ -275,13 +275,15 @@ check_xy() {
 STOP_WAIT="${SHINOGI_STOP_WAIT:-90}"
 
 qemu_args() {
+    firmware="$GUEST/emutos-virt.elf"
+    [ ! -f "$DRIVE_C/CUSTOM.IMG" ] || firmware="$DRIVE_C/CUSTOM.IMG"
     printf '%s\n' \
         -name "$EDITION $VERSION" \
         -M virt \
         -L "$PKG/share/qemu" \
         -cpu "$CPU" \
         -m "$MEM" \
-        -kernel "$GUEST/emutos-virt.elf" \
+        -kernel "$firmware" \
         -netdev user,id=net0,ipv6=off \
         -device virtio-net-device,netdev=net0 \
         -device "virtio-gpu-device,xres=$XRES,yres=$YRES" \
@@ -384,7 +386,7 @@ EOF
     echo "shinogi: started ($EDITION $VERSION, $CPU, display $display) pid $(cat "$PIDFILE")"
     echo "  drive C: $DRIVE_C"
     echo "  serial:  $SERIAL"
-    echo "the guest takes roughly a minute to reach the desktop."
+    echo "Use shinogi log to follow the guest boot."
 }
 
 cmd_run() {
@@ -830,7 +832,7 @@ $EDITION $VERSION - Atari machine emulator, Linux bundle
   shinogi reset-drive-c   restore drive C to the shipped tree
   shinogi doctor          check the bundle against this host
 
-Environment: SHINOGI_HOME (default ~/.shinogi), SHINOGI_DRIVE_C,
+Environment: SHINOGI_HOME (default ~/$EDITION), SHINOGI_DRIVE_C,
 SHINOGI_CPU, SHINOGI_XRES, SHINOGI_YRES, SHINOGI_MEM,
 SHINOGI_LOADER (auto|native|bundled), SHINOGI_DRAG_STEPS,
 SHINOGI_CLICK_MS (gap between button transitions, default 40).

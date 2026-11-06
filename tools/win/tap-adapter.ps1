@@ -53,6 +53,7 @@ function Test-AtariTap([Guid]$Guid) {
             foreach ($name in $root.GetSubKeyNames()) {
                 try { $key = $root.OpenSubKey($name) }
                 catch [System.UnauthorizedAccessException] { continue }
+                catch [System.Security.SecurityException] { continue }
                 if (!$key) { continue }
                 try {
                     if ($key.GetValue('ComponentId', '') -ine 'tap0901') { continue }

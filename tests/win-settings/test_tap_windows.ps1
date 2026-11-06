@@ -2,6 +2,8 @@ param([Parameter(Mandatory = $true)][string]$Bundle)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../../tools/win/tap-adapter.ps1')
 $baseline = @(Get-NetAdapter -IncludeHidden | Select-Object InterfaceGuid, Name, Status)
+if (Test-AtariTap ([Guid]::NewGuid())) { throw 'An unknown GUID was accepted as a TAP adapter.' }
+Write-Host 'PASS registry scan skips protected non-adapter class subkeys'
 $log = Get-AtariSecureLog 'adapter-setup'
 Assert-AtariLogSecurity (Split-Path $log -Parent)
 Start-Transcript -Path $log -Append | Out-Null

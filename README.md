@@ -153,6 +153,17 @@ folders are `~/Shinogi-040/drive-c` and `~/Shinogi-060/drive-c`. A deliberate
 On Windows, Ctrl+Alt+S opens Settings from the focused emulator. Save drive
 mapping changes and restart the emulator to apply them.
 
+Windows LAN setup includes the signed TAP driver directly; installing the
+OpenVPN application is unnecessary. The Start menu's Network adapter setup
+can create dedicated adapters for Shinogi and ARAnyM. It preserves existing
+VPN adapters and refuses to replace a different installed TAP driver build.
+Installing the adapter alone does not enable Wi-Fi LAN; that needs validation
+on the actual laptop and access point. Internet/SLIRP remains the Wi-Fi default.
+
+The shared standalone kit is built with `tools/make-tap-setup.py OUTPUT
+--label LABEL`. It includes a read-only Wi-Fi diagnostic collector for that
+validation, plus the driver licenses, provenance and corresponding source.
+
 ## License
 
 `GPL-2.0-or-later`, inherited from EmuTOS and FreeMiNT.

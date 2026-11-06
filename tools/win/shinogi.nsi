@@ -338,6 +338,7 @@ install_files:
   CreateShortcut "$DESKTOP\${EDITION}.lnk" "$INSTDIR\shinogi.exe"
   CreateShortcut "$SMPROGRAMS\${EDITION}\${EDITION} drive C.lnk" "$INSTDIR\shinogi.exe" "--open-drive-c"
   CreateShortcut "$DESKTOP\${EDITION} drive C.lnk" "$INSTDIR\shinogi.exe" "--open-drive-c"
+  CreateShortcut "$SMPROGRAMS\${EDITION}\Network adapter setup.lnk" "$INSTDIR\network\Atari-TAP-Setup.cmd" "" "$INSTDIR\shinogi.exe"
 
   CreateDirectory "$APPDATA\${EDITION}"
   ClearErrors
@@ -401,7 +402,7 @@ Section "Uninstall"
     Pop $1
     ${EnableX64FSRedirection}
     ${If} $1 != "0"
-      MessageBox MB_ICONSTOP "Could not restore Ethernet before uninstalling. Open Shinogi Settings and choose Remove LAN, then uninstall again. See %PROGRAMDATA%\shinogi\lan-setup.log."
+      MessageBox MB_ICONSTOP "Could not restore Ethernet before uninstalling. Open Shinogi Settings and choose Remove LAN, then uninstall again. See %PROGRAMDATA%\AtariLAN\Shinogi-lan-setup.log."
       Abort
     ${EndIf}
   ${EndIf}
@@ -416,6 +417,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${EDITION}\${EDITION}.lnk"
   Delete "$SMPROGRAMS\${EDITION}\${EDITION} drive C.lnk"
   Delete "$SMPROGRAMS\${EDITION}\${EDITION} Settings.lnk"
+  Delete "$SMPROGRAMS\${EDITION}\Network adapter setup.lnk"
   Delete "$SMPROGRAMS\${EDITION}\Read me.lnk"
   Delete "$SMPROGRAMS\${EDITION}\Uninstall.lnk"
   RMDir "$SMPROGRAMS\${EDITION}"

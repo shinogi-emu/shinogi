@@ -131,12 +131,17 @@ including incoming ping and server connections.
 In Shinogi Settings, choose LAN (Ethernet), select your Ethernet adapter and
 choose Set up LAN. Approve the Windows administrator prompt. Setup installs
 the bundled signed TAP-Windows6 driver and creates a dedicated Windows bridge;
-your Ethernet connection may disconnect briefly. Atari then obtains its
+the OpenVPN application is not required. Your Ethernet connection may
+disconnect briefly. Atari then obtains its
 address, router and DNS automatically using DHCP. Save Settings and restart
 Shinogi. Advanced offers static Atari addressing when needed.
 Settings also shows the last Atari LAN address reported by DHCP, so you can
 see what address to ping. This is explicitly the last known address, not a
 live connection check.
+
+The Start menu also has Network adapter setup. It can install dedicated
+adapters for Shinogi and ARAnyM without changing physical networking.
+Installing an adapter alone does not enable Wi-Fi LAN.
 
 Automatic setup currently supports a connected physical Ethernet adapter with
 Windows addressing set to automatic (DHCP). Wi-Fi, static Windows host
@@ -150,7 +155,7 @@ The shared TAP driver and dedicated adapter are kept for other installations.
 Host setup happens only when you choose Set up LAN or Remove LAN. Launching
 in LAN mode checks that the selected adapter and managed bridge still exist;
 it reports a problem instead of silently changing to Internet mode.
-Setup diagnostics are in %PROGRAMDATA%\shinogi\lan-setup.log.
+Setup diagnostics are in %PROGRAMDATA%\AtariLAN\Shinogi-lan-setup.log.
 
 LAN setup preserves a backup of the original guest MINT.CNF as SHNNET.BAK
 before adding its network hook. Later mode changes update only SHNNET.SH.

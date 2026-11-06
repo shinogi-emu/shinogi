@@ -4,16 +4,20 @@
 param(
     [Parameter(Mandatory = $true)][Guid]$EthernetGuid,
     [Guid]$TapGuid = [Guid]::Empty,
+    [ValidateSet('Shinogi', 'ARAnyM')][string]$Product = 'Shinogi',
     [switch]$CheckOnly,
     [switch]$Remove
 )
 
 $ErrorActionPreference = 'Stop'
-$stateKey = 'HKLM:\SOFTWARE\shinogi\LAN'
+$stateKey = "HKLM:\SOFTWARE\$Product\LAN"
 $adapterKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}'
 $netsh = Join-Path $env:SystemRoot 'System32\netsh.exe'
 $createdBridge = $null
 $transcribing = $false
+$mutationMutex = $null
+$mutationLocked = $false
+. (Join-Path $PSScriptRoot 'tap-adapter.ps1')
 
 function Invoke-Native([string]$Program, [string[]]$Arguments) {
     # All arguments are fixed tokens, validated GUIDs, or local paths/names.
@@ -72,6 +76,9 @@ function Assert-Ready($State) {
     if ($TapGuid -ne [Guid]::Empty -and [Guid]$State.TapGuid -ne $TapGuid) {
         throw 'The saved TAP adapter does not match the managed LAN setup.'
     }
+    if ($null -ne $State.BridgeVerified -and !$State.BridgeVerified) {
+        throw 'LAN setup is incomplete. Choose Remove LAN before retrying; the recorded bridge has not passed its host connection check.'
+    }
     $ethernet = Get-Adapter ([Guid]$State.EthernetGuid)
     $tap = Get-Adapter ([Guid]$State.TapGuid)
     [void](Get-Adapter ([Guid]$State.BridgeGuid))
@@ -107,6 +114,26 @@ function Get-BridgeId([string]$Output, $Adapter) {
     return $ids[0]
 }
 
+function Select-CreatedBridge([int]$Code, [Guid[]]$Before, [Guid[]]$After) {
+    if ($Code -ne 0) { throw 'Windows did not confirm bridge creation. No bridge was claimed or removed.' }
+    $new = @($After | Where-Object { $Before -notcontains $_ })
+    if ($new.Count -ne 1) { throw 'Windows did not identify exactly one new bridge. No existing bridge was claimed.' }
+    return $new[0]
+}
+
+function Assert-ManagedBridgeMembers([Guid]$HostGuid, [Guid]$ManagedTapGuid) {
+    $expected = @($HostGuid, $ManagedTapGuid)
+    $actual = @(Get-NetAdapterBinding -Name '*' -ComponentID ms_bridge -IncludeHidden -ErrorAction Stop |
+        Where-Object { $_.Enabled } | ForEach-Object {
+            $matches = @(Get-NetAdapter -Name $_.Name -IncludeHidden -ErrorAction Stop)
+            if ($matches.Count -ne 1) { throw 'A bridge member is ambiguous. Nothing was removed.' }
+            [Guid]$matches[0].InterfaceGuid
+        } | Select-Object -Unique)
+    if ($actual.Count -ne 2 -or @($actual | Where-Object { $expected -notcontains $_ }).Count) {
+        throw 'Bridge membership changed or includes another adapter. It has not been removed; inspect Windows network connections.'
+    }
+}
+
 function Restore-Ethernet($State) {
     $adapter = Get-Adapter ([Guid]$State.EthernetGuid)
     Enable-NetAdapterBinding -Name $adapter.Name -ComponentID 'ms_tcpip' | Out-Null
@@ -119,8 +146,8 @@ function Restore-Ethernet($State) {
 }
 
 try {
-    $state = Get-ItemProperty $stateKey -ErrorAction SilentlyContinue
     if ($CheckOnly) {
+        $state = Get-ItemProperty $stateKey -ErrorAction SilentlyContinue
         Assert-Ready $state
         exit 0
     }
@@ -128,20 +155,33 @@ try {
     if (!$admin.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Administrator permission is required for LAN setup.'
     }
-    $logFolder = Join-Path $env:ProgramData 'shinogi'
-    New-Item -ItemType Directory -Path $logFolder -Force | Out-Null
-    Start-Transcript -Path (Join-Path $logFolder 'lan-setup.log') -Append | Out-Null
+    # Serialize the whole read/create/claim/rollback transaction across products,
+    # not merely driver installation. Otherwise a failed second create could
+    # mistake the first application's bridge for its own and delete it.
+    $mutationMutex = New-Object System.Threading.Mutex($false, 'Global\Atari-TAP-Setup')
+    try { $mutationLocked = $mutationMutex.WaitOne(1000) }
+    catch [System.Threading.AbandonedMutexException] { $mutationLocked = $true }
+    if (!$mutationLocked) { throw 'Another Atari network setup is running. Wait for it to finish.' }
+    $state = Get-ItemProperty $stateKey -ErrorAction SilentlyContinue
+    $logPath = Get-AtariSecureLog ($Product + '-lan-setup')
+    $logFolder = Split-Path $logPath -Parent
+    Start-Transcript -Path $logPath -Append | Out-Null
     $transcribing = $true
     New-Item -Path $stateKey -Force | Out-Null
     Set-ItemProperty $stateKey 'LastError' ''
     $bridges = @(Get-Bridges)
     if ($Remove) {
         if ($state.BridgeGuid -and $bridges -contains [Guid]$state.BridgeGuid) {
+            # Removal also handles an interrupted/incomplete owned setup.
+            if ([Guid]$state.EthernetGuid -ne $EthernetGuid -or !(Test-Tap ([Guid]$state.TapGuid))) {
+                throw 'The saved bridge ownership does not match the selected adapters.'
+            }
+            Assert-ManagedBridgeMembers ([Guid]$state.EthernetGuid) ([Guid]$state.TapGuid)
             $result = Invoke-Native $netsh @('bridge', 'destroy', "bridge=$($state.BridgeGuid)")
             if ($result.Code -ne 0) { throw 'Windows could not remove the managed bridge.' }
             Restore-Ethernet $state
         }
-        Remove-ItemProperty $stateKey -Name 'BridgeGuid', 'EthernetGuid' -ErrorAction SilentlyContinue
+        Remove-ItemProperty $stateKey -Name 'BridgeGuid', 'EthernetGuid', 'BridgeVerified' -ErrorAction SilentlyContinue
         Write-Host 'LAN bridge removed. The shared TAP driver and dedicated adapter are kept for reuse.'
         exit 0
     }
@@ -152,7 +192,7 @@ try {
         Assert-Ready $state
         exit 0
     }
-    if ($bridges.Count) { throw 'An existing Windows bridge is present. Shinogi will not modify a bridge it did not create.' }
+    if ($bridges.Count) { throw "An existing Windows bridge is present. $Product will not modify a bridge it did not create." }
     $ethernet = Get-Adapter $EthernetGuid
     if (!$ethernet.HardwareInterface -or $ethernet.InterfaceType -ne 6) {
         throw 'Automatic LAN setup supports physical Ethernet. Wi-Fi bridging is not supported in this version.'
@@ -177,37 +217,9 @@ try {
     $manualDNS = (Get-ItemProperty $dnsKey -ErrorAction SilentlyContinue).NameServer
     Set-ItemProperty $stateKey 'OriginalDNS' ([string]$manualDNS)
 
-    if ($state.TapGuid) {
-        $tap = Get-Adapter ([Guid]$state.TapGuid)
-        if (!(Test-Tap ([Guid]$state.TapGuid))) { throw 'The saved managed TAP adapter is not a TAP-Windows6 adapter.' }
-    } else {
-        $driver = Join-Path $PSScriptRoot 'tap'
-        foreach ($name in @('tap0901.cat', 'tap0901.sys', 'devcon.exe')) {
-            $signature = Get-AuthenticodeSignature (Join-Path $driver $name)
-            # SYS may be catalog-signed; Windows checks its catalog during
-            # installation. CAT and the installer executable must verify here.
-            if ($name -ne 'tap0901.sys' -and $signature.Status -ne 'Valid') {
-                throw "The bundled TAP package signature is not trusted: $name"
-            }
-        }
-        $before = @(Get-NetAdapter -IncludeHidden | ForEach-Object { [Guid]$_.InterfaceGuid })
-        $result = Invoke-Native (Join-Path $driver 'devcon.exe') @('install', (Join-Path $driver 'OemVista.inf'), 'tap0901')
-        if ($result.Code -gt 1) { throw 'Windows could not install the signed TAP-Windows6 adapter.' }
-        $new = @()
-        for ($i = 0; $i -lt 30; $i++) {
-            $new = @(Get-NetAdapter -IncludeHidden | Where-Object {
-                $before -notcontains [Guid]$_.InterfaceGuid -and (Test-Tap ([Guid]$_.InterfaceGuid))
-            })
-            if ($new.Count) { break }
-            Start-Sleep -Milliseconds 500
-        }
-        if ($new.Count -ne 1) { throw 'Windows did not expose exactly one new TAP adapter. See the LAN setup log.' }
-        $tap = $new[0]
-        Set-ItemProperty $stateKey 'TapGuid' ('{' + ([Guid]$tap.InterfaceGuid).ToString() + '}')
-        $tap | Rename-NetAdapter -NewName 'Shinogi LAN'
-        $tap = Get-Adapter ([Guid]$tap.InterfaceGuid)
-        if ($result.Code -eq 1) { throw 'The network driver needs a Windows restart. Restart, then choose Set up LAN again.' }
-    }
+    $installed = Install-AtariTap $Product (Join-Path $PSScriptRoot 'tap')
+    $tap = $installed.Adapter
+    if ($installed.RebootRequired) { throw 'The network driver needs a Windows restart. Restart, then choose Set up LAN again.' }
     $ports = Invoke-Native $netsh @('bridge', 'show', 'adapter')
     if ($ports.Code -ne 0) { throw 'Windows could not enumerate bridge-capable adapters.' }
     $ethernetId = Get-BridgeId $ports.Text $ethernet
@@ -216,17 +228,22 @@ try {
     # Preserve a diagnostic snapshot before any change to physical networking.
     $snapshot = Invoke-Native $netsh @('interface', 'ipv4', 'dump')
     if ($snapshot.Code -ne 0) { throw 'Could not save the original Windows IPv4 configuration.' }
-    $snapshot.Text | Set-Content (Join-Path $logFolder 'before-lan-ipv4.txt')
+    # Avoid privileged append/overwrite through an old or redirected file.
+    $snapshotPath = Join-Path $logFolder ($Product + '-before-lan-' + [Guid]::NewGuid().ToString() + '.txt')
+    $snapshot.Text | Out-File -LiteralPath $snapshotPath -NoClobber
     $result = Invoke-Native $netsh @('bridge', 'create', "adapter=$ethernetId", "adapter=$tapId")
     $after = @(Get-Bridges)
-    if ($after.Count -eq 1) {
-        $createdBridge = $after[0]
-        # Record ownership immediately. If rollback is interrupted or fails,
-        # Remove LAN and uninstall can still identify the bridge we created.
-        Set-ItemProperty $stateKey 'EthernetGuid' ('{' + $EthernetGuid.ToString() + '}')
-        Set-ItemProperty $stateKey 'BridgeGuid' ('{' + $createdBridge.ToString() + '}')
+    $candidate = Select-CreatedBridge $result.Code $bridges $after
+    $createdBridge = $candidate
+    # Persist confirmed creation before waiting for asynchronous adapter binding.
+    # Readiness remains false until membership and host DHCP have been checked.
+    Set-ItemProperty $stateKey 'EthernetGuid' ('{' + $EthernetGuid.ToString() + '}')
+    Set-ItemProperty $stateKey 'BridgeGuid' ('{' + $createdBridge.ToString() + '}')
+    Set-ItemProperty $stateKey 'BridgeVerified' 0
+    for ($i = 0; $i -lt 30; $i++) {
+        try { Assert-ManagedBridgeMembers $EthernetGuid ([Guid]$tap.InterfaceGuid); break }
+        catch { if ($i -eq 29) { throw }; Start-Sleep -Milliseconds 500 }
     }
-    if ($result.Code -ne 0 -or !$createdBridge) { throw 'Windows could not create the dedicated network bridge.' }
     $bridge = $null
     for ($i = 0; $i -lt 20; $i++) {
         try { $bridge = Get-Adapter $createdBridge; break } catch { Start-Sleep -Milliseconds 500 }
@@ -249,28 +266,34 @@ try {
     if (!$hostReady) { throw 'Windows did not regain its IPv4 connection on the bridge. Restoring Ethernet.' }
     Set-ItemProperty $stateKey 'EthernetGuid' ('{' + $EthernetGuid.ToString() + '}')
     Set-ItemProperty $stateKey 'BridgeGuid' ('{' + $createdBridge.ToString() + '}')
+    Set-ItemProperty $stateKey 'BridgeVerified' 1
     $state = Get-ItemProperty $stateKey
     Assert-Ready $state
     $createdBridge = $null
-    Write-Host 'Shinogi LAN is ready. Save the Atari IPv4 settings and restart Shinogi.'
+    Write-Host "$Product LAN bridge is ready. Save the Atari IPv4 settings and restart the emulator."
     exit 0
 } catch {
     $message = $_.Exception.Message
     if ($createdBridge) {
         try {
+            Assert-ManagedBridgeMembers $EthernetGuid ([Guid]$tap.InterfaceGuid)
             $result = Invoke-Native $netsh @('bridge', 'destroy', "bridge={$createdBridge}")
             if ($result.Code -ne 0) { throw 'Windows refused to remove the incomplete bridge.' }
             Restore-Ethernet ([PSCustomObject]@{ EthernetGuid = $EthernetGuid; OriginalDNS = $manualDNS })
-            Remove-ItemProperty $stateKey -Name 'BridgeGuid', 'EthernetGuid' -ErrorAction SilentlyContinue
+            Remove-ItemProperty $stateKey -Name 'BridgeGuid', 'EthernetGuid', 'BridgeVerified' -ErrorAction SilentlyContinue
         } catch {
-            $message += ' Automatic rollback also failed. See %PROGRAMDATA%\shinogi\lan-setup.log.'
+            $message += " Automatic rollback also failed. See %PROGRAMDATA%\AtariLAN\$Product-lan-setup.log."
         }
     }
     Write-Host $message
-    if (!$CheckOnly) {
+    if (!$CheckOnly -and $mutationLocked) {
         try { Set-ItemProperty $stateKey 'LastError' $message } catch {}
     }
     exit 1
 } finally {
-    if ($transcribing) { Stop-Transcript | Out-Null }
+    try { if ($transcribing) { Stop-Transcript | Out-Null } }
+    finally {
+        if ($mutationLocked) { $mutationMutex.ReleaseMutex() }
+        if ($mutationMutex) { $mutationMutex.Dispose() }
+    }
 }

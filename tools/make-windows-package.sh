@@ -177,6 +177,13 @@ cp -f "$KERNEL" "$BUNDLE/MINT.PRG"
 # Local pinned inputs may be supplied for an offline/reproducible rebuild.
 python3 "$ROOT/tools/fetch-network-inputs.py" "$BUNDLE"
 cp -f "$ROOT/tools/win/lan-setup.ps1" "$BUNDLE/network/lan-setup.ps1"
+for helper in tap-adapter.ps1 tap-setup.ps1 Atari-TAP-Setup.cmd collect-wifi.ps1 Collect-WiFi-LAN.cmd; do
+    cp -f "$ROOT/tools/win/$helper" "$BUNDLE/network/$helper"
+done
+x86_64-w64-mingw32-gcc -std=c11 -Wall -Wextra -Werror -O2 -municode \
+    "$ROOT/tools/win/install-tap.c" -o "$BUNDLE/network/install-tap.exe" \
+    -lsetupapi -lnewdev -ladvapi32 -lole32
+cp -f "$ROOT/tools/win/install-tap.c" "$BUNDLE/network/source/install-tap.c"
 cp -f "$ROOT/tools/guest/shndhcp.sh" "$BUNDLE/SHNDHCP.SH"
 cp -f "$BUNDLE/SHNDHCP.SH" "$BUNDLE/drive-c/MINT/1-19-CUR/SHNDHCP.SH"
 

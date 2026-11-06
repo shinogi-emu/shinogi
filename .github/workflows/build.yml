@@ -551,9 +551,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  tap-checks:
+    name: standalone TAP checks
+    uses: ./.github/workflows/tap-setup.yml
+
   windows:
     name: windows package (${{ matrix.edition }})
-    needs: [ guest, test, freemint, qemu-win ]
+    needs: [ guest, test, freemint, qemu-win, tap-checks ]
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false

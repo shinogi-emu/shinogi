@@ -1,0 +1,44 @@
+name: standalone TAP setup
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-tap:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check PowerShell ownership and rollback guards
+        shell: powershell
+        run: |
+          ./tests/win-settings/test_tap_adapter.ps1
+          ./tests/win-settings/test_lan_setup.ps1
+      - name: Fetch the pinned signed driver without OpenVPN
+        shell: powershell
+        run: |
+          python tools/fetch-network-inputs.py bundle --tap-only
+          if ($LASTEXITCODE -ne 0) { throw 'Driver staging failed' }
+      - name: Build the targeted installer and kernel probe with the Windows SDK
+        shell: powershell
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -property installationPath
+          Import-Module (Join-Path $visualStudio 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $visualStudio -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          cl.exe /nologo /W4 /WX /std:c11 /O2 /D_CRT_SECURE_NO_WARNINGS tools/win/install-tap.c /Fe:bundle/network/install-tap.exe /link setupapi.lib newdev.lib advapi32.lib ole32.lib
+          if ($LASTEXITCODE -ne 0) { throw 'Targeted installer compile failed' }
+          cl.exe /nologo /W4 /WX /std:c11 /O2 /D_CRT_SECURE_NO_WARNINGS tests/win-settings/probe_tap_driver.c /Fe:bundle/network/probe-tap.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Kernel probe compile failed' }
+      - name: Install dedicated adapters and test the real signed kernel driver
+        shell: powershell
+        run: ./tests/win-settings/test_tap_windows.ps1 -Bundle "$PWD/bundle"
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: windows-tap-diagnostics
+          path: |
+            C:/ProgramData/AtariLAN/*.log
+            C:/Windows/inf/setupapi.dev.log
+          if-no-files-found: ignore
+          retention-days: 2

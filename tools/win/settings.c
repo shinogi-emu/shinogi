@@ -298,7 +298,7 @@ static INT_PTR CALLBACK dialog_proc(HWND dialog, UINT message, WPARAM wp, LPARAM
         }
         if (MessageBoxA(dialog, remove ?
                 "Remove Shinogi's LAN bridge and restore Ethernet?\nThe shared driver is kept for reuse." :
-                "Set up LAN on the selected Ethernet adapter?\nThis installs the signed TAP driver and creates a Windows bridge.\n"
+                "Set up LAN on the selected Ethernet adapter?\nThis installs the signed TAP driver directly and creates a Windows bridge.\nOpenVPN is not required.\n"
                 "Ethernet may disconnect briefly. Windows must use automatic (DHCP) addressing.",
                 "Shinogi LAN", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) return TRUE;
         if (!network_setup_dialog(dialog, network_devices[index].guid, remove,

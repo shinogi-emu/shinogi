@@ -69,15 +69,15 @@ def rpm_files(data):
     raise ValueError("RPM archive has no completion trailer")
 
 
-def stage(bundle):
+def stage(bundle, tap_only=False):
     root = bundle / "network"
     source = root / "source"
     driver = root / "tap"
     source.mkdir(parents=True, exist_ok=True)
     driver.mkdir(parents=True, exist_ok=True)
     paths = {}
-    provenance = ["Shinogi network components", "==========================", ""]
-    for variable, name, url, digest in INPUTS:
+    provenance = ["Atari network components", "========================", ""]
+    for variable, name, url, digest in (INPUTS[:2] if tap_only else INPUTS):
         target = source / name
         local = os.environ.get(variable)
         if local:
@@ -100,6 +100,17 @@ def stage(bundle):
             if member is None:
                 raise ValueError("TAP source is missing its license")
             (driver / name).write_bytes(member.read())
+    if tap_only:
+        provenance.extend((
+            "Unmodified official signed x64 TAP-Windows6 package; no OpenVPN application.",
+            "Driver: GPLv2 with upstream WDK exception; see tap/COPYING.",
+            "devcon.exe: Microsoft sample, MS-PL; see tap/DEVCON-LICENSE.txt.",
+            "Matching original driver source archive is included in source/.",
+            "devcon source: https://github.com/OpenVPN/Windows-driver-samples/tree/master/setup/devcon",
+            "devcon binary SHA256: " + hashlib.sha256((driver / "devcon.exe").read_bytes()).hexdigest(),
+        ))
+        (root / "PROVENANCE.txt").write_text("\n".join(provenance) + "\n", encoding="ascii")
+        return
     client = rpm_files(paths["SHINOGI_DHCLIENT_RPM"].read_bytes())["sbin/dhclient"]
     (bundle / "DHCLIENT").write_bytes(client)
     guest_bin = bundle / "drive-c/MINT/1-19-CUR/SYS-ROOT/BIN"
@@ -127,9 +138,9 @@ def stage(bundle):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: fetch-network-inputs.py BUNDLE")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != '--tap-only'):
+        raise SystemExit("usage: fetch-network-inputs.py BUNDLE [--tap-only]")
     try:
-        stage(Path(sys.argv[1]))
+        stage(Path(sys.argv[1]), tap_only=len(sys.argv) == 3)
     except (OSError, ValueError, KeyError, struct.error) as error:
         raise SystemExit(str(error))

@@ -205,7 +205,7 @@ int network_setup_dialog(HWND owner, const char *ethernet, int remove,
     if (code) {
         machine_setting("LastError", detail, sizeof(detail));
         if (*detail) return failure(error, size, detail);
-        return failure(error, size, "LAN setup failed. See %PROGRAMDATA%\\shinogi\\lan-setup.log.");
+        return failure(error, size, "LAN setup failed. See %PROGRAMDATA%\\AtariLAN\\Shinogi-lan-setup.log.");
     }
     machine_setting("TapGuid", tap, NETWORK_GUID_SIZE);
     return 1;

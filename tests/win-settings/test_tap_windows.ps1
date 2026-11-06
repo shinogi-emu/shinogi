@@ -18,7 +18,7 @@ try {
         if ((Install-AtariTap $product (Join-Path $Bundle 'network/tap')).Created) { throw 'Repeat setup created another device.' }
         & (Join-Path $Bundle 'network/probe-tap.exe') $state.Guid
         if ($LASTEXITCODE -ne 0) { throw 'Live TAP driver probe failed.' }
-        Write-Host "PASS Windows targeted TAP install and real kernel open/media/reset: $product $($state.Guid)"
+        Write-Host "PASS Windows targeted TAP install and real kernel open/media/close: $product $($state.Guid)"
     }
     if ($owned[0].Guid -eq $owned[1].Guid) { throw 'Both products share one exclusive TAP handle.' }
     foreach ($old in $baseline) {

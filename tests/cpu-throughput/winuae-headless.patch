@@ -1,0 +1,18 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 12eac42..9ccb0b8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -3046,3 +3046,5 @@ if(NOT APPLE)
+         add_dependencies(package winuae_unix_floppybridge_package_check)
+     endif()
+ endif()
++
++target_sources(winuae_core PRIVATE od-unix/comparison-host-globals.cpp)
+diff --git a/od-unix/comparison-host-globals.cpp b/od-unix/comparison-host-globals.cpp
+new file mode 100644
+--- /dev/null
++++ b/od-unix/comparison-host-globals.cpp
+@@ -0,0 +1,3 @@
++// Logging switches referenced by the CLI when optional host backends are absent.
++int pngprint = 0;
++int log_ethernet = 0;

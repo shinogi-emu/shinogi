@@ -14,7 +14,9 @@ The synthetic cases cover add/sub arithmetic, alternating branches, shifts,
 copy-plus-checksum memory traffic, and FADD/FSUB/FMUL/FSQRT on exact native
 values. The memory-offset control changes only destination alignment by
 4 KiB. Memory-flush executes PFLUSHA before every 256 KiB copy, to exercise
-soft-TLB resizing across guest flushes. These are focused throughput tests,
+soft-TLB resizing across guest flushes. Memory-copy copies 1 GiB with a scalar
+MOVE.L loop; memory-movem copies the same amount eight longs at a time with
+MOVEM.L. Both validate the entire destination after measurement. These are focused throughput tests,
 not application benchmarks or a complete ISA/FPU conformance suite.
 
 Build and run
@@ -43,7 +45,10 @@ disk image is required. Its bootstrap configures Zorro-II fast RAM, copies
 the shared payload there and uses the serial port for markers. QEMU loads
 that payload from ELF. The guest explicitly enables its 060 FPU and cache
 before warmup. The bootstrap uses 060 PCR/CACR semantics; select compatible
-models when overriding --qemu-cpu or --qemu-machine.
+models when overriding --qemu-cpu or --qemu-machine. For the 040, build a
+separate image directory with build.py --bootstrap-cpu m68040 and run it with
+run.py --qemu-cpu m68040. This omits the 060-only PCR setup; the timed work
+and checks are identical.
 
 Verify that wrong results cannot pass:
 
@@ -89,3 +94,29 @@ NATMEM_NO_JIT_DIRECT, even when the backing RAM is directly mapped. Results
 therefore describe this pinned Linux WinUAE JIT configuration. They do not
 establish parity with native Windows WinUAE using JIT direct memory.
 Physical display/compositor and host input latency are separate checks.
+
+Correctness gates for the integer and copy changes
+-------------------------------------------------
+
+  python3 tests/cpu-throughput/check-integer.py --qemu /path/to/candidate \
+      --cpu m68060 --out /tmp/integer-check
+  python3 tests/cpu-throughput/check-memory-order.py --qemu /path/to/candidate \
+      --cpu m68060 --out /tmp/order-check
+  python3 tests/cpu-throughput/check-flag-migration.py --qemu /path/to/candidate \
+      --receiver /path/to/pre-change/qemu --out /tmp/migration-check
+
+check-integer.py verifies 1,320 arithmetic, CCR, condition, preserved-X and
+TB-boundary cases, including overflow/carry edges and CCR-read/BTST sequences.
+The older baseline fails the latter sequence because inline flag flushing
+did not invalidate a previously synchronized operation encoding.
+check-memory-order.py checks actual optimized TCG output on x86-64: eight
+MOVEM reads share one StoreLoad fence, and intervening stores, helper calls
+and control-flow boundaries retain the required fences. It also executes
+MMIO reads. It is an emitted-code regression, not a proof of every concurrent
+execution or of weak-host memory ordering.
+check-flag-migration.py pauses a guest in DBRA loops that preserve the lazy
+arithmetic flags, migrates it to the older receiver, and verifies all four
+ADDQ/SUBQ carry/overflow edge states there. The sender materializes new lazy
+encodings before saving. It requires local QMP socket access. These gates
+accept --cpu and --machine overrides; migration additionally needs a receiver
+supporting that model. Each output directory must be fresh.

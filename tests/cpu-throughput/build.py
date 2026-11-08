@@ -84,6 +84,32 @@ count, setup, body, expected = CASES["memory"]
 CASES["memory-offset"] = (count, setup, body.replace("0x00500000", "0x00501000"), expected)
 CASES["memory-flush"] = (count, setup, body.replace(
     "1:      lea 0x00400000", "1:      .word 0xf518 /* pflusha */\n        lea 0x00400000"), expected)
+CASES["memory-copy"] = (4096, setup, """
+        moveq #0,%d6
+1:      lea 0x00400000,%a0
+        lea 0x00500000,%a1
+        lea 0x00440000,%a2
+2:      movel (%a0)+,(%a1)+
+        cmpal %a2,%a0
+        bne 2b
+        addql #1,%d6
+        subql #1,%d7
+        bne 1b
+""", lambda n: n)
+CASES["memory-movem"] = (4096, setup, """
+        moveq #0,%d6
+1:      lea 0x00400000,%a0
+        lea 0x00500000,%a1
+        lea 0x00440000,%a2
+2:      moveml (%a0)+,%d0-%d5/%a3-%a4
+        moveml %d0-%d5/%a3-%a4,(%a1)
+        lea 32(%a1),%a1
+        cmpal %a2,%a0
+        bne 2b
+        addql #1,%d6
+        subql #1,%d7
+        bne 1b
+""", lambda n: n)
 
 
 def command(*args):
@@ -93,6 +119,7 @@ def command(*args):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--bootstrap-cpu", choices=("m68040", "m68060"), default="m68060")
     p.add_argument("--cross", default="m68k-atari-mintelf-")
     p.add_argument("--scale", type=float, default=1)
     a = p.parse_args()
@@ -130,13 +157,16 @@ clear_output:
         bne 1b
         rts
 """
+        pcr = "" if a.bootstrap_cpu == "m68040" else """
+        .word 0x4e7a,0x0808 /* movec PCR,D0 */
+        andil #0xfffffffd,%d0
+        .word 0x4e7b,0x0808 /* movec D0,PCR */
+"""
         asm = f"""
         .text
         .globl _start
 _start:
-        .word 0x4e7a,0x0808 /* movec PCR,D0 */
-        andil #0xfffffffd,%d0
-        .word 0x4e7b,0x0808 /* movec D0,PCR */
+{pcr}
         movel #0x80008000,%d0
         movec %d0,%cacr
 {setup}
@@ -246,7 +276,7 @@ payload:
             total = (total & 0xffffffff) + (total >> 32)
         raw = raw[:-24] + struct.pack(">I", total ^ 0xffffffff) + raw[-20:]
         prefix.with_suffix(".rom").write_bytes(raw)
-        manifest[name] = {"iterations": n, "warmup": warm, "expected": expected(n) & 0xffffffff,
+        manifest[name] = {"bootstrap_cpu": a.bootstrap_cpu, "iterations": n, "warmup": warm, "expected": expected(n) & 0xffffffff,
                           "payload_sha256": hashlib.sha256(data).hexdigest(),
                           "elf_sha256": hashlib.sha256(prefix.with_suffix('.elf').read_bytes()).hexdigest(),
                           "rom_sha256": hashlib.sha256(raw).hexdigest()}

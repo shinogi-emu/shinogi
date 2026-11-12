@@ -381,10 +381,11 @@ fi
 #
 # The screen size is fixed when QEMU starts, so SETRES writes the choice
 # to C:\SHINOGI.INI and the launcher reads it on the next start. Built
-# here so it cannot drift from the launcher about the file format.
+# here so it cannot drift from the launcher about the file format. A GEM
+# program with its own window, hence gemlib.
 GUEST_SRC="$(cd "$(dirname "$0")" && pwd)/guest/setres.c"
 mkdir -p "$OUT/tools"
-m68k-atari-mint-gcc -O2 -o "$OUT/tools/setres.prg" "$GUEST_SRC"
+m68k-atari-mint-gcc -O2 -o "$OUT/tools/setres.prg" "$GUEST_SRC" -lgem
 echo "resolution picker: tools/setres.prg"
 
 # ---------------------------------------------------------- XaAES theme

@@ -12,16 +12,20 @@
  * "choose, shut down, start again" rather than an instant switch.  Saying
  * so plainly beats a dialog that appears to change the screen and does not.
  *
- * Deliberately a plain TOS program, not a GEM one: it needs a list and a
- * keypress, the desktop can run it, and a GEM dialog here would be a
- * resource file and an event loop for no gain.
+ * A GEM program with its own window, like every other desktop tool: a
+ * text-mode program started from the desktop takes over the whole screen.
+ * The window lists the sizes; a click on one, or its number key, chooses
+ * it, and an alert says what happens next.  No resource file: the list is
+ * drawn with the VDI.  Started where there is no AES (a shell), it falls
+ * back to the same choice in text.
  *
- * Build: m68k-atari-mint-gcc -O2 -o setres.prg setres.c
+ * Build: m68k-atari-mint-gcc -O2 -o setres.prg setres.c -lgem
  */
 
 #include <osbind.h>
 #include <stdio.h>
 #include <string.h>
+#include <gem.h>
 
 #define INI_PATH "C:\\SHINOGI.INI"
 
@@ -116,7 +120,8 @@ static int store(int w, int h)
     return ok;
 }
 
-int main(void)
+/* The text version, for a shell with no AES. */
+static int text_main(void)
 {
     int w = 0, h = 0, i, c;
 
@@ -160,4 +165,221 @@ int main(void)
     Cconin();
 
     return 0;
+}
+
+/* ------------------------------------------------------------ GEM */
+
+/*
+ * Window contents, one text line each: a heading, the current setting,
+ * a blank line, the sizes, a blank line and a hint.  FIRST_MODE is the
+ * line of the first size, which is what a click is measured against.
+ */
+#define FIRST_MODE  3
+#define NLINES      (FIRST_MODE + NMODES + 2)
+#define COLS        42
+
+static short vh, cw, ch;               /* VDI handle, character cell */
+static short win = -1;
+static GRECT work;                      /* window work area */
+static int sel = -1;                    /* highlighted size, -1 none */
+static int cur_w, cur_h, have_cur;
+
+static void line_text(int n, char *buf)
+{
+    buf[0] = '\0';
+    if (n == 0)
+        strcpy(buf, " Screen size for the next start:");
+    else if (n == 1) {
+        if (have_cur)
+            sprintf(buf, " now set to %dx%d", cur_w, cur_h);
+        else
+            strcpy(buf, " nothing set; the launcher uses 1024x768");
+    } else if (n >= FIRST_MODE && n < FIRST_MODE + NMODES) {
+        const struct mode *m = &modes[n - FIRST_MODE];
+        sprintf(buf, "  %d  %4dx%-4d  %s", n - FIRST_MODE + 1, m->w, m->h, m->note);
+    } else if (n == NLINES - 1)
+        sprintf(buf, " Click a size or press 1-%d.  Esc: cancel", NMODES);
+}
+
+static void draw(const GRECT *clip)
+{
+    short pxy[4];
+    char buf[80];
+    int n;
+
+    pxy[0] = clip->g_x; pxy[1] = clip->g_y;
+    pxy[2] = clip->g_x + clip->g_w - 1; pxy[3] = clip->g_y + clip->g_h - 1;
+    vs_clip(vh, 1, pxy);
+    vswr_mode(vh, MD_REPLACE);
+    vsf_interior(vh, FIS_SOLID);
+    vsf_color(vh, G_WHITE);
+    vr_recfl(vh, pxy);
+
+    for (n = 0; n < NLINES; n++) {
+        short y = work.g_y + n * ch;
+        int hi = n >= FIRST_MODE && n - FIRST_MODE == sel;
+
+        if (y > clip->g_y + clip->g_h || y + ch < clip->g_y)
+            continue;
+        line_text(n, buf);
+        if (hi) {
+            short bar[4];
+            bar[0] = work.g_x; bar[1] = y;
+            bar[2] = work.g_x + work.g_w - 1; bar[3] = y + ch - 1;
+            vsf_color(vh, G_BLACK);
+            vr_recfl(vh, bar);
+            vsf_color(vh, G_WHITE);
+        }
+        vswr_mode(vh, MD_TRANS);
+        vst_color(vh, hi ? G_WHITE : G_BLACK);
+        v_gtext(vh, work.g_x, y, buf);
+        vswr_mode(vh, MD_REPLACE);
+    }
+    vs_clip(vh, 0, pxy);
+}
+
+/* Redraw the part of AREA that is visible, through the rectangle list. */
+static void redraw(const GRECT *area)
+{
+    GRECT r, desk;
+
+    wind_update(BEG_UPDATE);
+    graf_mouse(M_OFF, NULL);
+    wind_get_grect(0, WF_WORKXYWH, &desk);
+    wind_get_grect(win, WF_FIRSTXYWH, &r);
+    while (r.g_w && r.g_h) {
+        if (rc_intersect(area, &r) && rc_intersect(&desk, &r))
+            draw(&r);
+        wind_get_grect(win, WF_NEXTXYWH, &r);
+    }
+    graf_mouse(M_ON, NULL);
+    wind_update(END_UPDATE);
+}
+
+static void highlight(int i)
+{
+    GRECT r;
+
+    sel = i;
+    r = work;                           /* the size lines only */
+    r.g_y += FIRST_MODE * ch;
+    r.g_h = NMODES * ch;
+    redraw(&r);
+}
+
+/* Store size I and say what happens next.  Returns 1 to quit. */
+static int choose(int i)
+{
+    char msg[200];
+
+    highlight(i);
+    if (!store(modes[i].w, modes[i].h)) {
+        form_alert(1, "[3][Could not write C:\\SHINOGI.INI.|"
+                      "Drive C may be read-only.][ OK ]");
+        return 0;
+    }
+    sprintf(msg, "[1][Screen size set to %dx%d.|"
+                 "It takes effect the next time|"
+                 "Shinogi starts: shut down from|"
+                 "the desktop, then start again.][ OK ]",
+            modes[i].w, modes[i].h);
+    form_alert(1, msg);
+    return 1;
+}
+
+static int gem_main(void)
+{
+    short work_in[11] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2 }, work_out[57];
+    short msg[8], mx, my, mb, ks, key, clicks, ev, dummy, i;
+    GRECT desk, outer;
+    int quit = 0;
+
+    vh = graf_handle(&cw, &ch, &dummy, &dummy);
+    v_opnvwk(work_in, &vh, work_out);
+    if (vh <= 0) {
+        form_alert(1, "[3][No VDI workstation.][ OK ]");
+        return 1;
+    }
+    vst_alignment(vh, TA_LEFT, TA_TOP, &dummy, &dummy);
+    have_cur = current(&cur_w, &cur_h);
+    for (i = 0; i < NMODES; i++)
+        if (have_cur && modes[i].w == cur_w && modes[i].h == cur_h)
+            sel = i;
+
+    wind_get_grect(0, WF_WORKXYWH, &desk);
+    work.g_w = COLS * cw;
+    work.g_h = NLINES * ch;
+    wind_calc_grect(WC_BORDER, NAME | CLOSER | MOVER, &work, &outer);
+    outer.g_x = desk.g_x + (desk.g_w - outer.g_w) / 2;
+    outer.g_y = desk.g_y + (desk.g_h - outer.g_h) / 3;
+    win = wind_create_grect(NAME | CLOSER | MOVER, &outer);
+    if (win < 0) {
+        form_alert(1, "[3][No window available.|Close a window and try again.][ OK ]");
+        v_clsvwk(vh);
+        return 1;
+    }
+    wind_set_str(win, WF_NAME, " Screen resolution ");
+    wind_open_grect(win, &outer);
+    wind_set(win, WF_TOP, 0, 0, 0, 0);      /* keys come here, not to the desktop */
+    wind_get_grect(win, WF_WORKXYWH, &work);
+
+    while (!quit) {
+        ev = evnt_multi(MU_MESAG | MU_KEYBD | MU_BUTTON, 1, 1, 1,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        msg, 0, &mx, &my, &mb, &ks, &key, &clicks);
+        if (ev & MU_MESAG) {
+            switch (msg[0]) {
+            case WM_REDRAW:
+                redraw((GRECT *)&msg[4]);
+                break;
+            case WM_TOPPED:
+                wind_set(win, WF_TOP, 0, 0, 0, 0);
+                break;
+            case WM_MOVED:
+                wind_set_grect(win, WF_CURRXYWH, (GRECT *)&msg[4]);
+                wind_get_grect(win, WF_WORKXYWH, &work);
+                break;
+            case WM_CLOSED:
+            case AP_TERM:
+                quit = 1;
+                break;
+            }
+        }
+        if (!quit && (ev & MU_KEYBD)) {
+            int c = key & 0xff;
+
+            if (c >= '1' && c < '1' + NMODES)
+                quit = choose(c - '1');
+            else if (c == 27 || c == 'q' || c == 'Q')
+                quit = 1;
+            else if ((key >> 8) == 0x48 && sel > 0)           /* up */
+                highlight(sel - 1);
+            else if ((key >> 8) == 0x50 && sel < NMODES - 1)  /* down */
+                highlight(sel + 1);
+            else if ((c == '\r' || c == '\n') && sel >= 0)
+                quit = choose(sel);
+        }
+        if (!quit && (ev & MU_BUTTON) && wind_find(mx, my) == win) {
+            int n = (my - work.g_y) / ch - FIRST_MODE;
+
+            if (my >= work.g_y && n >= 0 && n < NMODES)
+                quit = choose(n);
+        }
+    }
+
+    wind_close(win);
+    wind_delete(win);
+    v_clsvwk(vh);
+    return 0;
+}
+
+int main(void)
+{
+    int rc;
+
+    if (appl_init() < 0)
+        return text_main();
+    rc = gem_main();
+    appl_exit();
+    return rc;
 }

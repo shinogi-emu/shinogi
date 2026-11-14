@@ -1,4 +1,5 @@
-# Host checks for the outline font engine of EmuTOS's VDI (vdi/vdi_ft2.c).
+# Host checks for the outline font engine of EmuTOS's VDI (vdi/vdi_ft2.c)
+# and its memory allocator (vdi/vdi_ftmem.c).
 #
 # The engine, its character set tables and the FreeType subset are built
 # straight out of the EmuTOS tree with the host gcc, -m32 (32-bit long, as
@@ -38,11 +39,26 @@ FT_OBJ = $(foreach f,$(FT_SOURCES),$(OBJ)/ft_$(subst /,_,$(basename $(f))).o)
 ENGINE_OBJ = $(OBJ)/vdi_ft2.o $(OBJ)/vdi_ftmap.o
 TEST_OBJ   = $(OBJ)/test_vdi_fonts.o $(OBJ)/host_ftos.o
 
-check: $(OBJ)/test_vdi_fonts
+# test_ftmem checks the allocator of vdi/vdi_ftmem.c on its own;
+# test_vdi_fonts_ftmem runs the engine checks again with every engine
+# allocation going through that allocator
+check: $(OBJ)/test_ftmem $(OBJ)/test_vdi_fonts $(OBJ)/test_vdi_fonts_ftmem
+	$(OBJ)/test_ftmem
 	$(OBJ)/test_vdi_fonts $(SANS) $(SECOND) $(MONO)
+	$(OBJ)/test_vdi_fonts_ftmem $(SANS) $(SECOND) $(MONO)
+
+$(OBJ)/test_ftmem: $(OBJ)/test_ftmem.o $(OBJ)/vdi_ftmem.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^
 
 $(OBJ)/test_vdi_fonts: $(TEST_OBJ) $(ENGINE_OBJ) $(FT_OBJ)
 	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_vdi_fonts_ftmem: $(OBJ)/test_vdi_fonts.o $(OBJ)/host_ftos_ftmem.o \
+                             $(OBJ)/vdi_ftmem.o $(ENGINE_OBJ) $(FT_OBJ)
+	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/host_ftos_ftmem.o: host_ftos.c host_ftos.h host_ftstdlib.h $(wildcard $(EMUTOS)/vdi/vdi_ft*.h) | $(OBJ)
+	$(CC) $(CFLAGS) -DHOST_FTMEM -c $< -o $@
 
 $(OBJ):
 	mkdir -p $@

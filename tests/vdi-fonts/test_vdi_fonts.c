@@ -272,6 +272,8 @@ static void stop(void)
 {
     vdi_ft_term();
     CHECK(host_alloc_live() == 0, "%ld blocks left after vdi_ft_term", host_alloc_live());
+    /* with vdi_ftmem.c, one empty arena may be kept */
+    CHECK(host_os_blocks() <= 1, "%ld system blocks left after vdi_ft_term", host_os_blocks());
 }
 
 
@@ -385,23 +387,33 @@ static void check_render_atari(void)
 
 static void check_bad_files(void)
 {
-    char trunc[600], garbage[600], empty[600];
+    char trunc[600], garbage[600], empty[600], noglyf[600], noname[600];
     unsigned char *data, junk[8192];
     long size, before, i;
 
     printf("bad files\n");
     data = read_file(sans_path, &size);
-    CHECK(data != NULL && size > 4096, "cannot read %s", sans_path);
+    CHECK(data != NULL && size > 310000, "cannot read %s", sans_path);
     if (!data)
         return;
     tmpname(trunc, sizeof(trunc), "TRUNC.TTF");
     tmpname(garbage, sizeof(garbage), "GARBAGE.TTF");
     tmpname(empty, sizeof(empty), "EMPTY.TTF");
+    tmpname(noglyf, sizeof(noglyf), "NOGLYF.TTF");
+    tmpname(noname, sizeof(noname), "NONAME.TTF");
     for (i = 0; i < (long)sizeof(junk); i++)
         junk[i] = (UBYTE)(i * 7919 + 13);
     CHECK(write_file(trunc, data, 4096), "%s", trunc);
     CHECK(write_file(garbage, junk, sizeof(junk)), "%s", garbage);
     CHECK(write_file(empty, "", 0), "%s", empty);
+    /*
+     * Cut where FreeType still opens the face.  At 60000 bytes the font
+     * keeps its header, metrics, cmap and loca, but glyf and name are gone:
+     * a face named " " that draws nothing.  At 300000 bytes every glyph is
+     * there, but the names are not.
+     */
+    CHECK(write_file(noglyf, data, 60000), "%s", noglyf);
+    CHECK(write_file(noname, data, 300000), "%s", noname);
     free(data);
 
     CHECK(vdi_ft_init() == 0, "init");
@@ -410,7 +422,10 @@ static void check_bad_files(void)
     CHECK(vdi_ft_register_file(garbage) < 0, "garbage accepted");
     CHECK(vdi_ft_register_file(empty) < 0, "empty file accepted");
     CHECK(vdi_ft_register_file("/nonexistent/FONT.TTF") < 0, "missing file accepted");
-    CHECK(vdi_ft_face_count() == 0, "%ld faces", vdi_ft_face_count());
+    CHECK(vdi_ft_register_file(noglyf) <= 0, "font without glyphs or names accepted");
+    CHECK(vdi_ft_register_file(noname) <= 0, "font without names accepted");
+    CHECK(vdi_ft_face_count() == 0, "%ld faces, the first named '%s'", vdi_ft_face_count(),
+          vdi_ft_face_count() ? vdi_ft_face(0)->name : "");
     CHECK(host_alloc_live() == before, "%ld blocks leaked", host_alloc_live() - before);
 
     /* the good font still registers after them */
@@ -419,6 +434,8 @@ static void check_bad_files(void)
     unlink(trunc);
     unlink(garbage);
     unlink(empty);
+    unlink(noglyf);
+    unlink(noname);
 }
 
 

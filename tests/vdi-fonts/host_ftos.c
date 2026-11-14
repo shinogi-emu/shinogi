@@ -4,6 +4,10 @@
  *
  * Every block is counted, so the tests can see a leak as a number, and
  * allocations can be made to fail on demand (host_ftos.h).
+ *
+ * Built with HOST_FTMEM, the engine's blocks come from EmuTOS's own
+ * allocator (vdi/vdi_ftmem.c), which takes its arenas and large blocks
+ * from malloc() here, as vdi_ftos.c gives it GEMDOS blocks.
  */
 
 #include <stdio.h>
@@ -12,6 +16,9 @@
 
 #include "vdi_ftos.h"
 #include "host_ftos.h"
+#ifdef HOST_FTMEM
+#include "vdi_ftmem.h"
+#endif
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -47,6 +54,88 @@ long host_alloc_refused(void)
 long host_file_loads(void)
 {
     return loads;
+}
+
+
+#ifdef HOST_FTMEM
+
+static long os_blocks;
+
+void *ftmem_os_alloc(ULONG size)
+{
+    void *block = malloc(size);
+
+    if (block)
+        os_blocks++;
+    return block;
+}
+
+void ftmem_os_free(void *block)
+{
+    free(block);
+    os_blocks--;
+}
+
+long host_os_blocks(void)
+{
+    return os_blocks;
+}
+
+void *vdi_ft_alloc(ULONG size)
+{
+    void *block;
+
+    if (fail_after == 0)
+    {
+        refused++;
+        return NULL;
+    }
+    block = ftmem_alloc(size);
+    if (!block)
+        return NULL;
+    if (fail_after > 0)
+        fail_after--;
+    live++;
+    total++;
+    return block;
+}
+
+void vdi_ft_free(void *block)
+{
+    if (block)
+    {
+        ftmem_free(block);
+        live--;
+    }
+}
+
+void *vdi_ft_realloc(void *block, ULONG size)
+{
+    void *newblock;
+
+    if (!block)
+        return vdi_ft_alloc(size);
+    if (size == 0)
+    {
+        vdi_ft_free(block);
+        return NULL;
+    }
+    if (fail_after == 0)
+    {
+        refused++;
+        return NULL;
+    }
+    newblock = ftmem_realloc(block, size);
+    if (newblock && fail_after > 0)
+        fail_after--;
+    return newblock;
+}
+
+#else
+
+long host_os_blocks(void)
+{
+    return live;
 }
 
 
@@ -109,6 +198,8 @@ void *vdi_ft_realloc(void *block, ULONG size)
 
     return newblock;
 }
+
+#endif /* HOST_FTMEM */
 
 
 void *vdi_font_file_load(const char *path, ULONG *size)

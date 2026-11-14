@@ -2,10 +2,13 @@ VDI outline font engine checks
 ==============================
 
 make -C tests/vdi-fonts check builds EmuTOS's outline font engine
-(vdi/vdi_ft2.c, vdi/vdi_ftmap.c) and its FreeType subset straight out of the
-EmuTOS tree with the host gcc, -m32 (32-bit long, as on the target) and
-ASan/UBSan, links it with host_ftos.c in place of the GEMDOS services of
-vdi/vdi_ftos.c, and runs it. EMUTOS= names the tree (default
+(vdi/vdi_ft2.c, vdi/vdi_ftmap.c), its memory allocator (vdi/vdi_ftmem.c) and
+its FreeType subset straight out of the EmuTOS tree with the host gcc, -m32
+(32-bit long, as on the target) and ASan/UBSan, and runs three programs:
+test_ftmem checks the allocator on its own, test_vdi_fonts the engine with
+host_ftos.c in place of the GEMDOS services of vdi/vdi_ftos.c, and
+test_vdi_fonts_ftmem the engine again with every block from the allocator,
+whose arenas come from malloc(). EMUTOS= names the tree (default
 ../../../emutos-vdi-fonts); SANS=, SECOND= and MONO= name the fonts (default
 Liberation Sans, DejaVu Sans and DejaVu Sans Mono under
 /usr/share/fonts/truetype). Requires gcc with 32-bit multilib and the 32-bit
@@ -23,8 +26,10 @@ under two maps on the same font, codes above 0x7FFF and an SPDCHAR.MAP that
 remaps 'A' are checked the same way.
 
 A truncated copy of the font (its first 4 KiB), garbage, an empty file and a
-missing file are refused without leaking, and the font still registers
-afterwards. With every allocation failing, starting, registering, sizing
+missing file are refused without leaking, and so are copies that FreeType
+still opens: cut at 60000 bytes (glyphs and names gone, which used to give a
+face named " " that drew nothing) and at 300000 bytes (no names). The font
+still registers afterwards. With every allocation failing, starting, registering, sizing
 and rendering (fresh and cached glyphs, codes above 255, a new effect)
 return errors and leak nothing, and the same font draws once memory is back.
 Then each allocation in turn is made to fail through a whole session; every
@@ -40,6 +45,20 @@ from the height narrows the text but not the cell. Outlines, vqt_xfntinfo
 and vqt_fontheader data, monospace extents, unique ids across three fonts,
 and 50 sizes of one face (open faces stay bounded, the file is read once,
 the first size still draws) are checked last.
+
+test_ftmem gets the allocator's system blocks from malloc(), cut to size
+and only 2-byte aligned as GEMDOS blocks can be. It checks every block is
+8-byte aligned, from size 0 up and across the 16 KB line between arena and
+own blocks; that 16 KB blocks come from arenas and larger ones each from a
+system block of their own; that arenas are taken as needed and given back
+when empty, one being kept; that every one of the 5040 orders of freeing
+seven blocks merges their arena whole (seen as the arena going back to the
+system); realloc across sizes, in place when it fits, and leaving the old
+block in use when it fails; requests with no memory at all, with no new
+system blocks (served from the arenas), and with no block as big as an
+arena (small blocks get their own); and 400000 random allocations, frees
+and reallocs against overlap, overwriting and the memory taken from the
+system.
 
 Host stand-in leaks show as counted blocks left after vdi_ft_term, the
 sanitizers stop at the first memory error, and LeakSanitizer reports

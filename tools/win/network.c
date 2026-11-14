@@ -344,8 +344,8 @@ static int prepare_guest(const NetworkSettings *s, const char *drivec, char *err
     return 1;
 }
 
-int network_prepare(const NetworkSettings *s, const char *drivec,
-                    char *options, size_t options_size, char *error, size_t size)
+int network_host_options(const NetworkSettings *s, char *options, size_t options_size,
+                         char *error, size_t size)
 {
     NetworkAdapter adapters[64];
     int count, i;
@@ -360,5 +360,12 @@ int network_prepare(const NetworkSettings *s, const char *drivec,
     }
     if (!network_qemu_options(s, tap_name, options, options_size))
         return failure(error, size, "Could not construct the selected network configuration.");
+    return 1;
+}
+
+int network_prepare(const NetworkSettings *s, const char *drivec,
+                    char *options, size_t options_size, char *error, size_t size)
+{
+    if (!network_host_options(s, options, options_size, error, size)) return 0;
     return prepare_guest(s, drivec, error, size);
 }

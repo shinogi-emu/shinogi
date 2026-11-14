@@ -15,6 +15,10 @@ int network_adapters(NetworkAdapter *adapters, size_t capacity);
 int network_has_setup(void);
 int network_setup_dialog(HWND owner, const char *ethernet_guid, int remove,
                          char *tap_guid, char *error, size_t size);
+/* The host side of network_prepare: validate, check the LAN bridge and
+ * build QEMU's network options. */
+int network_host_options(const NetworkSettings *settings, char *options, size_t options_size,
+                         char *error, size_t size);
 int network_prepare(const NetworkSettings *settings, const char *drivec,
                     char *options, size_t options_size, char *error, size_t size);
 

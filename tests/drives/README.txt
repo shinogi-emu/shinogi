@@ -11,7 +11,8 @@ writably. Requires mkfs.fat, mtools and fsck.fat.
 Each boot runs the probe from AUTO under EmuTOS and again from MINT.CNF
 under FreeMiNT. It checks scrambled named folder ports, separate current
 paths, overlapping helper handles, interleaved DTAs, cross-drive rename
-refusal, multi-frame writes/overwrite/rename/delete/directories, and the
+refusal, multi-frame writes/overwrite/rename/delete/directories, a host
+folder longer than 8.3 found and listed by its 8.3 name, and the
 historical delete-short-then-write-long regression. The host checks exact
 bytes, untouched files, readonly folder contents/modes and image hashes,
 and runs fsck.fat after QMP quit. A second boot must read prior writes.

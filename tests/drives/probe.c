@@ -128,6 +128,15 @@ int main(int argc, char **argv)
     Dsetdrv(3); CHECK(Dgetdrv() == 3); CHECK(content("LOCAL.TXT", "D sub\n"));
     Dsetdrv(25); CHECK(Dgetdrv() == 25); CHECK(content("LOCAL.TXT", "Z other\n"));
     Dsetdrv(2);
+    /* A folder whose host name is longer than 8.3 must be found by the
+     * clipped name it is listed under, and its contents reached. */
+    Fsetdta(dta1); CHECK(Fsfirst("D:\\APPLICAT", 0x10) == 0);
+    CHECK(!stricmp(dta1 + 30, "APPLICAT") && (dta1[21] & 0x10));
+    CHECK(content("D:\\APPLICAT\\INSIDE.TXT", "D long\n"));
+    Fsetdta(dta1); CHECK(Fsfirst("D:\\APPLICAT\\*.TXT", 0) == 0 && !stricmp(dta1 + 30, "INSIDE.TXT"));
+    /* EmuTOS matches wildcards against host names, so NOTES.TXT~ is not
+     * *.TXT there. FreeMiNT matches the listed 8.3 names itself. */
+    if (!stage) CHECK(Fsnext() < 0);
     Fsetdta(dta1); CHECK(Fsfirst("D:\\*.TXT", 0) == 0);
     memcpy(name, dta1 + 30, 14);
     Fsetdta(dta2); CHECK(Fsfirst("Z:\\*.TXT", 0) == 0);

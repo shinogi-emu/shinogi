@@ -69,6 +69,12 @@ for letter, folder in folders.items():
     for n in range(37): (folder/f'X{n:03}.TXT').write_text(f'{letter}{n}\n')
 (folders['D']/'SUB').mkdir()
 (folders['D']/'SUB/LOCAL.TXT').write_text('D sub\n')
+# A host name longer than 8.3: listed as APPLICAT, and FreeMiNT reaches it
+# by searching for exactly that name.
+(folders['D']/'Applications').mkdir()
+(folders['D']/'Applications/INSIDE.TXT').write_text('D long\n')
+# Clipped, this would read NOTES.TXT; a wildcard must not match it that way.
+(folders['D']/'Applications/NOTES.TXT~').write_text('D backup\n')
 (folders['Z']/'OTHER').mkdir()
 (folders['Z']/'OTHER/LOCAL.TXT').write_text('Z other\n')
 (folders['E']/'SAME.TXT').chmod(0o444)

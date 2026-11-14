@@ -183,6 +183,12 @@ int drives_image_options(const DriveSettings *d, char *out, size_t size)
     return 1;
 }
 
+/* An edition that serves only folder drives compiles with
+ * -DDRIVES_DIALOG_SLOTS=EXTRA_FOLDERS: the editor then offers D..Z only. */
+#ifndef DRIVES_DIALOG_SLOTS
+#define DRIVES_DIALOG_SLOTS EXTRA_DRIVES
+#endif
+
 typedef struct {
     DriveSettings draft;
     const char *boot;
@@ -253,7 +259,7 @@ static INT_PTR CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_INITDIALOG) {
         int i;
         d = (DriveDialog *)lp; SetWindowLongPtrA(w, DWLP_USER, lp);
-        for (i = 0; i < EXTRA_DRIVES; i++) {
+        for (i = 0; i < DRIVES_DIALOG_SLOTS; i++) {
             char label[64];
             LRESULT row;
             if (i == 'U' - 'D') snprintf(label, sizeof(label), "U: reserved for FreeMiNT");

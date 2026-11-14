@@ -30,6 +30,7 @@
 #   EMUTOS.IMG             the firmware the launcher boots
 #   AUTO/FVDI.PRG          fVDI, with FVDI.SYS and GEMSYS/
 #   TOOLS/SETRES.PRG       the resolution picker
+#   .../SYS-ROOT/BIN/UNAME the snapshot has none
 #   XAAES theme            the a_skin1 widgets and ablue gradients
 #
 # The tree is uppercase and 8.3-clean throughout, and both are checked
@@ -387,6 +388,10 @@ GUEST_SRC="$(cd "$(dirname "$0")" && pwd)/guest/setres.c"
 mkdir -p "$OUT/tools"
 m68k-atari-mint-gcc -O2 -o "$OUT/tools/setres.prg" "$GUEST_SRC" -lgem
 echo "resolution picker: tools/setres.prg"
+
+# The snapshot has no uname; scripts and people expect one.
+m68k-atari-mint-gcc -O2 -Wall -o "$SYSROOT/bin/uname" "$(dirname "$GUEST_SRC")/uname.c"
+echo "uname: sys-root/bin/uname"
 
 # ---------------------------------------------------------- XaAES theme
 #

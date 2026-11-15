@@ -51,6 +51,14 @@ static long os_fail_after = -1; /* as host_alloc_fail_after() */
 static ULONG os_largest;        /* refuse blocks bigger than this, 0: none */
 static int os_offset = 2;       /* the misalignment of the blocks */
 
+/* vdi_outline.c's: TRUE when the font stack is nearly used up */
+static int stack_low;
+
+BOOL outline_stack_low(void)
+{
+    return stack_low;
+}
+
 void *ftmem_os_alloc(ULONG size)
 {
     unsigned char *base;
@@ -180,6 +188,27 @@ static void check_no_memory_at_all(void)
     CHECK(ftmem_realloc(NULL, 0) == NULL, "realloc of nothing to nothing");
     os_fail_after = -1;
     CHECK(os_count == 0, "%ld system blocks", os_count);
+}
+
+/* near the bottom of the font stack, nothing is given, and nothing is lost */
+static void check_stack_low(void)
+{
+    void *p, *q;
+
+    printf("font stack nearly used up\n");
+    p = ftmem_alloc(100);
+    CHECK(p != NULL, "a block with the stack free");
+    stack_low = 1;
+    CHECK(ftmem_alloc(16) == NULL, "small block near the bottom of the stack");
+    CHECK(ftmem_alloc(100000) == NULL, "large block near the bottom of the stack");
+    CHECK(ftmem_realloc(NULL, 100) == NULL, "realloc from nothing near the bottom");
+    q = ftmem_realloc(p, 5000);
+    CHECK(q == NULL, "a block grown near the bottom of the stack");
+    stack_low = 0;
+    q = ftmem_realloc(p, 5000);
+    CHECK(q != NULL, "the same block grown with the stack free");
+    ftmem_free(q ? q : p);
+    CHECK(os_count <= 1, "%ld system blocks left", os_count);
 }
 
 static void check_sizes(int offset)
@@ -586,6 +615,7 @@ static void check_random(void)
 int main(void)
 {
     check_no_memory_at_all();
+    check_stack_low();
     check_sizes(2);
     check_sizes(0);
     check_sizes(6);

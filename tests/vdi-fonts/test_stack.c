@@ -18,7 +18,8 @@
  * is drawn at two sizes and compared with FreeType's own image of its
  * glyph, drawn on the main stack by a separate FreeType library.
  *
- * usage: test_stack <cff.otf> <seac.otf> <chain_short.ttf> <chain_long.ttf> <chain_long_with_A.ttf>
+ * usage: test_stack <cff.otf> <seac.otf> <chain_short.ttf> <chain_long.ttf>
+ *                   <chain_long_with_A.ttf> <loop.ttf>
  */
 
 #include <stdint.h>
@@ -250,12 +251,12 @@ static int ref_pixel(const FT_Bitmap *rb, long x, long y)
  * every pixel agrees, as test_vdi_fonts.c compares (the engine's image is
  * the character cell, so rows above or below it may be cut, not columns)
  */
-static int same_as_reference(FT_UInt gi)
+static int same_as_reference_with(FT_UInt gi, FT_Int32 load_flags)
 {
     FT_Bitmap *rb;
     long x, y, left, top;
 
-    if (FT_Load_Glyph(ref_face, gi, FT_LOAD_DEFAULT) ||
+    if (FT_Load_Glyph(ref_face, gi, load_flags) ||
         FT_Render_Glyph(ref_face->glyph, FT_RENDER_MODE_MONO))
         return 0;
     rb = &ref_face->glyph->bitmap;
@@ -286,6 +287,12 @@ static int same_as_reference(FT_UInt gi)
             if (ref_pixel(rb, x, y) && (x + left < 0 || x + left >= ret_bm.width))
                 return 0;
     return 1;
+}
+
+
+static int same_as_reference(FT_UInt gi)
+{
+    return same_as_reference_with(gi, FT_LOAD_DEFAULT);
 }
 
 
@@ -424,18 +431,65 @@ static FT_UInt deepest_mapped(const char *path, FT_UInt first, FT_UInt last, FT_
 }
 
 
+/*
+ * a font whose prep program never ends: FreeType refuses to hint it at
+ * any size, and its glyphs are drawn unhinted instead of not at all
+ */
+static void check_loop(const char *path)
+{
+    static const char text[] = "Abg8";
+    long i, same = 0;
+
+    printf("a prep program that never ends\n");
+    real_stack();
+    if (!ref_open(path))
+    {
+        CHECK(0, "the reference cannot open %s", path);
+        return;
+    }
+    CHECK(FT_Set_Pixel_Sizes(ref_face, 0, 16) == 0, "reference size");
+    CHECK(FT_Load_Glyph(ref_face, FT_Get_Char_Index(ref_face, 'A'), FT_LOAD_DEFAULT) != 0,
+          "FreeType hints a glyph of the font");
+    arg_path = path;
+    on_stack(job_register);
+    CHECK(ret == 1, "%s not registered", path);
+    arg_face = (ret == 1) ? vdi_ft_face(0) : NULL;
+    if (arg_face)
+    {
+        arg_px = 16;
+        on_stack(job_size);
+        for (i = 0; arg_font && text[i]; i++)
+        {
+            arg_code = text[i];
+            on_stack(job_render);
+            if (ret >= 0)
+            {
+                same += same_as_reference_with(FT_Get_Char_Index(ref_face, (FT_ULong)text[i]),
+                                               FT_LOAD_NO_HINTING);
+                vdi_ft_release(&ret_bm);
+            }
+        }
+        CHECK(arg_font && same == (long)sizeof(text) - 1, "%ld of %ld drawn unhinted, as FreeType draws them",
+              same, (long)sizeof(text) - 1);
+    }
+    on_stack(job_term);
+    CHECK(host_alloc_live() == 0, "%s: %ld blocks left after vdi_ft_term", path, host_alloc_live());
+    ref_close();
+}
+
+
 int main(int argc, char **argv)
 {
-    const char *cff, *seac, *chain_short, *chain_long, *chain_a;
+    const char *cff, *seac, *chain_short, *chain_long, *chain_a, *loop;
     Result plain, sr, cs, cl, ca;
     long need_plain, need_seac, need_chain;
     FT_UInt deep;
     FT_ULong deep_code;
 
-    if (argc != 6)
+    if (argc != 7)
     {
         fprintf(stderr, "usage: %s <cff.otf> <seac.otf> <chain_short.ttf> "
-                "<chain_long.ttf> <chain_long_with_A.ttf>\n", argv[0]);
+                "<chain_long.ttf> <chain_long_with_A.ttf> <loop.ttf>\n", argv[0]);
         return 2;
     }
     cff = argv[1];
@@ -443,6 +497,7 @@ int main(int argc, char **argv)
     chain_short = argv[3];
     chain_long = argv[4];
     chain_a = argv[5];
+    loop = argv[6];
 
     /* the long chain, as the Makefile has mkfonts make it */
 #define LONG_FIRST  200
@@ -511,6 +566,8 @@ int main(int argc, char **argv)
     CHECK(ca.deepest <= stack_size, "into the canary: %ld", ca.deepest);
 
     /* and the engine goes on as before */
+    check_loop(loop);
+
     printf("the CFF font again\n");
     real_stack();
     plain = walk(cff);

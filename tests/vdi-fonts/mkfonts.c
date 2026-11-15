@@ -15,6 +15,11 @@
  *       glyph with an outline after it.  FreeType loads a composite glyph one recursion a level and
  *       sets no limit but a repeated glyph.
  *
+ *   mkfonts loop IN.ttf OUT.ttf
+ *       a copy of a TrueType font whose prep program jumps back to its
+ *       start for ever: FreeType stops it at its instruction limit, and
+ *       then refuses to hint any glyph at that size
+ *
  * The glyph numbers of 'A' and 'acute' come from FreeType itself, the
  * rest is done on the bytes of the file.  Table checksums are left as they
  * are (FreeType does not check them).
@@ -337,6 +342,26 @@ static void make_chain(const char *out, long n, long first)
     printf("%s: glyphs %ld..%ld chain to glyph %ld of %ld\n", out, first, last, end, numg);
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * loop
+ * ---------------------------------------------------------------------------
+ */
+
+static void make_loop(const char *out)
+{
+    /* PUSHW[0] -3, JMPR: back to the PUSHW */
+    static const unsigned char loop[] = { 0xb8, 0xff, 0xfd, 0x1c };
+    unsigned char *t = table("prep");
+
+    if (!t || be(t + 12, 4) < sizeof(loop))
+        die("the font has no prep program to replace");
+    memcpy(data + be(t + 8, 4), loop, sizeof(loop));
+    put_be(t + 12, sizeof(loop), 4);
+    write_font(out);
+    printf("%s: its prep program loops\n", out);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && !strcmp(argv[1], "seac"))
@@ -351,6 +376,13 @@ int main(int argc, char **argv)
         make_chain(argv[3], atol(argv[4]), (argc == 6) ? atol(argv[5]) : 1);
         return 0;
     }
-    fprintf(stderr, "usage: mkfonts seac IN.otf OUT.otf | mkfonts chain IN.ttf OUT.ttf N [FIRST]\n");
+    if (argc == 4 && !strcmp(argv[1], "loop"))
+    {
+        read_font(argv[2]);
+        make_loop(argv[3]);
+        return 0;
+    }
+    fprintf(stderr, "usage: mkfonts seac IN.otf OUT.otf | mkfonts chain IN.ttf OUT.ttf N [FIRST]"
+            " | mkfonts loop IN.ttf OUT.ttf\n");
     return 2;
 }

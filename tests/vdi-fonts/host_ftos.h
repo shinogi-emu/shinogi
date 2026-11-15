@@ -19,9 +19,11 @@ long host_file_loads(void);         /* files read by vdi_font_file_load() */
 long host_os_blocks(void);          /* blocks the system has given and not got back */
 
 /*
- * As vdi_ftos.c on the font stack: while a stack is set, allocations are
+ * As EmuTOS on its font stack: while a stack is set, allocations are
  * refused when they are made within guard bytes of its bottom (the lowest
- * address).  host_stack_guard(NULL, 0, 0) turns it off.
+ * address), by vdi_ftmem.c (built with HOST_FTMEM) or by the malloc()
+ * stand-in, both through host_ftos.c's outline_stack_low().
+ * host_stack_guard(NULL, 0, 0) turns it off.
  */
 void host_stack_guard(const void *bottom, unsigned long size, unsigned long guard);
 long host_stack_refused(void);      /* allocations refused that way so far */

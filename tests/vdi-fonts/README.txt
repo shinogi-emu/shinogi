@@ -21,8 +21,11 @@ removed afterwards.
 
 test_stack runs every engine call on a stack of VDI_FT_STACK_SIZE bytes
 (vdi/vdi_ft2.h) made with makecontext(), above a 256-byte canary, with
-host_ftos.c refusing memory within VDI_FT_STACK_GUARD bytes of the bottom,
-as vdi/vdi_ftos.c does on the font stack. Its fonts are made by mkfonts
+memory refused within VDI_FT_STACK_GUARD bytes of the bottom, as EmuTOS's
+allocator (vdi/vdi_ftmem.c) refuses it on the font stack: test_stack with
+host_ftos.c's malloc() stand-in making the check, test_stack_ftmem with
+vdi/vdi_ftmem.c making it, both asking host_ftos.c's outline_stack_low().
+Its fonts are made by mkfonts
 from CFF= and SECOND=: a copy of the CFF font whose glyphs, but 'A' and
 'acute', are the implied seac form of endchar (an accented A, which FreeType
 interprets one level down, about 16 KB of stack a level), and copies of the
@@ -36,8 +39,11 @@ the seac font and the short chain draw every character as FreeType does,
 with no allocation refused; the long chain draws as FreeType does what it
 draws, refuses only composite glyphs, and the guard refuses some
 allocations; the chain through 'A' is not registered (its 'A' cannot be
-loaded). The canary must stay untouched, no block may be left after
-vdi_ft_term, and the CFF font must draw again at the end.
+loaded). A copy of the TrueType font whose prep program loops for ever,
+which FreeType stops at the instruction limit and then refuses to hint at
+that size, must draw "Abg8" as FreeType draws it unhinted. The canary must
+stay untouched, no block may be left after vdi_ft_term, and the CFF font
+must draw again at the end.
 
 check-config builds render_crc twice, once against EmuTOS's FreeType
 configuration and once with FreeType's own render pool (16384 bytes,
@@ -78,7 +84,9 @@ and 50 sizes of one face (open faces stay bounded, the file is read once,
 the first size still draws) are checked last.
 
 test_ftmem gets the allocator's system blocks from malloc(), cut to size
-and only 2-byte aligned as GEMDOS blocks can be. It checks every block is
+and only 2-byte aligned as GEMDOS blocks can be. With outline_stack_low()
+saying the font stack is nearly used up, nothing is given, and a block that
+cannot grow is left as it was. It checks every block is
 8-byte aligned, from size 0 up and across the 16 KB line between arena and
 own blocks; that 16 KB blocks come from arenas and larger ones each from a
 system block of their own; that arenas are taken as needed and given back

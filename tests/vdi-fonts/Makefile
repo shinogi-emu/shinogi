@@ -46,21 +46,25 @@ TEST_OBJ   = $(OBJ)/test_vdi_fonts.o $(OBJ)/host_ftos.o
 
 # the fonts of test_stack: every glyph of the CFF font built of two
 # others (seac); glyphs 1-60 of the second font a chain of composite
-# glyphs, glyphs 200-1399 one, and glyphs 1-1200 (through 'A') one
-STACK_FONTS = $(OBJ)/SEAC.OTF $(OBJ)/CHAIN60.TTF $(OBJ)/CHAIN1200.TTF $(OBJ)/CHAINA.TTF
+# glyphs, glyphs 200-1399 one, and glyphs 1-1200 (through 'A') one; and
+# the second font with a prep program that never ends
+STACK_FONTS = $(OBJ)/SEAC.OTF $(OBJ)/CHAIN60.TTF $(OBJ)/CHAIN1200.TTF $(OBJ)/CHAINA.TTF \
+              $(OBJ)/LOOP.TTF
 
 # test_ftmem checks the allocator of vdi/vdi_ftmem.c on its own;
 # test_vdi_fonts_ftmem runs the engine checks again with every engine
 # allocation going through that allocator; test_stack runs the engine on
 # a stack of the size of EmuTOS's font stack, over fonts that mkfonts
-# makes; check-config compares FreeType's images under EmuTOS's settings
-# with those under FreeType's own
+# makes, and test_stack_ftmem again with the allocator, whose own guard
+# refuses memory near the bottom of the stack; check-config compares
+# FreeType's images under EmuTOS's settings with those under FreeType's own
 check: $(OBJ)/test_ftmem $(OBJ)/test_vdi_fonts $(OBJ)/test_vdi_fonts_ftmem \
-       $(OBJ)/test_stack $(STACK_FONTS) check-config
+       $(OBJ)/test_stack $(OBJ)/test_stack_ftmem $(STACK_FONTS) check-config
 	$(OBJ)/test_ftmem
 	$(OBJ)/test_vdi_fonts $(SANS) $(SECOND) $(MONO)
 	$(OBJ)/test_vdi_fonts_ftmem $(SANS) $(SECOND) $(MONO)
 	$(OBJ)/test_stack $(CFF) $(STACK_FONTS)
+	$(OBJ)/test_stack_ftmem $(CFF) $(STACK_FONTS)
 
 $(OBJ)/SEAC.OTF: $(OBJ)/mkfonts
 	$(OBJ)/mkfonts seac $(CFF) $@
@@ -70,11 +74,17 @@ $(OBJ)/CHAIN1200.TTF: $(OBJ)/mkfonts
 	$(OBJ)/mkfonts chain $(SECOND) $@ 1200 200
 $(OBJ)/CHAINA.TTF: $(OBJ)/mkfonts
 	$(OBJ)/mkfonts chain $(SECOND) $@ 1200 1
+$(OBJ)/LOOP.TTF: $(OBJ)/mkfonts
+	$(OBJ)/mkfonts loop $(SECOND) $@
 
 $(OBJ)/mkfonts: $(OBJ)/mkfonts.o $(OBJ)/host_ftos.o $(FT_OBJ)
 	$(CC) $(ARCH) $(SAN) -o $@ $^
 
 $(OBJ)/test_stack: $(OBJ)/test_stack.o $(OBJ)/host_ftos.o $(ENGINE_OBJ) $(FT_OBJ)
+	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_stack_ftmem: $(OBJ)/test_stack.o $(OBJ)/host_ftos_ftmem.o $(OBJ)/vdi_ftmem.o \
+                         $(ENGINE_OBJ) $(FT_OBJ)
 	$(CC) $(ARCH) $(SAN) -o $@ $^
 
 # FreeType with its own values of what EmuTOS changes: the render pool of

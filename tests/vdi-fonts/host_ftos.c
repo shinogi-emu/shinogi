@@ -16,10 +16,8 @@
 #include <string.h>
 
 #include "vdi_ftos.h"
-#include "host_ftos.h"
-#ifdef HOST_FTMEM
 #include "vdi_ftmem.h"
-#endif
+#include "host_ftos.h"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -58,7 +56,11 @@ long host_file_loads(void)
 }
 
 
-/* the stack guard: vdi_ftos.c refuses memory near the bottom of the font stack */
+/*
+ * the stack guard: EmuTOS's vdi_ftmem.c refuses memory near the bottom of
+ * the font stack, asking vdi_outline.c's outline_stack_low(); this is the
+ * host's
+ */
 static uintptr_t guard_bottom, guard_top, guard_low;
 static long stack_refused;
 
@@ -74,8 +76,7 @@ long host_stack_refused(void)
     return stack_refused;
 }
 
-/* as outline_stack_low() */
-static __attribute__((noinline)) int stack_low(void)
+__attribute__((noinline)) BOOL outline_stack_low(void)
 {
     volatile char here;
     uintptr_t sp = (uintptr_t)&here;
@@ -117,8 +118,6 @@ void *vdi_ft_alloc(ULONG size)
 {
     void *block;
 
-    if (stack_low())
-        return NULL;
     if (fail_after == 0)
     {
         refused++;
@@ -154,8 +153,6 @@ void *vdi_ft_realloc(void *block, ULONG size)
         vdi_ft_free(block);
         return NULL;
     }
-    if (stack_low())
-        return NULL;
     if (fail_after == 0)
     {
         refused++;
@@ -179,7 +176,7 @@ void *vdi_ft_alloc(ULONG size)
 {
     unsigned char *block;
 
-    if (stack_low())
+    if (outline_stack_low())        /* as vdi_ftmem.c does (see vdi_ftos.h) */
         return NULL;
     if (fail_after == 0)
     {

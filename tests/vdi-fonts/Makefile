@@ -6,7 +6,7 @@
 # straight out of the EmuTOS tree with the host gcc, -m32 (32-bit long, as
 # on the target) and ASan/UBSan, against host_ftos.c instead of GEMDOS.
 # See README.txt.
-EMUTOS ?= ../../../emutos-vdi-fonts
+EMUTOS ?= ../../emutos
 FONTS  ?= /usr/share/fonts/truetype
 SANS   ?= $(FONTS)/liberation/LiberationSans-Regular.ttf
 SECOND ?= $(FONTS)/dejavu/DejaVuSans.ttf

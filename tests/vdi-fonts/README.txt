@@ -11,7 +11,7 @@ test_vdi_fonts_ftmem the engine again with every block from the allocator,
 whose arenas come from malloc(), and test_stack the engine on a stack of the
 size of EmuTOS's font stack; check-config compares FreeType's images under
 EmuTOS's FreeType settings with those under FreeType's own. EMUTOS= names
-the tree (default ../../../emutos-vdi-fonts); SANS=, SECOND= and MONO= name
+the tree (default ../../emutos, the submodule); SANS=, SECOND= and MONO= name
 the fonts (default Liberation Sans, DejaVu Sans and DejaVu Sans Mono under
 /usr/share/fonts/truetype), CFF= a CFF OpenType font (default Nimbus Sans
 from the URW base 35 fonts) and CONFIG_FONTS= more fonts for check-config.

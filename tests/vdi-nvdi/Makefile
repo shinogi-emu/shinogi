@@ -8,7 +8,7 @@
 # so that the test checks the tables the VDI really starts with.  The file
 # must not use a plain int (EmuTOS is built with 16-bit ints): that is
 # checked too.  See README.txt.
-EMUTOS ?= ../../../emutos-vdi-fonts
+EMUTOS ?= ../../emutos
 
 CC  ?= gcc
 OBJ = obj

@@ -6,7 +6,7 @@ calls (vdi/vdi_nvdimath.c) and the pixel conversion of vr_transfer_bits
 (vdi/vdi_xfercore.c) straight out of the EmuTOS tree with the host gcc,
 -m32 (32-bit long, as on the target) and ASan/UBSan, and runs test_nvdimath
 and test_xfer.
-EMUTOS= names the tree (default ../../../emutos-vdi-fonts). Requires gcc with
+EMUTOS= names the tree (default ../../emutos, the submodule). Requires gcc with
 32-bit multilib and the 32-bit ASan/UBSan runtimes.
 
 The files are pure (no hardware, no VDI globals) and EmuTOS is built with

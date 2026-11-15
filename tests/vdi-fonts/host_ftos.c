@@ -10,6 +10,7 @@
  * from malloc() here, as vdi_ftos.c gives it GEMDOS blocks.
  */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +58,37 @@ long host_file_loads(void)
 }
 
 
+/* the stack guard: vdi_ftos.c refuses memory near the bottom of the font stack */
+static uintptr_t guard_bottom, guard_top, guard_low;
+static long stack_refused;
+
+void host_stack_guard(const void *bottom, unsigned long size, unsigned long guard)
+{
+    guard_bottom = (uintptr_t)bottom;
+    guard_top = guard_bottom + size;
+    guard_low = guard_bottom + guard;
+}
+
+long host_stack_refused(void)
+{
+    return stack_refused;
+}
+
+/* as outline_stack_low() */
+static __attribute__((noinline)) int stack_low(void)
+{
+    volatile char here;
+    uintptr_t sp = (uintptr_t)&here;
+
+    if (sp >= guard_bottom && sp < guard_top && sp < guard_low)
+    {
+        stack_refused++;
+        return 1;
+    }
+    return 0;
+}
+
+
 #ifdef HOST_FTMEM
 
 static long os_blocks;
@@ -85,6 +117,8 @@ void *vdi_ft_alloc(ULONG size)
 {
     void *block;
 
+    if (stack_low())
+        return NULL;
     if (fail_after == 0)
     {
         refused++;
@@ -120,6 +154,8 @@ void *vdi_ft_realloc(void *block, ULONG size)
         vdi_ft_free(block);
         return NULL;
     }
+    if (stack_low())
+        return NULL;
     if (fail_after == 0)
     {
         refused++;
@@ -143,6 +179,8 @@ void *vdi_ft_alloc(ULONG size)
 {
     unsigned char *block;
 
+    if (stack_low())
+        return NULL;
     if (fail_after == 0)
     {
         refused++;

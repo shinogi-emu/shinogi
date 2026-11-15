@@ -4,16 +4,47 @@ VDI outline font engine checks
 make -C tests/vdi-fonts check builds EmuTOS's outline font engine
 (vdi/vdi_ft2.c, vdi/vdi_ftmap.c), its memory allocator (vdi/vdi_ftmem.c) and
 its FreeType subset straight out of the EmuTOS tree with the host gcc, -m32
-(32-bit long, as on the target) and ASan/UBSan, and runs three programs:
+(32-bit long, as on the target) and ASan/UBSan, and runs four programs:
 test_ftmem checks the allocator on its own, test_vdi_fonts the engine with
-host_ftos.c in place of the GEMDOS services of vdi/vdi_ftos.c, and
+host_ftos.c in place of the GEMDOS services of vdi/vdi_ftos.c,
 test_vdi_fonts_ftmem the engine again with every block from the allocator,
-whose arenas come from malloc(). EMUTOS= names the tree (default
-../../../emutos-vdi-fonts); SANS=, SECOND= and MONO= name the fonts (default
-Liberation Sans, DejaVu Sans and DejaVu Sans Mono under
-/usr/share/fonts/truetype). Requires gcc with 32-bit multilib and the 32-bit
-ASan/UBSan runtimes. Temporary files go to a fresh folder under $TMPDIR
-(or /tmp) and are removed afterwards.
+whose arenas come from malloc(), and test_stack the engine on a stack of the
+size of EmuTOS's font stack; check-config compares FreeType's images under
+EmuTOS's FreeType settings with those under FreeType's own. EMUTOS= names
+the tree (default ../../../emutos-vdi-fonts); SANS=, SECOND= and MONO= name
+the fonts (default Liberation Sans, DejaVu Sans and DejaVu Sans Mono under
+/usr/share/fonts/truetype), CFF= a CFF OpenType font (default Nimbus Sans
+from the URW base 35 fonts) and CONFIG_FONTS= more fonts for check-config.
+Requires gcc with 32-bit multilib and the 32-bit ASan/UBSan runtimes.
+Temporary files go to a fresh folder under $TMPDIR (or /tmp) and are
+removed afterwards.
+
+test_stack runs every engine call on a stack of VDI_FT_STACK_SIZE bytes
+(vdi/vdi_ft2.h) made with makecontext(), above a 256-byte canary, with
+host_ftos.c refusing memory within VDI_FT_STACK_GUARD bytes of the bottom,
+as vdi/vdi_ftos.c does on the font stack. Its fonts are made by mkfonts
+from CFF= and SECOND=: a copy of the CFF font whose glyphs, but 'A' and
+'acute', are the implied seac form of endchar (an accented A, which FreeType
+interprets one level down, about 16 KB of stack a level), and copies of the
+TrueType font whose glyphs 1-60, 200-1399 and 1-1200 form chains of
+composite glyphs. First, without the guard on a 2 MB stack, the seac glyph
+must need over 8 KB more stack than a plain one, and the deepest glyph of
+the long chain more than the whole font stack. Then, on the font stack,
+every character up to U+FFFF of each font is drawn at 16 and 72 pixels and
+compared with FreeType's own image, drawn on the main stack: the CFF font,
+the seac font and the short chain draw every character as FreeType does,
+with no allocation refused; the long chain draws as FreeType does what it
+draws, refuses only composite glyphs, and the guard refuses some
+allocations; the chain through 'A' is not registered (its 'A' cannot be
+loaded). The canary must stay untouched, no block may be left after
+vdi_ft_term, and the CFF font must draw again at the end.
+
+check-config builds render_crc twice, once against EmuTOS's FreeType
+configuration and once with FreeType's own render pool (16384 bytes,
+EmuTOS's freetype/config/ftoption.h has 8192) and bytecode instruction
+limit (a million, EmuTOS's Makefile sets 50000). Both checksum every glyph
+image of the fonts at 8 to 300 pixels, monochrome and grey; the two outputs
+must be the same.
 
 Liberation Sans is registered and sized at 12 pt, 16 pixels. "Atari" renders
 as wide as the sum of its advances and as high as top + bottom, matches its

@@ -27,3 +27,14 @@ test_nvdimath checks:
   the equal entries; of equal distances the lowest entry wins, also over
   several tables scanned in turn.
 Temporary files go to obj/ and are removed by make clean.
+
+vr_clip_rects (clip_pair, bring_along, muldiv32 of the same file) is checked
+against a reference in 64-bit arithmetic, which only the test uses:
+- the five vectors of the guest test NVDIMISC, and refused inputs (upside
+  down rectangles, a side of 2^31 pixels or more);
+- every 16-bit pair of sizes 1-24, offsets -8 to 32, against six clips, by
+  destination and by source;
+- 32-bit sizes across 2^16 and 2^31 and starts up to +-0x7fffffff, with
+  clips at the ends of the range;
+- muldiv32 for 10^6 pseudo-random triples, and its edges (a quotient over
+  0x7fffffff is capped, operands out of range give 0).

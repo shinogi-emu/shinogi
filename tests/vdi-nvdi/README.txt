@@ -4,8 +4,8 @@ VDI NVDI colour arithmetic and raster transfer checks
 make -C tests/vdi-nvdi check builds the arithmetic of EmuTOS's NVDI colour
 calls (vdi/vdi_nvdimath.c) and the pixel conversion of vr_transfer_bits
 (vdi/vdi_xfercore.c) straight out of the EmuTOS tree with the host gcc,
--m32 (32-bit long, as on the target) and ASan/UBSan, and runs test_nvdimath
-and test_xfer.
+-m32 (32-bit long, as on the target) and ASan/UBSan, and runs test_nvdimath,
+test_xfer and test_dither.
 EMUTOS= names the tree (default ../../emutos, the submodule). Requires gcc with
 32-bit multilib and the 32-bit ASan/UBSan runtimes.
 
@@ -72,3 +72,29 @@ on 64-bit integers, not against the rational stepping the code runs:
   an odd address or line for 16- and 32-bit pixels, an origin or size outside
   the 16-bit coordinates, more than 2^31 - 1 bytes, destinations of 3 or 24
   planes, rectangles outside the bitmap or upside down, memory that overlaps.
+
+test_dither checks the index path of vdi_xfercore.c (8-bit indexed
+destinations, and dithering, mode 128) against references independent of
+it, as fVDI's tests/indexed.c has them:
+- the inverse colour maps (v_create_itab, and the tables the VDI makes for
+  its own palettes): every cell at 3, 4 and 5 bits a component, for random
+  palettes of 1 to 256 colours with and without equal colours, against a
+  full search at the centre of the cell (squared distance at 8 bits, the
+  first of equals); the lookup of random colours; a grey ramp of cell
+  centres finds itself; the work memory is exactly XFER_ITAB_WORK(count);
+- the remapping of 8-bit sources: the same index if it has the colour,
+  else the first index with it, else the inverse map; the source colours;
+  the flags for every colour found exactly and for every index staying;
+- rows of the index path for 8-bit sources and every direct source kind
+  (15, 16, 24 bits in both orders, 32 bits), with and without diffusion,
+  enlarged, reduced and 1:1 (sizes 1-31 paired, and 61x113, 197x7 onto
+  320x9 and 160x50), onto palettes of 2 to 256 colours: each index equals
+  fVDI's reference (nearest or four-sample filtered colour, Floyd-Steinberg
+  over two wide error rows, an 8-bit source whose colours are all in the
+  destination keeping its indices and not dithered); a window of the
+  rectangle equals the same part of the whole (the diffusion runs through
+  the parts not drawn); guard bytes around each row stay;
+- a mid grey dithered onto black and white is about half white, no index
+  beyond the palette;
+- the memory of an 8-bit indexed destination: its size, and the refusals
+  (a line too short, another pixel format, other bits, no address).

@@ -1,6 +1,6 @@
 # Host checks for the arithmetic of the NVDI colour calls of EmuTOS's VDI
 # (vdi/vdi_nvdimath.c) and for the pixel conversion of vr_transfer_bits
-# (vdi/vdi_xfercore.c).
+# (vdi/vdi_xfercore.c), with its inverse colour tables and dithering.
 #
 # The file is built straight out of the EmuTOS tree with the host gcc, -m32
 # (32-bit long, as on the target) and ASan/UBSan.  It is pure arithmetic,
@@ -21,9 +21,10 @@ CFLAGS = $(ARCH) $(SAN) -O1 -g -Wall -Wextra -Werror -std=gnu99 -I$(EMUTOS)/vdi 
 PURE = $(EMUTOS)/vdi/vdi_nvdimath.c $(EMUTOS)/vdi/vdi_nvdimath.h \
        $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h
 
-check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer
+check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither
 	$(OBJ)/test_nvdimath
 	$(OBJ)/test_xfer
+	$(OBJ)/test_dither
 
 # the pure files contain no plain int
 noint:
@@ -35,6 +36,12 @@ $(OBJ)/test_nvdimath: $(OBJ)/test_nvdimath.o $(OBJ)/vdi_nvdimath.o
 
 $(OBJ)/test_xfer: $(OBJ)/test_xfer.o $(OBJ)/vdi_xfercore.o
 	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_dither: $(OBJ)/test_dither.o $(OBJ)/vdi_xfercore.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_dither.o: test_dither.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ)/vdi_xfercore.o: $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@

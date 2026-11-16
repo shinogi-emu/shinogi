@@ -5,14 +5,14 @@ make -C tests/vdi-nvdi check builds the arithmetic of EmuTOS's NVDI colour
 calls (vdi/vdi_nvdimath.c) and the pixel conversion of vr_transfer_bits
 (vdi/vdi_xfercore.c) straight out of the EmuTOS tree with the host gcc,
 -m32 (32-bit long, as on the target) and ASan/UBSan, and runs test_nvdimath,
-test_xfer and test_dither.
+test_xfer, test_dither and test_bezier.
 EMUTOS= names the tree (default ../../emutos, the submodule). Requires gcc with
 32-bit multilib and the 32-bit ASan/UBSan runtimes.
 
 The files are pure (no hardware, no VDI globals) and EmuTOS is built with
-16-bit ints, so the check first fails if vdi_nvdimath.c, vdi_xfercore.c or
-their headers contain a plain int (or unsigned int): sizes, products and
-distances are LONG/ULONG there.
+16-bit ints, so the check first fails if vdi_nvdimath.c, vdi_xfercore.c,
+vdi_bezcore.c or their headers contain a plain int (or unsigned int):
+sizes, products and distances are LONG/ULONG there.
 
 test_nvdimath checks:
 - the VDI scale 0-1000 against the 16-bit one 0-65535 for every value from
@@ -97,4 +97,22 @@ it, as fVDI's tests/indexed.c has them:
 - a mid grey dithered onto black and white is about half white, no index
   beyond the palette;
 - the memory of an 8-bit indexed destination: its size, and the refusals
-  (a line too short, another pixel format, other bits, no address).
+  (a line too short, another pixel format, other bits, no address);
+- xfer_remap given counts over 256 (257, 1000, 32767): it takes 256, into
+  tables of exactly 256 entries.
+
+test_bezier checks vdi/vdi_bezcore.c, the points of the Bezier curves
+(v_bez, v_bez_fill), against fVDI's own code (engine/bezier.c: bez_depth,
+do_bez4 and the loops of calc_bez, copied into the test with the two
+differences the VDI documents: a curve needs its four points, flags only
+as far as given):
+- 6000 random inputs of 1-63 points, random curve and move flags, as many
+  flags as points less one or fewer, each depth scale, closed and open,
+  three clipping rectangles, coordinates small and across the whole 16-bit
+  range: the count of points needed, the moves, whether anything is a curve
+  or a move, the points made and the polylines they start, as fVDI's;
+- the count is an upper bound of the points made;
+- with less room than needed (one short, half, none) the making refuses
+  and writes nothing past the room; the points, the flags and the output
+  are allocated to their exact size, so ASan sees any read or write beyond;
+- no points; three points with a curve's flag (not a curve).

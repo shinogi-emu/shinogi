@@ -19,12 +19,14 @@ SAN  = -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-po
 CFLAGS = $(ARCH) $(SAN) -O1 -g -Wall -Wextra -Werror -std=gnu99 -I$(EMUTOS)/vdi -idirafter $(EMUTOS)/include
 
 PURE = $(EMUTOS)/vdi/vdi_nvdimath.c $(EMUTOS)/vdi/vdi_nvdimath.h \
-       $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h
+       $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h \
+       $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h
 
-check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither
+check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither $(OBJ)/test_bezier
 	$(OBJ)/test_nvdimath
 	$(OBJ)/test_xfer
 	$(OBJ)/test_dither
+	$(OBJ)/test_bezier
 
 # the pure files contain no plain int
 noint:
@@ -41,6 +43,15 @@ $(OBJ)/test_dither: $(OBJ)/test_dither.o $(OBJ)/vdi_xfercore.o
 	$(CC) $(ARCH) $(SAN) -o $@ $^
 
 $(OBJ)/test_dither.o: test_dither.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/test_bezier: $(OBJ)/test_bezier.o $(OBJ)/vdi_bezcore.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_bezier.o: test_bezier.c $(EMUTOS)/vdi/vdi_bezcore.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/vdi_bezcore.o: $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ)/vdi_xfercore.o: $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h | $(OBJ)

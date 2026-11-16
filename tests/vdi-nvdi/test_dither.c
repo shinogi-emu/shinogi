@@ -235,6 +235,31 @@ static void test_remap(void)
         check(((flags & XFER_REMAP_SAME) != 0) == same, "remap same flag", round, flags);
         free(map);
     }
+
+    /*
+     * Counts over 256 (a caller's table read twice, the second time larger):
+     * at most 256 entries are written and read, into tables of exactly 256
+     */
+    {
+        static const WORD over[3] = { 257, 1000, 32767 };
+        COLOR_ENTRY *big = malloc(sizeof(COLOR_ENTRY) * 256);
+        UBYTE *rm = malloc(256);
+        ULONG *sp = malloc(256 * sizeof(ULONG));
+        unsigned char *map;
+        int k;
+
+        random_palette(big, 256, 0);
+        map = make_map(big, 256, 4);
+        for (k = 0; k < 3; k++)
+        {
+            flags = xfer_remap(big, over[k], big, over[k], map, 4, rm, sp);
+            check((flags & XFER_REMAP_EXACT) && (flags & XFER_REMAP_SAME), "a count over 256 is 256", k, flags);
+        }
+        free(big);
+        free(rm);
+        free(sp);
+        free(map);
+    }
 }
 
 /* ------------------------------------------------------------------ */

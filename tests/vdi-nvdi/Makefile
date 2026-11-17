@@ -1,6 +1,8 @@
 # Host checks for the arithmetic of the NVDI colour calls of EmuTOS's VDI
-# (vdi/vdi_nvdimath.c) and for the pixel conversion of vr_transfer_bits
-# (vdi/vdi_xfercore.c), with its inverse colour tables and dithering.
+# (vdi/vdi_nvdimath.c), for the pixel conversion of vr_transfer_bits
+# (vdi/vdi_xfercore.c), with its inverse colour tables and dithering, for
+# the points of its Bezier curves (vdi/vdi_bezcore.c) and for the blending
+# of its anti-aliased text (vdi/vdi_textaa.c).
 #
 # The file is built straight out of the EmuTOS tree with the host gcc, -m32
 # (32-bit long, as on the target) and ASan/UBSan.  It is pure arithmetic,
@@ -20,13 +22,16 @@ CFLAGS = $(ARCH) $(SAN) -O1 -g -Wall -Wextra -Werror -std=gnu99 -I$(EMUTOS)/vdi 
 
 PURE = $(EMUTOS)/vdi/vdi_nvdimath.c $(EMUTOS)/vdi/vdi_nvdimath.h \
        $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h \
-       $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h
+       $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h \
+       $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h
 
-check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither $(OBJ)/test_bezier
+check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither $(OBJ)/test_bezier \
+       $(OBJ)/test_textaa
 	$(OBJ)/test_nvdimath
 	$(OBJ)/test_xfer
 	$(OBJ)/test_dither
 	$(OBJ)/test_bezier
+	$(OBJ)/test_textaa
 
 # the pure files contain no plain int
 noint:
@@ -52,6 +57,15 @@ $(OBJ)/test_bezier.o: test_bezier.c $(EMUTOS)/vdi/vdi_bezcore.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ)/vdi_bezcore.o: $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/test_textaa: $(OBJ)/test_textaa.o $(OBJ)/vdi_textaa.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^ -lm
+
+$(OBJ)/test_textaa.o: test_textaa.c $(EMUTOS)/vdi/vdi_textaa.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/vdi_textaa.o: $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ)/vdi_xfercore.o: $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h | $(OBJ)

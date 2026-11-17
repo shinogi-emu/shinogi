@@ -81,7 +81,27 @@ italic widen, light lightens, underline adds full rows. A width set apart
 from the height narrows the text but not the cell. Outlines, vqt_xfntinfo
 and vqt_fontheader data, monospace extents, unique ids across three fonts,
 and 50 sizes of one face (open faces stay bounded, the file is read once,
-the first size still draws) are checked last.
+the first size still draws) are checked next.
+
+Coverage, for anti-aliased text (vdi_ft_render with VDI_FT_COVERAGE), is
+checked last: each printable ASCII character, and seven strings ("ffffjjj///"
+and "AVAWAY" among them, so that glyphs overlap), render as FreeType's own
+grey images laid at the pen positions, united where they overlap as the
+engine documents (a + b - a * b / 255); the box, origin and advance are
+those of the one-plane string, the rows padded to whole longs. For effects
+0-31 the box and extent are those of one-plane text, a pixel is fully
+covered (but by the half-pixel lines of outlined text), light text never
+passes half (and is half of plain text glyph by glyph), underlined text has
+as many full rows as the underline is thick, bold is wider and darker,
+italic and skew wider. After a coverage string, a measured string is drawn
+with one allocation (the measuring rendered its coverage), and its one-plane
+image is still made when asked for. Without memory a coverage string is
+refused and nothing leaks; failing at each of 29 allocations of a new glyph
+keeps at most the cached glyph. 448 glyphs of 100 pixels (two instances,
+three million bytes of strings) keep at most 256 KB of images plus
+overhead (the stand-in counts the bytes of live blocks; the vdi_ftmem.c
+build does not tell, and skips this), and the first glyph, whose image went,
+draws again the same.
 
 test_ftmem gets the allocator's system blocks from malloc(), cut to size
 and only 2-byte aligned as GEMDOS blocks can be. With outline_stack_low()

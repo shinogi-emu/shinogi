@@ -2,16 +2,18 @@ VDI NVDI colour arithmetic and raster transfer checks
 =====================================================
 
 make -C tests/vdi-nvdi check builds the arithmetic of EmuTOS's NVDI colour
-calls (vdi/vdi_nvdimath.c) and the pixel conversion of vr_transfer_bits
-(vdi/vdi_xfercore.c) straight out of the EmuTOS tree with the host gcc,
--m32 (32-bit long, as on the target) and ASan/UBSan, and runs test_nvdimath,
-test_xfer, test_dither and test_bezier.
+calls (vdi/vdi_nvdimath.c), the pixel conversion of vr_transfer_bits
+(vdi/vdi_xfercore.c), the points of its Bezier curves (vdi/vdi_bezcore.c)
+and the blending of its anti-aliased text (vdi/vdi_textaa.c) straight out
+of the EmuTOS tree with the host gcc, -m32 (32-bit long, as on the target)
+and ASan/UBSan, and runs test_nvdimath, test_xfer, test_dither,
+test_bezier and test_textaa.
 EMUTOS= names the tree (default ../../emutos, the submodule). Requires gcc with
 32-bit multilib and the 32-bit ASan/UBSan runtimes.
 
 The files are pure (no hardware, no VDI globals) and EmuTOS is built with
 16-bit ints, so the check first fails if vdi_nvdimath.c, vdi_xfercore.c,
-vdi_bezcore.c or their headers contain a plain int (or unsigned int):
+vdi_bezcore.c, vdi_textaa.c or their headers contain a plain int (or unsigned int):
 sizes, products and distances are LONG/ULONG there.
 
 test_nvdimath checks:
@@ -116,3 +118,32 @@ as far as given):
   and writes nothing past the room; the points, the flags and the output
   are allocated to their exact size, so ASan sees any read or write beyond;
 - no points; three points with a curve's flag (not a curve).
+
+test_textaa checks vdi/vdi_textaa.c, the blending of anti-aliased outline
+text into the 16-bit pixels (rrrrrggggg0bbbbb, the only direct-colour
+format the VDI draws in), against the rule the file documents, worked out
+in floating point: coverage c is step (c + 4) / 8 of 32, and a component
+goes from d to d + (f - d) * step / 32, rounded half up:
+- the step of every coverage 0-255: 0-3 leave a pixel, 252-255 are the
+  text colour, 128 is half way, the steps rise;
+- every pair of 5-bit components at every step 0-32, in each of the three
+  positions with the other components random: as the rule, between the two
+  colours, moving towards the text colour as the step rises, the other
+  components kept; 2,000,000 random pixels and steps; bit 5 of a blend is
+  clear; step 0 is the pixel (bit 5 too), step 32 the text colour;
+- areas of 1-19 x 1-7 pixels, of the basic colours in pairs and of random
+  colours up to 80 x 40, in replace and transparent mode, over a plain
+  background, two alternating colours, stripes of the text colour and
+  random pixels, with coverage of every kind (plenty of 0, 255 and their
+  neighbours 3, 4, 251, 252) and mostly blank as text is, starting at
+  every alignment and in rows with padding: each pixel as the rule (from
+  the background colour in replace mode, from the pixel in transparent
+  mode), and a frame of known pixels around the area unchanged; areas of
+  no width or height;
+- windows cut at every side, every start column, out of a 23 x 11 area
+  (as the VDI starts a clipped bitmap at sx,sy), dense and sparse, both
+  modes: the same pixels as the whole there, nothing else;
+- the turns by 90, 180 and 270 degrees of images 1-17 x 1-13 and 300 x 40
+  with padded rows: each pixel where one-bit text is turned, the padding
+  of the result untouched; four quarter turns, and a quarter and three
+  quarters, give the image back.

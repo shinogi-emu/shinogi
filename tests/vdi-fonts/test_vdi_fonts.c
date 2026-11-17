@@ -1061,6 +1061,340 @@ static void check_info(void)
 }
 
 
+/*
+ * Coverage (VDI_FT_COVERAGE): anti-aliased text
+ */
+
+static int cover_at(const VdiOutlineBitmap *b, long x, long y)
+{
+    return ((const UBYTE *)b->data)[y * b->wdwidth * 2 + x];
+}
+
+static long cover_sum(const VdiOutlineBitmap *b)
+{
+    long x, y, n = 0;
+
+    for (y = 0; y < b->height; y++)
+        for (x = 0; x < b->width; x++)
+            n += cover_at(b, x, y);
+    return n;
+}
+
+/* the documented union of two coverages */
+static unsigned over(unsigned a, unsigned b)
+{
+    unsigned t = a * b + 128;
+
+    return a + b - ((t + (t >> 8)) >> 8);
+}
+
+/*
+ * draw a string as coverage, and draw it again here from FreeType's own
+ * grey images of its glyphs (plain ASCII, whose Atari codes are Unicode),
+ * laid at the pen positions with the documented union; the number of
+ * pixels that differ, or -1 if it did not render; *overlaps counts the
+ * pixels where glyphs overlap
+ */
+static long cover_vs_reference(VdiOutlineFont *f, const char *s, long *overlaps)
+{
+    VdiOutlineBitmap b, mono;
+    WORD text[64];
+    long n = to_words(s, text), i, x, y, pen, bad = 0;
+    unsigned char *ref;
+
+    *overlaps = 0;
+    if (vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) != 1 || !b.data)
+        return -1;
+    if (vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, 0, 0, &mono) != 0 || !mono.data)
+    {
+        vdi_ft_release(&b);
+        return -1;
+    }
+    /* the same box as the one-plane string, rows padded to even bytes */
+    CHECK(b.width == mono.width && b.height == mono.height && b.origin_x == mono.origin_x &&
+          b.origin_y == mono.origin_y && b.advance_x == mono.advance_x,
+          "\"%s\": coverage %ldx%ld at %ld,%ld +%ld, one-plane %ldx%ld at %ld,%ld +%ld", s,
+          b.width, b.height, b.origin_x, b.origin_y, b.advance_x,
+          mono.width, mono.height, mono.origin_x, mono.origin_y, mono.advance_x);
+    CHECK(b.wdwidth * 2 >= b.width && b.wdwidth * 2 < b.width + 4, "\"%s\": wdwidth %ld for width %ld", s, b.wdwidth, b.width);
+    vdi_ft_release(&mono);
+
+    ref = calloc(b.width * b.height, 1);
+    pen = 0;
+    for (i = 0; i < n; i++)
+    {
+        FT_UInt gi = ref_index((UBYTE)s[i]);
+        FT_Bitmap *rb;
+        long left, top;
+
+        if (FT_Load_Glyph(ref_face, gi, FT_LOAD_DEFAULT) ||
+            FT_Render_Glyph(ref_face->glyph, FT_RENDER_MODE_NORMAL))
+        {
+            free(ref);
+            vdi_ft_release(&b);
+            return -1;
+        }
+        rb = &ref_face->glyph->bitmap;
+        left = b.origin_x + pen + ref_face->glyph->bitmap_left;
+        top = b.origin_y - ref_face->glyph->bitmap_top;
+        for (y = 0; y < (long)rb->rows; y++)
+            for (x = 0; x < (long)rb->width; x++)
+            {
+                long bx = left + x, by = top + y;
+                unsigned v = rb->buffer[y * rb->pitch + x];
+
+                if (!v || by < 0 || by >= b.height)
+                    continue;
+                CHECK(bx >= 0 && bx < b.width, "\"%s\": glyph %ld cut at the side (%ld)", s, i, bx);
+                if (bx < 0 || bx >= b.width)
+                    continue;
+                if (ref[by * b.width + bx])
+                    (*overlaps)++;
+                ref[by * b.width + bx] = (unsigned char)over(ref[by * b.width + bx], v);
+            }
+        pen += (ref_face->glyph->advance.x + 63) >> 6;
+    }
+
+    for (y = 0; y < b.height; y++)
+        for (x = 0; x < b.width; x++)
+            if (cover_at(&b, x, y) != ref[y * b.width + x])
+                bad++;
+    free(ref);
+    vdi_ft_release(&b);
+    return bad;
+}
+
+static void check_coverage(void)
+{
+    VdiOutlineFont *face, *f, *big;
+    VdiOutlineBitmap b, plain, mono;
+    WORD text[64];
+    long n, e, c, bad, overlaps, all_overlaps = 0, before;
+    LONG w, h;
+    static const char *const strings[] = {
+        "Hamburgefonts", "Atari", "ffffjjj///", "AVAWAY", "x", "|", "iiiiii"
+    };
+
+    printf("coverage\n");
+    face = start(sans_path);
+    f = face ? vdi_ft_size(face, PT, PX, 0) : NULL;
+    CHECK(f != NULL, "no font");
+    if (!f)
+    {
+        stop();
+        return;
+    }
+
+    /* each printable ASCII character, and strings, as FreeType draws them */
+    for (c = 0x21; c < 0x7f; c++)
+    {
+        char s[2] = { (char)c, 0 };
+
+        bad = cover_vs_reference(f, s, &overlaps);
+        CHECK(bad == 0, "'%c': %ld pixels differ from FreeType's grey image", (int)c, bad);
+    }
+    for (e = 0; e < (long)(sizeof(strings) / sizeof(strings[0])); e++)
+    {
+        bad = cover_vs_reference(f, strings[e], &overlaps);
+        all_overlaps += overlaps;
+        CHECK(bad == 0, "\"%s\": %ld pixels differ from FreeType's grey images", strings[e], bad);
+    }
+    CHECK(all_overlaps > 0, "no glyphs overlapped: the union is not checked");
+    printf("  %ld overlapping pixels checked\n", all_overlaps);
+
+    /* a space renders nothing, but advances */
+    text[0] = ' ';
+    CHECK(vdi_ft_render(f, text, 1, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) >= 0, "space");
+    vdi_ft_release(&b);
+
+    /* the effects: the same box as one-plane, and what each does to coverage */
+    n = to_words("Hamburgefonts", text);
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &plain) == 1, "plain");
+    for (e = 0; e < 32; e++)
+    {
+        long x, y, full = 0, max = 0, half = 0;
+
+        CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, e | VDI_FT_COVERAGE, 0, &b) == 1 && b.data,
+              "effects %ld", e);
+        if (!b.data)
+            continue;
+        CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, e, 0, &mono) == 0 && mono.data,
+              "effects %ld one-plane", e);
+        CHECK(mono.width == b.width && mono.height == b.height && mono.advance_x == b.advance_x,
+              "effects %ld: coverage %ldx%ld +%ld, one-plane %ldx%ld +%ld", e,
+              b.width, b.height, b.advance_x, mono.width, mono.height, mono.advance_x);
+        vdi_ft_release(&mono);
+        CHECK(vdi_ft_text_extent(f, text, n, VDI_FT_MAP_ATARI, e, &w, &h) == 0 &&
+              w == b.width && h == b.height, "effects %ld: extent %ldx%ld, bitmap %ldx%ld",
+              e, (long)w, (long)h, b.width, b.height);
+
+        for (y = 0; y < b.height; y++)
+        {
+            long row_full = 1;
+
+            for (x = 0; x < b.width; x++)
+            {
+                long v = cover_at(&b, x, y);
+
+                if (v > max)
+                    max = v;
+                if (v != ((e & 2) ? 0x7f : 0xff))
+                    row_full = 0;
+            }
+            full += row_full;
+        }
+        /* a pixel is fully covered, but by the half-pixel lines of outlined
+         * text (the stroker's radius is a quarter of a pixel) */
+        if (e & 2)
+            CHECK(max <= 0x7f, "effects %ld: light text has coverage %ld", e, max);
+        else if (!(e & 16) || (e & 8))
+            CHECK(max == 0xff, "effects %ld: nothing fully covered (%ld)", e, max);
+        if (e & 8)
+            CHECK(full == f->underline_size, "effects %ld: %ld underline rows, %ld wanted",
+                  e, full, f->underline_size);
+        if (e == 1)
+            CHECK(b.width > plain.width && cover_sum(&b) > cover_sum(&plain), "bold");
+        if (e == 2)
+        {
+            /* the same glyphs, half the coverage (glyph by glyph: where two
+             * overlap, the union of the halves is more than half the union) */
+            long i;
+
+            for (i = 0; i < n; i++)
+            {
+                VdiOutlineBitmap g1, g2;
+
+                if (vdi_ft_render(f, &text[i], 1, VDI_FT_MAP_ATARI, 2 | VDI_FT_COVERAGE, 0, &g1) != 1)
+                    continue;
+                if (vdi_ft_render(f, &text[i], 1, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &g2) == 1)
+                {
+                    for (y = 0; y < g1.height; y++)
+                        for (x = 0; x < g1.width; x++)
+                            if (cover_at(&g1, x, y) != cover_at(&g2, x, y) >> 1)
+                                half++;
+                    vdi_ft_release(&g2);
+                }
+                vdi_ft_release(&g1);
+            }
+            CHECK(half == 0, "light: %ld pixels are not half of plain", half);
+        }
+        if (e == 4)
+            CHECK(b.width > plain.width, "italic not wider");
+        if (e == 16)
+            CHECK(cover_sum(&b) != cover_sum(&plain), "outlined is the same");
+        vdi_ft_release(&b);
+    }
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 200, &b) == 1 &&
+          b.width > plain.width, "skew 20 degrees");
+    vdi_ft_release(&b);
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, -200, &b) == 1 &&
+          b.width > plain.width, "skew -20 degrees");
+    vdi_ft_release(&b);
+
+    /* after a coverage string, measuring renders coverage too: a measured
+     * string is then drawn with one block, its own */
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) == 1, "coverage first");
+    vdi_ft_release(&b);
+    n = to_words("Zebra quick", text);
+    CHECK(vdi_ft_text_extent(f, text, n, VDI_FT_MAP_ATARI, 0, &w, &h) == 0, "extent");
+    before = host_alloc_total();
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) == 1 && b.width == w,
+          "render measured");
+    CHECK(host_alloc_total() - before == 1, "%ld allocations to draw measured coverage",
+          host_alloc_total() - before);
+    vdi_ft_release(&b);
+    /* and so does a size not drawn before, as the last string was coverage */
+    {
+        VdiOutlineFont *other = vdi_ft_size(face, 13, 17, 0);
+
+        CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) == 1, "coverage last");
+        vdi_ft_release(&b);
+        CHECK(other && vdi_ft_text_extent(other, text, n, VDI_FT_MAP_ATARI, 0, &w, &h) == 0,
+              "extent, new size");
+        before = host_alloc_total();
+        CHECK(other && vdi_ft_render(other, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) == 1 &&
+              b.width == w, "render measured, new size");
+        CHECK(host_alloc_total() - before == 1, "%ld allocations to draw measured coverage of a new size",
+              host_alloc_total() - before);
+        vdi_ft_release(&b);
+        CHECK(vdi_ft_text_extent(f, text, n, VDI_FT_MAP_ATARI, 0, &w, &h) == 0, "extent again");
+    }
+    /* and the one-plane image of the same glyphs is still made when asked */
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, 0, 0, &mono) == 0 && mono.width == w &&
+          ink(&mono) > 50, "one-plane after coverage");
+    vdi_ft_release(&mono);
+
+    /* no memory: refused, nothing kept, and drawn once memory is back */
+    n = to_words("Quixotic", text);
+    before = host_alloc_live();
+    host_alloc_fail_after(0);
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) < 0,
+          "coverage without memory");
+    host_alloc_fail_after(-1);
+    CHECK(host_alloc_live() == before, "%ld blocks leaked", host_alloc_live() - before);
+    for (c = 1; c < 30; c++)
+    {
+        /* every failure point of one string, uncached */
+        WORD one = (WORD)(0xc0 + c);
+
+        before = host_alloc_live();
+        host_alloc_fail_after(c);
+        if (vdi_ft_render(f, &one, 1, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) >= 0)
+            vdi_ft_release(&b);
+        host_alloc_fail_after(-1);
+        /* what was cached stays (and is freed by stop()), nothing else */
+        CHECK(host_alloc_live() - before <= 1, "%ld blocks after a failure at %ld",
+              host_alloc_live() - before, c);
+    }
+    CHECK(vdi_ft_render(f, text, n, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &b) == 1 && b.data,
+          "coverage after memory came back");
+    vdi_ft_release(&b);
+    vdi_ft_release(&plain);
+
+    /*
+     * The images are kept within the budget: at 100 pixels the 224 codes of
+     * two instances would take about 2 MB.  Then each draws as before.
+     */
+    big = vdi_ft_size(face, 75, 100, 0);
+    CHECK(big != NULL, "100 pixels");
+    if (big && host_alloc_bytes() >= 0)
+    {
+        long base_bytes, most = 0, i, sum = 0;
+        VdiOutlineBitmap first, again;
+        WORD a = 'A';
+
+        CHECK(vdi_ft_render(big, &a, 1, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &first) == 1, "big A");
+        CHECK(vdi_ft_render(big, &a, 1, VDI_FT_MAP_ATARI, 1 | VDI_FT_COVERAGE, 0, &b) == 1, "big bold A");
+        vdi_ft_release(&b);
+        base_bytes = host_alloc_bytes();
+        for (e = 0; e < 2; e++)
+            for (i = 32; i < 256; i++)
+            {
+                WORD ch = (WORD)i;
+
+                if (vdi_ft_render(big, &ch, 1, VDI_FT_MAP_ATARI, e | VDI_FT_COVERAGE, 0, &b) >= 0)
+                {
+                    sum += b.data ? b.wdwidth * 2 * b.height : 0;
+                    vdi_ft_release(&b);
+                }
+                if (host_alloc_bytes() - base_bytes > most)
+                    most = host_alloc_bytes() - base_bytes;
+            }
+        printf("  at most %ld more bytes kept for 448 glyphs of 100 pixels (strings of %ld bytes)\n",
+               most, sum);
+        CHECK(sum > 4 * 262144, "the glyphs are too small to test the budget (%ld bytes)", sum);
+        CHECK(most < 262144 + 65536, "%ld bytes kept: past the budget", most);
+        CHECK(vdi_ft_render(big, &a, 1, VDI_FT_MAP_ATARI, VDI_FT_COVERAGE, 0, &again) == 1 &&
+              again.width == first.width && again.height == first.height &&
+              memcmp(again.data, first.data, first.wdwidth * 2 * first.height) == 0,
+              "A drawn again after its image was dropped");
+        vdi_ft_release(&again);
+        vdi_ft_release(&first);
+    }
+    stop();
+}
+
+
 static void check_many_sizes(void)
 {
     VdiOutlineFont *face, *first, *f;
@@ -1130,6 +1464,7 @@ int main(int argc, char **argv)
     check_outline();
     check_info();
     check_many_sizes();
+    check_coverage();
 
     rmdir(tmpdir);
     ref_close();

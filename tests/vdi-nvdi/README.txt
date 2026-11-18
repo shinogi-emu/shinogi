@@ -7,8 +7,12 @@ calls (vdi/vdi_nvdimath.c), the pixel conversion of vr_transfer_bits
 the blending of its anti-aliased text (vdi/vdi_textaa.c) and the blending of
 images with alpha (vdi/vdi_alpha.c) straight out of the EmuTOS tree with the
 host gcc, -m32 (32-bit long, as on the target) and ASan/UBSan, and runs
-test_nvdimath, test_xfer, test_dither, test_bezier, test_textaa and
-test_alpha.
+test_nvdimath, test_xfer, test_xfer_alpha, test_dither, test_bezier,
+test_textaa and test_alpha.  vdi_xfercore.c is built twice: as the ROMs
+have it, and with CONF_WITH_VDI_ALPHA=1 (the blending of images with
+alpha).  test_alpha uses the second; test_xfer_alpha is test_xfer built
+against it, and must print the same counts as test_xfer (make compares
+their output), so the switch changes nothing the old modes do.
 EMUTOS= names the tree (default ../../emutos, the submodule). Requires gcc with
 32-bit multilib and the 32-bit ASan/UBSan runtimes.
 
@@ -173,6 +177,40 @@ shares no code with the file) and against alpha_vectors.h:
   (plenty of 0, 1, 127, 128, 254, 255) and a ramp, at full weight and
   under each weight of the vectors: each pixel as the reference, the
   pixels of alpha 0 and the frame untouched.
+
+It also checks T_BLEND through the raster transfer core (vdi_xfercore.c,
+xfer_begin and xfer_row16 with job.blend), against the nearest source
+pixel sx = x * sw / dw, sy = y * sh / dh worked out directly and the
+reference above:
+- the kinds: PX_ARGB32 and PX_RGBA32 and nothing near them (never
+  reversed, 0x04122020 is none), 32 bits, the alpha of each kind (255 for
+  those without one), their colour for 100,000 random pixels;
+  xfer_blend_ok() for every kind against every destination (direct sources
+  onto 16-bit words only), and every refusal of the vectors decided as
+  vdi_xfer.c decides it;
+- xfer_src_size(): an odd address or line, a line shorter than 4 x w, bits
+  other than 32 refused; sources of 1-9 x 1-5 pixels in memory of exactly
+  width x h bytes and destinations of exactly their size, drawn whole 1:1,
+  enlarged and reduced (ASan sees any byte read past them);
+- every size 1-40 by 1-40 of source and destination width with two
+  heights each, for ARGB32, RGBA32, 15, 16 and 24 bits (both orders) and
+  xRGB (alpha 255), under full weight and the six weights of the vectors in
+  turn, over random backgrounds with a frame: each pixel as the reference
+  (nearest, never filtered), the frame untouched; enlarged rows are blended
+  each into their own background, never copied from the row above;
+- windows of the destination starting inside it, for sizes 1-40 in all
+  combinations of eight: the same pixels as the whole run there, nothing
+  else;
+- sources and destinations of 65536 pixels, skips at the ends of 16-bit
+  coordinates;
+- alpha 255 at full weight is mode 32: the same job without blending, for
+  every kind, wherever mode 32 does not filter (1:1 and enlargements);
+- modes 0 and 32 draw ARGB32 and RGBA32 as xRGB of the same colours (the
+  alpha not read) onto 16 bits (filtered when reduced), onto planes and as
+  8-bit indices with and without dithering;
+- every transfer of the vectors, in both orders of bytes, drawn onto its
+  background clipped as it says: the CRC-32 of the destination is
+  crc565, and the ramp equals alpha_ramp565 in full.
 
 Alpha vectors
 -------------

@@ -204,6 +204,7 @@ static uint16_t ramp565[RAMP_H][RAMP_W];
 static Refusal refusals[NREFUSAL];
 
 static unsigned long nchecks;
+static unsigned long bit15_cleared, bit15_kept;   /* the 555 write rule seen on background 2 */
 
 #define CHECK(cond, ...) \
     do { \
@@ -291,12 +292,15 @@ static void make_pixels(void)
             pixels[i].argb = ((uint32_t)a << 24) | fixed[j];
             pixels[i].d565 = fixed_d[j];
             pixels[i].d555 = to555(fixed_d[j]) | (uint16_t)((rnd16() & 1) << 15);
+            pixels[i].weight = (uint8_t)((a + j) % NWEIGHTS);
         }
     /* black onto 0x0000 and white onto 0xffff, every alpha */
     for (a = 0; a < 256; a++)
         for (j = 0; j < 2; j++, i++)
         {
             unsigned flag = rnd16() & 1;
+
+            pixels[i].weight = (uint8_t)((a + j) % NWEIGHTS);
 
             if (j == 0)
             {
@@ -317,6 +321,7 @@ static void make_pixels(void)
         {
             unsigned r = rnd16() & 31, g = (rnd16() & 63) | 1, b = rnd16() & 31;
 
+            pixels[i].weight = (uint8_t)(i % NWEIGHTS);
             pixels[i].argb = ((uint32_t)a << 24) | rnd24();
             pixels[i].d565 = (uint16_t)((r << 11) | (g << 5) | b);
             pixels[i].d555 = (uint16_t)((rnd16() & 0x7fff) | ((rnd16() & 1) << 15));
@@ -330,13 +335,13 @@ static void make_pixels(void)
 
         if ((j & 3) == 0)
             al = awkward[(j >> 2) % 7];
+        pixels[i].weight = (uint8_t)(i % NWEIGHTS);
         pixels[i].argb = ((uint32_t)al << 24) | c;
         pixels[i].d565 = (uint16_t)rnd16();
         pixels[i].d555 = (uint16_t)rnd16();
     }
     for (i = 0; i < NPIXELS; i++)
     {
-        pixels[i].weight = (uint8_t)(i % NWEIGHTS);
         pixels[i].e565 = ref_pixel(pixels[i].d565, pixels[i].argb, weight[pixels[i].weight], 565);
         pixels[i].e555 = ref_pixel(pixels[i].d555, pixels[i].argb, weight[pixels[i].weight], 555);
     }
@@ -348,8 +353,10 @@ static void make_sources(void)
     static const uint32_t ramp_rgb[RAMP_H] = { 0xff2010, 0x10e040, 0x2030ff, 0xffffff, 0x000000 };
     int x, y, sx, sy, i;
 
-    /* the icon: a disc, centre (7.5, 5.5), radius 5.5; the alpha is the coverage of the
-       pixel, 16 x 16 sample points on a grid (points on the circle count as inside) */
+    /* the icon: a disc, centre (7.5, 5.5), radius 5.5.  Pixel (x,y) has its centre at (x,y)
+       and covers [x-0.5, x+0.5) in each direction, so the disc sits in the middle of the
+       16 x 12 frame.  The alpha is the coverage of the pixel, 16 x 16 sample points on a
+       grid (points on the circle count as inside) */
     for (y = 0; y < ICON_H; y++)
         for (x = 0; x < ICON_W; x++)
         {
@@ -360,22 +367,22 @@ static void make_sources(void)
                 for (sx = 0; sx < 16; sx++)
                 {
                     /* in 1/32 pixel: the centre is (240, 176), the radius 176 */
-                    int64_t px = (int64_t)x * 32 + 2 * sx + 1 - 240;
-                    int64_t py = (int64_t)y * 32 + 2 * sy + 1 - 176;
+                    int64_t px = (int64_t)x * 32 - 16 + 2 * sx + 1 - 240;
+                    int64_t py = (int64_t)y * 32 - 16 + 2 * sy + 1 - 176;
 
                     if (px * px + py * py <= 176 * 176)
                         cnt++;
                 }
             a = (unsigned)((cnt * 255 + 128) / 256);
             r = (unsigned)(17 * x);
-            g = (unsigned)(0x60 + 10 * y);
+            g = 0x80;
             b = (unsigned)(255 - 17 * x);
             src_icon[y * ICON_W + x] = ((uint32_t)a << 24) | (r << 16) | (g << 8) | b;
         }
     for (y = 0; y < RAMP_H; y++)
         for (x = 0; x < RAMP_W; x++)
             src_ramp[y * RAMP_W + x] = ((uint32_t)ramp_alpha[x] << 24) | ramp_rgb[y];
-    src_dot[0] = 0xc03060c0UL;
+    src_dot[0] = 0xc83060c0UL;
     for (i = 0; i < COLUMN_H; i++)
         src_column[i] = ((uint32_t)(i * 255 / 8) << 24) | 0xe0a020;
 }
@@ -397,6 +404,11 @@ static void make_backgrounds(void)
             bg555[1][y][x] = to555(bg565[1][y][x]);
             bg555[2][y][x] = to555(bg565[2][y][x]);
         }
+    /* bit 15 of background 2 in 555, at random in about half of its pixels: transfers onto
+       it show the write rule (written pixels clear it, untouched ones keep it) */
+    for (y = 0; y < IMG_H; y++)
+        for (x = 0; x < IMG_W; x++)
+            bg555[2][y][x] |= (uint16_t)((rnd16() & 1) << 15);
 }
 
 /* the destination 'dst' (IMG_W x IMG_H) with the source si drawn, nearest sampling, clipped */
@@ -417,7 +429,19 @@ static void ref_transfer(uint16_t dst[IMG_H][IMG_W], int layout, const Xfer *t)
 
             if (t->clip && (px < t->cr[0] || py < t->cr[1] || px > t->cr[2] || py > t->cr[3]))
                 continue;
-            dst[py][px] = ref_pixel(dst[py][px], src[t->src].px[sy * sw + sx], weight[t->weight], layout);
+            {
+                uint32_t argb = src[t->src].px[sy * sw + sx];
+                uint16_t before = dst[py][px];
+
+                dst[py][px] = ref_pixel(before, argb, weight[t->weight], layout);
+                if (layout == 555 && t->bg == 2 && (before & 0x8000))
+                {
+                    if (argb >> 24)
+                        bit15_cleared++;
+                    else
+                        bit15_kept++;
+                }
+            }
         }
 }
 
@@ -654,7 +678,11 @@ static void emit(FILE *f, uint32_t sum)
 " *\n"
 " * Layouts: 565 is rrrrrggggggbbbbb, 555 is xrrrrrgggggbbbbb.  A 555 source\n"
 " * value d555 may have bit 15 set; e555 follows the write rule above.  A\n"
-" * 555 background holds the colours of the 565 one at 5 bits a channel.\n"
+" * 555 background holds the colours of the 565 one at 5 bits a channel;\n"
+" * background 2 in 555 also has bit 15 set in about half of its pixels.\n"
+" * The icon is a disc of centre (7.5, 5.5) and radius 5.5; pixel (x,y) has its\n"
+" * centre at (x,y) and covers [x-0.5, x+0.5), so the disc sits in the middle\n"
+" * of the 16 x 12 frame.\n"
 " * Rectangles are x1, y1, x2, y2, inclusive.  The pixel of a source image\n"
 " * is the long 0xAARRGGBB (PX_RGBA32 cases rotate its bytes).  Images are\n"
 " * rows top to bottom.  A transfer draws source rectangle sr into dr with\n"
@@ -769,7 +797,7 @@ static void emit(FILE *f, uint32_t sum)
 /* sanity of the data itself */
 static void check_data(void)
 {
-    int i, zero = 0, zero15 = 0, full = 0, part = 0, bit15 = 0;
+    int i, zero = 0, zero15 = 0, full = 0, part = 0, bit15 = 0, icon_zero = 0;
 
     for (i = 0; i < NPIXELS; i++)
     {
@@ -794,13 +822,23 @@ static void check_data(void)
         unsigned a = src_icon[i] >> 24;
 
         if (a == 0)
-            zero++;
+            icon_zero++;
         else if (a == 255)
             full++;
         else
             part++;
     }
-    CHECK(full > 0 && part > 0, "icon alpha classes");
+    CHECK(icon_zero > 0 && full > 0 && part > 0, "icon alpha classes (%d, %d, %d)", icon_zero, full, part);
+    CHECK(bit15_cleared > 0 && bit15_kept > 0, "555 write rule on background 2 (%lu, %lu)", bit15_cleared, bit15_kept);
+    for (i = 0; i < 6; i++)             /* each fixed colour meets every weight */
+    {
+        int j, seen[4] = { 0, 0, 0, 0 };
+
+        for (j = 0; j < 1024; j++)
+            if (pixels[j].weight == i)
+                seen[j & 3]++;
+        CHECK(seen[0] && seen[1] && seen[2] && seen[3], "weight %d of the fixed colours", i);
+    }
     CHECK(nxfer == NXFER, "%d transfers", nxfer);
 }
 

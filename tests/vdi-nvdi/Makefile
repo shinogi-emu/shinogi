@@ -25,13 +25,30 @@ PURE = $(EMUTOS)/vdi/vdi_nvdimath.c $(EMUTOS)/vdi/vdi_nvdimath.h \
        $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h \
        $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h
 
-check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither $(OBJ)/test_bezier \
+check: noint vectors-check $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither $(OBJ)/test_bezier \
        $(OBJ)/test_textaa
 	$(OBJ)/test_nvdimath
 	$(OBJ)/test_xfer
 	$(OBJ)/test_dither
 	$(OBJ)/test_bezier
 	$(OBJ)/test_textaa
+
+# The shared reference vectors of the alpha blend (README.txt, "Alpha vectors").
+# 'make vectors' rewrites alpha_vectors.h; 'make vectors-check' regenerates it into
+# obj/ and compares it with the committed file and, with FVDI_TESTS=<dir>, with
+# the copy in the fVDI tests.
+$(OBJ)/gen_alpha_vectors: gen_alpha_vectors.c | $(OBJ)
+	$(CC) $(ARCH) $(SAN) -O1 -g -Wall -Wextra -Werror -std=gnu99 -o $@ $<
+
+$(OBJ)/alpha_vectors.h: $(OBJ)/gen_alpha_vectors
+	$(OBJ)/gen_alpha_vectors $@
+
+vectors: $(OBJ)/alpha_vectors.h
+	cp $< alpha_vectors.h
+
+vectors-check: $(OBJ)/alpha_vectors.h
+	cmp $< alpha_vectors.h
+	@if [ -n "$(FVDI_TESTS)" ]; then cmp $< $(FVDI_TESTS)/alpha_vectors.h; fi
 
 # the pure files contain no plain int
 noint:
@@ -90,4 +107,4 @@ $(OBJ):
 clean:
 	rm -rf $(OBJ)
 
-.PHONY: check noint clean
+.PHONY: check noint clean vectors vectors-check

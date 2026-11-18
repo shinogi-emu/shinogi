@@ -147,3 +147,49 @@ goes from d to d + (f - d) * step / 32, rounded half up:
   with padded rows: each pixel where one-bit text is turned, the padding
   of the result untouched; four quarter turns, and a quarter and three
   quarters, give the image back.
+
+Alpha vectors
+-------------
+
+alpha_vectors.h holds the reference vectors for blending images with
+straight alpha onto 16-bit pixels (vr_transfer_bits, mode T_BLEND = 64, the
+sources PX_ARGB32 0x03122020 and PX_RGBA32 0x03022020).  It is written by
+gen_alpha_vectors.c, whose reference functions are its own (64-bit integers,
+written from the formulas, sharing no code with any VDI), and it is the file
+every implementation is checked against.  The same file is committed in the
+fVDI tests.  It holds: six weight triples; kc for every alpha under each
+weight; 4096 pixel cases (565 and 555, with the expected results); four
+source images (icon 16x12, ramp 7x5, dot 1x1, column 1x9); three 32x24
+backgrounds in both layouts; 44 transfers (scaling, offsets, clipping,
+weights) with the CRC-32 of the resulting destination; the 565 result of the
+ramp in full; 18 calls that must be refused.  The layout and the meaning of
+each field are in the comment at the top of the file.
+
+The arithmetic, per channel c of r, g, b, all integers (>> only on
+non-negative values), with the weight Wc (0-65535), the source alpha A
+(0-255), a destination field of n bits (5 or 6) holding d and the 8-bit
+source component C:
+
+    Wc' = Wc + (Wc >> 15)
+    wa  = A + (A >> 7)
+    kc  = (wa * Wc' + 32768) >> 16            0-256
+    s   = C >> (8 - n)
+    out = (d * 256 + (s - d) * kc + 128) >> 8
+
+A = 0 leaves the pixel alone; any other pixel is written with 0 outside the
+three fields.  Before it writes anything the generator checks: kc is 0 for
+alpha 0, 256 for alpha 255 at weight 0xffff, at most 256 and rising with the
+alpha (for all 65536 weights); the numerator is 128-16256; out is d at kc 0,
+s at kc 256 and between d and s (for both field widths, every d, C and kc).
+
+ALPHA_VECTORS_SUM is the zlib CRC-32 (reflected 0xEDB88320, initial value and
+final xor 0xffffffff) of every array in declaration order, each scalar element,
+whatever its width, appended as 4 bytes big-endian (a negative value sign-
+extended), the fields of a struct in order; for alpha_src its w, h and then the
+pixels it points to, never the pointer.  A consumer recomputes it and compares
+it before anything else.
+
+make -C tests/vdi-nvdi vectors rewrites alpha_vectors.h (the output is the same
+on every host: a fixed seed, no clock).  make vectors-check regenerates it into
+obj/ and compares it with the committed file (it is part of make check); with
+FVDI_TESTS=<directory> it compares the copy there too.

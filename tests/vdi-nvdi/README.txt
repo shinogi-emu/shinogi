@@ -4,16 +4,17 @@ VDI NVDI colour arithmetic and raster transfer checks
 make -C tests/vdi-nvdi check builds the arithmetic of EmuTOS's NVDI colour
 calls (vdi/vdi_nvdimath.c), the pixel conversion of vr_transfer_bits
 (vdi/vdi_xfercore.c), the points of its Bezier curves (vdi/vdi_bezcore.c)
-and the blending of its anti-aliased text (vdi/vdi_textaa.c) straight out
-of the EmuTOS tree with the host gcc, -m32 (32-bit long, as on the target)
-and ASan/UBSan, and runs test_nvdimath, test_xfer, test_dither,
-test_bezier and test_textaa.
+the blending of its anti-aliased text (vdi/vdi_textaa.c) and the blending of
+images with alpha (vdi/vdi_alpha.c) straight out of the EmuTOS tree with the
+host gcc, -m32 (32-bit long, as on the target) and ASan/UBSan, and runs
+test_nvdimath, test_xfer, test_dither, test_bezier, test_textaa and
+test_alpha.
 EMUTOS= names the tree (default ../../emutos, the submodule). Requires gcc with
 32-bit multilib and the 32-bit ASan/UBSan runtimes.
 
 The files are pure (no hardware, no VDI globals) and EmuTOS is built with
 16-bit ints, so the check first fails if vdi_nvdimath.c, vdi_xfercore.c,
-vdi_bezcore.c, vdi_textaa.c or their headers contain a plain int (or unsigned int):
+vdi_bezcore.c, vdi_textaa.c, vdi_alpha.c or their headers contain a plain int (or unsigned int):
 sizes, products and distances are LONG/ULONG there.
 
 test_nvdimath checks:
@@ -147,6 +148,31 @@ goes from d to d + (f - d) * step / 32, rounded half up:
   with padded rows: each pixel where one-bit text is turned, the padding
   of the result untouched; four quarter turns, and a quarter and three
   quarters, give the image back.
+
+test_alpha checks vdi/vdi_alpha.c, the blending of 32-bit pixels with
+straight alpha (PX_ARGB32, PX_RGBA32) into 5-6-5 pixels, against the
+arithmetic below worked out in 64-bit integers in the test itself (it
+shares no code with the file) and against alpha_vectors.h:
+- the checksum of the vectors, recomputed first;
+- the weight Wc' of every 16-bit weight; kc for every alpha under the six
+  weights of the vectors, each channel; 1,000,000 random alphas and weights;
+- every field value, every 8-bit component and every kc of 0-256, in each
+  field of the pixel (red and blue at five bits, green at six), the other
+  two with kc 0: the field as the reference, the other fields unchanged
+  (about 8.4 million mixes);
+- the 4096 pixels of the vectors through the mix and through a row of one
+  pixel, in both orders of bytes (alpha 0 gives d, the others the expected
+  pixel); 2,000,000 random pixels and weight triples, both orders;
+  alpha 255 at full weight is xfer_pack565()'s pixel;
+- full weight, every alpha 128-255, every green value 0-63 against every
+  component 0-255 (a shortcut to the opaque pixel may not take alpha 252 or lower, where
+  a field and the component's top bits 43 or more apart differ; 253 and
+  254 give the opaque pixel in 5-6-5, so they cannot be told from it);
+- rows of 1-80 pixels starting at each of four word positions in a buffer
+  with a frame, both orders of bytes, alphas all 0, all 255, mixed
+  (plenty of 0, 1, 127, 128, 254, 255) and a ramp, at full weight and
+  under each weight of the vectors: each pixel as the reference, the
+  pixels of alpha 0 and the frame untouched.
 
 Alpha vectors
 -------------

@@ -23,15 +23,17 @@ CFLAGS = $(ARCH) $(SAN) -O1 -g -Wall -Wextra -Werror -std=gnu99 -I$(EMUTOS)/vdi 
 PURE = $(EMUTOS)/vdi/vdi_nvdimath.c $(EMUTOS)/vdi/vdi_nvdimath.h \
        $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h \
        $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h \
-       $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h
+       $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h \
+       $(EMUTOS)/vdi/vdi_alpha.c $(EMUTOS)/vdi/vdi_alpha.h
 
 check: noint vectors-check $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither $(OBJ)/test_bezier \
-       $(OBJ)/test_textaa
+       $(OBJ)/test_textaa $(OBJ)/test_alpha
 	$(OBJ)/test_nvdimath
 	$(OBJ)/test_xfer
 	$(OBJ)/test_dither
 	$(OBJ)/test_bezier
 	$(OBJ)/test_textaa
+	$(OBJ)/test_alpha
 
 # The shared reference vectors of the alpha blend (README.txt, "Alpha vectors").
 # 'make vectors' rewrites alpha_vectors.h; 'make vectors-check' regenerates it into
@@ -83,6 +85,15 @@ $(OBJ)/test_textaa.o: test_textaa.c $(EMUTOS)/vdi/vdi_textaa.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ)/vdi_textaa.o: $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/test_alpha: $(OBJ)/test_alpha.o $(OBJ)/vdi_alpha.o $(OBJ)/vdi_xfercore.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_alpha.o: test_alpha.c alpha_vectors.h $(EMUTOS)/vdi/vdi_alpha.h $(EMUTOS)/vdi/vdi_xfercore.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/vdi_alpha.o: $(EMUTOS)/vdi/vdi_alpha.c $(EMUTOS)/vdi/vdi_alpha.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ)/vdi_xfercore.o: $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h | $(OBJ)

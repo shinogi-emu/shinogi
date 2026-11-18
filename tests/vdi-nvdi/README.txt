@@ -159,10 +159,11 @@ written from the formulas, sharing no code with any VDI), and it is the file
 every implementation is checked against.  The same file is committed in the
 fVDI tests.  It holds: six weight triples; kc for every alpha under each
 weight; 4096 pixel cases (565 and 555, with the expected results); four
-source images (icon 16x12, a disc centred in its frame, pixel (x,y) centred at (x,y), ramp 7x5, dot 1x1, column 1x9); three 32x24
-backgrounds in both layouts (background 2 in 555 has bit 15 set at random in
-about half of its pixels, so transfers onto it pin the write rule: a written
-pixel clears it, an untouched one keeps it); 44 transfers (scaling, offsets, clipping,
+source images (icon 16x12, a disc centred in its frame with pixel (x,y)
+centred at (x,y), ramp 7x5, dot 1x1, column 1x9); three 32x24 backgrounds in
+both layouts (background 2 in 555 has bit 15 set at random in about half of
+its pixels, so transfers onto it pin the write rule: a written pixel clears
+it, an untouched one keeps it); 44 transfers (scaling, offsets, clipping,
 weights) with the CRC-32 of the resulting destination; the 565 result of the
 ramp in full; 18 calls that must be refused.  The layout and the meaning of
 each field are in the comment at the top of the file.

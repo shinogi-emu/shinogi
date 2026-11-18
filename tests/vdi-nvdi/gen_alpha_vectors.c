@@ -437,9 +437,16 @@ static void ref_transfer(uint16_t dst[IMG_H][IMG_W], int layout, const Xfer *t)
                 if (layout == 555 && t->bg == 2 && (before & 0x8000))
                 {
                     if (argb >> 24)
+                    {
+                        CHECK((dst[py][px] & 0x8000) == 0, "bit 15 left at %d,%d: 0x%04x", px, py, dst[py][px]);
                         bit15_cleared++;
+                    }
                     else
+                    {
+                        CHECK(dst[py][px] == before, "A=0 pixel touched at %d,%d: 0x%04x -> 0x%04x",
+                              px, py, before, dst[py][px]);
                         bit15_kept++;
+                    }
                 }
             }
         }
@@ -830,14 +837,23 @@ static void check_data(void)
     }
     CHECK(icon_zero > 0 && full > 0 && part > 0, "icon alpha classes (%d, %d, %d)", icon_zero, full, part);
     CHECK(bit15_cleared > 0 && bit15_kept > 0, "555 write rule on background 2 (%lu, %lu)", bit15_cleared, bit15_kept);
-    for (i = 0; i < 6; i++)             /* each fixed colour meets every weight */
+    for (i = 0; i < 6; i++)             /* each fixed colour, black and white meet every weight */
     {
-        int j, seen[4] = { 0, 0, 0, 0 };
+        int j, seen[4] = { 0, 0, 0, 0 }, black = 0, white = 0;
 
         for (j = 0; j < 1024; j++)
             if (pixels[j].weight == i)
                 seen[j & 3]++;
+        for (j = 1024; j < 1536; j++)
+            if (pixels[j].weight == i)
+            {
+                if (pixels[j].d565 == 0x0000)
+                    black++;
+                else
+                    white++;
+            }
         CHECK(seen[0] && seen[1] && seen[2] && seen[3], "weight %d of the fixed colours", i);
+        CHECK(black && white, "weight %d of black (%d) and white (%d)", i, black, white);
     }
     CHECK(nxfer == NXFER, "%d transfers", nxfer);
 }

@@ -116,3 +116,37 @@ as far as given):
   and writes nothing past the room; the points, the flags and the output
   are allocated to their exact size, so ASan sees any read or write beyond;
 - no points; three points with a curve's flag (not a curve).
+
+test_clamp checks that the copies of the VDI to the screen stay on the screen
+(make check-clamp, part of make check). vdi/vdi_raster.c and vdi/vdi_xfer.c
+are linked as they are, with the blitter and the 68k assembler off and the
+two places that read an address out of CONTRL made to read it high word
+first, as on the 68k; vdi_xfercore.c (and vdi_alpha.c if the tree has it)
+are linked too; test_clamp.c stands in for the rest of the VDI, with a
+16-bit screen of 40x30 pixels between two guards of 8 KB.
+- vro_cpyfm (109), vrt_cpyfm (121), both scaled (bit 15 of the mode),
+  vr_transfer_bits (170) and its T_BLEND: a destination partly off each
+  edge, off each corner, inside, touching the edges and wholly off (and far
+  off, and where the end wraps in 16 bits), with the clip flag off, on, and
+  on with a clipping rectangle larger than the screen. Every case runs in a
+  child process: the guards must be intact and every pixel of the screen must
+  be what a direct model says (the destination cut to the screen and to the
+  clipping rectangle, the source moved with it).
+- copies to a memory form: nothing past the form's memory (fd_wdwidth words a row, fd_h rows) is written, and the whole of that area is copied to, with fd_w right, smaller, or 0.
+- one form onto itself (a scroll of the screen, partly off it, clip off and on; a memory form), forms of 1 to 8 planes (the planar C blit), vrt_cpyfm in three modes with different colour indices (validate_color_index is a stub here), and forms that are not what they should be (plane counts 0, -1, 9, 15; a row of 32768 bytes; negative or zero sizes; a NULL source or destination; an odd address; forms thousands of words wide at the ends of the coordinates): each draws nothing and touches nothing outside the forms.
+- line-A copy raster (linea_raster) as vro_cpyfm, with the destination off each edge.
+- the source rectangle past each edge of a source form, and of the screen,
+  with a poison in the rows past fd_h and in the guards around the form
+  (the pixels past fd_w up to fd_wdwidth * 16 are part of the form, and fd_w
+  is the right one, smaller or 0): the destination must never receive the poison.
+  The scaled copies and vr_transfer_bits refuse such a rectangle; the others
+  copy the part that exists.
+A scaled vrt_cpyfm is only checked for what it leaves alone: it stages its row
+as bytes in the 68k's order, which this host does not share. Targets without
+CONF_WITH_VDI_NVDI_EXT do not bound the source (see vdi_raster.c).
+check-clamp-rom builds the same test without the NVDI extensions (CONF_WITH_VDI_NVDI_EXT 0): only the destination is bounded there, and forms and sources are trusted.
+The plane count 0 and -1 refusals cannot fail on this host: the endless pass over
+the planes (65536 of them) is in the 68k assembler blit only, and the C blit runs
+none. They pin the refusal, not the overrun; 9 and 15 do show the overrun.
+check-clamp and check-clamp-rom need an EmuTOS with this fix (EMUTOS=); the emutos
+submodule is moved to it when the fix is published.

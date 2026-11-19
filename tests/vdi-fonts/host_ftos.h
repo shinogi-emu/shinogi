@@ -17,6 +17,8 @@ long host_alloc_total(void);        /* allocations granted so far */
 long host_alloc_refused(void);      /* allocations refused so far */
 long host_file_loads(void);         /* files read by vdi_font_file_load() */
 long host_os_blocks(void);          /* blocks the system has given and not got back */
+long host_alloc_bytes(void);        /* bytes in the blocks allocated and not freed;
+                                       -1 with vdi_ftmem.c, which does not tell */
 
 /*
  * As EmuTOS on its font stack: while a stack is set, allocations are

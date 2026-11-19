@@ -94,6 +94,11 @@ __attribute__((noinline)) BOOL outline_stack_low(void)
 
 static long os_blocks;
 
+long host_alloc_bytes(void)
+{
+    return -1;
+}
+
 void *ftmem_os_alloc(ULONG size)
 {
     void *block = malloc(size);
@@ -166,9 +171,16 @@ void *vdi_ft_realloc(void *block, ULONG size)
 
 #else
 
+static long live_bytes;
+
 long host_os_blocks(void)
 {
     return live;
+}
+
+long host_alloc_bytes(void)
+{
+    return live_bytes;
 }
 
 
@@ -194,6 +206,7 @@ void *vdi_ft_alloc(ULONG size)
 
     memcpy(block, &size, sizeof(size));
     live++;
+    live_bytes += size;
     total++;
     return block + BLOCK_HEADER;
 }
@@ -203,6 +216,10 @@ void vdi_ft_free(void *block)
 {
     if (block)
     {
+        ULONG size;
+
+        memcpy(&size, (unsigned char *)block - BLOCK_HEADER, sizeof(size));
+        live_bytes -= size;
         free((unsigned char *)block - BLOCK_HEADER);
         live--;
     }

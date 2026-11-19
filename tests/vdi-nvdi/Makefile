@@ -1,6 +1,9 @@
 # Host checks for the arithmetic of the NVDI colour calls of EmuTOS's VDI
-# (vdi/vdi_nvdimath.c) and for the pixel conversion of vr_transfer_bits
-# (vdi/vdi_xfercore.c), with its inverse colour tables and dithering.
+# (vdi/vdi_nvdimath.c), for the pixel conversion of vr_transfer_bits
+# (vdi/vdi_xfercore.c), with its inverse colour tables and dithering, for
+# the points of its Bezier curves (vdi/vdi_bezcore.c), for the blending
+# of its anti-aliased text (vdi/vdi_textaa.c) and for the blending of images
+# with alpha (vdi/vdi_alpha.c, and vdi_xfercore.c with CONF_WITH_VDI_ALPHA).
 #
 # The file is built straight out of the EmuTOS tree with the host gcc, -m32
 # (32-bit long, as on the target) and ASan/UBSan.  It is pure arithmetic,
@@ -20,13 +23,42 @@ CFLAGS = $(ARCH) $(SAN) -O1 -g -Wall -Wextra -Werror -std=gnu99 -I$(EMUTOS)/vdi 
 
 PURE = $(EMUTOS)/vdi/vdi_nvdimath.c $(EMUTOS)/vdi/vdi_nvdimath.h \
        $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h \
-       $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h
+       $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h \
+       $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h \
+       $(EMUTOS)/vdi/vdi_alpha.c $(EMUTOS)/vdi/vdi_alpha.h
 
-check: noint $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_dither $(OBJ)/test_bezier
+# vdi_xfercore.c with the blending of images with alpha (CONF_WITH_VDI_ALPHA):
+# test_alpha checks its T_BLEND path, and test_xfer runs against it too as
+# test_xfer_alpha, which must give the same counts as test_xfer
+ALPHA = -DCONF_WITH_VDI_ALPHA=1
+
+check: noint vectors-check $(OBJ)/test_nvdimath $(OBJ)/test_xfer $(OBJ)/test_xfer_alpha $(OBJ)/test_dither \
+       $(OBJ)/test_bezier $(OBJ)/test_textaa $(OBJ)/test_alpha
 	$(OBJ)/test_nvdimath
-	$(OBJ)/test_xfer
+	$(OBJ)/test_xfer > $(OBJ)/test_xfer.out; s=$$?; cat $(OBJ)/test_xfer.out; exit $$s
+	$(OBJ)/test_xfer_alpha > $(OBJ)/test_xfer_alpha.out; s=$$?; cat $(OBJ)/test_xfer_alpha.out; exit $$s
+	cmp $(OBJ)/test_xfer.out $(OBJ)/test_xfer_alpha.out
 	$(OBJ)/test_dither
 	$(OBJ)/test_bezier
+	$(OBJ)/test_textaa
+	$(OBJ)/test_alpha
+
+# The shared reference vectors of the alpha blend (README.txt, "Alpha vectors").
+# 'make vectors' rewrites alpha_vectors.h; 'make vectors-check' regenerates it into
+# obj/ and compares it with the committed file and, with FVDI_TESTS=<dir>, with
+# the copy in the fVDI tests.
+$(OBJ)/gen_alpha_vectors: gen_alpha_vectors.c | $(OBJ)
+	$(CC) $(ARCH) $(SAN) -O1 -g -Wall -Wextra -Werror -std=gnu99 -o $@ $<
+
+$(OBJ)/alpha_vectors.h: $(OBJ)/gen_alpha_vectors
+	$(OBJ)/gen_alpha_vectors $@
+
+vectors: $(OBJ)/alpha_vectors.h
+	cp $< alpha_vectors.h
+
+vectors-check: $(OBJ)/alpha_vectors.h
+	cmp $< alpha_vectors.h
+	@if [ -n "$(FVDI_TESTS)" ]; then cmp $< $(FVDI_TESTS)/alpha_vectors.h; fi
 
 # the pure files contain no plain int
 noint:
@@ -54,6 +86,34 @@ $(OBJ)/test_bezier.o: test_bezier.c $(EMUTOS)/vdi/vdi_bezcore.h | $(OBJ)
 $(OBJ)/vdi_bezcore.o: $(EMUTOS)/vdi/vdi_bezcore.c $(EMUTOS)/vdi/vdi_bezcore.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(OBJ)/test_textaa: $(OBJ)/test_textaa.o $(OBJ)/vdi_textaa.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^ -lm
+
+$(OBJ)/test_textaa.o: test_textaa.c $(EMUTOS)/vdi/vdi_textaa.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/vdi_textaa.o: $(EMUTOS)/vdi/vdi_textaa.c $(EMUTOS)/vdi/vdi_textaa.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/test_alpha: $(OBJ)/test_alpha.o $(OBJ)/vdi_alpha.o $(OBJ)/vdi_xfercore_alpha.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_alpha.o: test_alpha.c alpha_vectors.h $(EMUTOS)/vdi/vdi_alpha.h $(EMUTOS)/vdi/vdi_xfercore.h | $(OBJ)
+	$(CC) $(CFLAGS) $(ALPHA) -c $< -o $@
+
+$(OBJ)/test_xfer_alpha: $(OBJ)/test_xfer_alpha.o $(OBJ)/vdi_xfercore_alpha.o $(OBJ)/vdi_alpha.o
+	$(CC) $(ARCH) $(SAN) -o $@ $^
+
+$(OBJ)/test_xfer_alpha.o: test_xfer.c $(EMUTOS)/vdi/vdi_xfercore.h | $(OBJ)
+	$(CC) $(CFLAGS) $(ALPHA) -c $< -o $@
+
+$(OBJ)/vdi_xfercore_alpha.o: $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h \
+                             $(EMUTOS)/vdi/vdi_alpha.h | $(OBJ)
+	$(CC) $(CFLAGS) $(ALPHA) -c $< -o $@
+
+$(OBJ)/vdi_alpha.o: $(EMUTOS)/vdi/vdi_alpha.c $(EMUTOS)/vdi/vdi_alpha.h | $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(OBJ)/vdi_xfercore.o: $(EMUTOS)/vdi/vdi_xfercore.c $(EMUTOS)/vdi/vdi_xfercore.h $(EMUTOS)/vdi/vdi_nvdiext.h | $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -76,4 +136,4 @@ $(OBJ):
 clean:
 	rm -rf $(OBJ)
 
-.PHONY: check noint clean
+.PHONY: check noint clean vectors vectors-check

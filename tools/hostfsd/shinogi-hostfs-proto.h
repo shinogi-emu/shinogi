@@ -133,20 +133,20 @@
  *   a = 1  wait: when the reply arrives, everything the session wrote
  *          before the request is on stable storage -- files still open,
  *          files closed since, the names it created, renamed or deleted,
- *          and whatever an earlier a = 0 had not finished. Status 0, or an error if any of it could not be
- *          flushed: HOSTFS_ENOSPC when the host said its disk is full,
- *          HOSTFS_EIO for any other failure, and ENOSPC when there are
- *          both. The error reply is the 12-byte header alone. A file
- *          that failed is tried again, and reported again, by every
- *          later a = 1 until it flushes, is deleted or is renamed to
- *          something that flushes. A failure the helper met before the
- *          a = 1 -- in posted work, or in a flush it made in place -- is
- *          reported by the next a = 1, once: on Linux a failed writeback
- *          is reported to the first flush only, so a retry would pass
- *          with nothing written. The helper starts no new flush 240 s
- *          after the request arrived, inside the guest's 300 s for the
- *          reply: it then answers EIO and leaves the rest to be flushed
- *          as if posted.
+ *          and whatever an earlier a = 0 had not finished. Status 0, or
+ *          an error if any of it could not be flushed: HOSTFS_ENOSPC
+ *          when the host said its disk is full, HOSTFS_EIO for any other
+ *          failure, and ENOSPC when there are both. The error reply is
+ *          the 12-byte header alone. A file that failed is tried again,
+ *          and reported again, by every later a = 1 until it flushes, is
+ *          deleted or is renamed to something that flushes. A failure
+ *          the helper met before the a = 1 -- in posted work, or in a
+ *          flush it made in place -- is reported by the next a = 1,
+ *          once: on Linux a failed writeback is reported to the first
+ *          flush only, so a retry would pass with nothing written. The
+ *          helper starts no new flush 240 s after the request arrived,
+ *          inside the guest's 300 s for the reply: it then answers EIO
+ *          and leaves the rest to be flushed as if posted.
  *
  * b, c and the data must be empty; anything else is refused (EDRIVE).
  * A guest checks this bit first: older helpers answer SYNC with EDRIVE.

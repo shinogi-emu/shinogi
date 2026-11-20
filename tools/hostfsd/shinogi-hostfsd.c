@@ -1075,6 +1075,11 @@ static void dir_release(dirhandle *d)
  *            on its reply, so there the open files are closed as CLOSE
  *            would close them, and flushed no more than CLOSE would.
  *
+ * RENAME and DELETE keep the set in step with the folder: a rename
+ * rewrites the path itself and anything under a renamed folder, and drops
+ * what it replaced. Only regular files are flushed; a listed name that
+ * has become a folder, a pipe or a link is dropped without being opened.
+ *
  * A failed a = 1 answers EIO, or ENOSPC when the host said its disk is
  * full (ENOSPC wins when there are both). A file that cannot be flushed
  * stays in the set, and every later a = 1 tries it again and reports it
@@ -1088,10 +1093,7 @@ static void dir_release(dirhandle *d)
  * Linux reports a writeback error to the first fsync() that looks and
  * never again, so without the count the retry would pass with nothing
  * written. The count, like the set, outlives a HELLO and the
- * connection: it is cleared only by an a = 1 that reports it. RENAME and DELETE keep the set in step
- * with the folder: a rename rewrites the path itself and anything under a
- * renamed folder. Only regular files are flushed; a listed name that has
- * become a folder, a pipe or a link is dropped without being opened.
+ * connection: it is cleared only by an a = 1 that reports it.
  *
  * The set holds MAX_DIRTY files. The CLOSE that finds it full flushes
  * that one file there and then instead of listing it, so nothing written
@@ -1584,7 +1586,8 @@ static void dsync_overflow(const char *dir)
     struct stat st;
 
     dsync_over |= 1;
-    if (lstat(dir, &st) == 0 && st.st_dev != dsync_root_dev)
+    if (!(dsync_over & 2) && lstat(dir, &st) == 0
+     && st.st_dev != dsync_root_dev)
         dsync_over |= 2;
 }
 

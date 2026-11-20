@@ -132,8 +132,8 @@
  *          nothing.
  *   a = 1  wait: when the reply arrives, everything the session wrote
  *          before the request is on stable storage -- files still open,
- *          files closed since, and whatever an earlier a = 0 had not
- *          finished. Status 0, or an error if any of it could not be
+ *          files closed since, the names it created, renamed or deleted,
+ *          and whatever an earlier a = 0 had not finished. Status 0, or an error if any of it could not be
  *          flushed: HOSTFS_ENOSPC when the host said its disk is full,
  *          HOSTFS_EIO for any other failure, and ENOSPC when there are
  *          both. The error reply is the 12-byte header alone. A file

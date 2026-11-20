@@ -1986,6 +1986,17 @@ static int log_count(const char *log, const char *what)
     return log_count_upto(log, what, -1);
 }
 
+/* Empty the file LOG, making it if need be: 1, or 0 if that failed. */
+static int log_clear(const char *log)
+{
+    FILE *f = fopen(log, "w");
+
+    if (!f)
+        return 0;
+    fclose(f);
+    return 1;
+}
+
 /* The size of the file LOG now: where it ends at a given moment. */
 static long log_size(const char *log)
 {
@@ -2272,12 +2283,20 @@ static void test_sync(void)
         put_file("dup-b.txt", "is replaced", 0);
         check(rename_path("dup-a.txt", "dup-b.txt") == HOSTFS_E_OK,
               "RENAME onto a listed name");
-        if (have_shim && truncate(shimlog, 0) != 0)
-            die("truncate the shim log");
-        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
-              "SYNC a = 1 after a rename onto a listed name");
-        check(log_has(log, "hostfsd: SYNC a=1: flushed 1, failed 0\n"),
-              "a rename onto a listed name left two entries");
+        if (have_shim && !log_clear(shimlog))
+            die("empty the shim log");
+        {
+            static const char one[] = "hostfsd: sync: 1 listed and 0 open "
+                                      "file(s) file by file, 0 failed\n";
+            static const char two[] = "hostfsd: sync: 2 listed and 0 open "
+                                      "file(s) file by file";
+            int ones = log_count(log, one), twos = log_count(log, two);
+
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 1 after a rename onto a listed name");
+            check(log_count(log, one) == ones + 1 && log_count(log, two) == twos,
+                  "a rename onto a listed name left two entries");
+        }
         if (have_shim)
             check(log_count(shimlog, "/dup-b.txt") == 1
                   && !log_has(shimlog, "/dup-a.txt"),
@@ -2703,8 +2722,8 @@ per_file_done:
                   && reply_len == 12,
                   "a listed file that failed in posted work was not reported "
                   "by the next a = 1");
-            check(log_has(log, "hostfsd: SYNC a=1: flushed 1, failed 0, and 1 "
-                               "failure(s) since the last a=1\n"),
+            check(log_has(log, ", failed 0, and 1 failure(s) since the last "
+                               "a=1\n"),
                   "the a = 1 did not log the earlier failure");
             check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
                   "an earlier failure was reported twice");
@@ -2803,6 +2822,114 @@ per_file_done:
                 helper_done(child, "the nomem helper");
             }
         }
+
+        /* ---- Names. a = 1 also flushes each folder whose entries
+         * changed -- a CREATE, a DELETE, both sides of a RENAME, a MKDIR,
+         * an RMDIR -- so that a rename, an empty file or a deletion is on
+         * the disk too, not just the data. A renamed folder's entry
+         * follows it. Past the list's 1024 folders, a = 1 makes one
+         * syncfs() as well. */
+        snprintf(log, sizeof(log), "%s/sync-names.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-names.fsync", tmproot);
+        shim_env("0", NULL, shimlog);
+        child = helper_extra("sock16", NULL, log, shim);
+        check(child > 0, "a helper for the folder flushes did not start");
+        if (child > 0)
+        {
+            char served[PATH_MAX], top[PATH_MAX + 16], d1[PATH_MAX + 16];
+            char d2[PATH_MAX + 16], d4[PATH_MAX + 16], f[PATH_MAX + 32];
+            int i, ok = 1;
+
+#define NAMES_SYNC(what) \
+            (log_clear(shimlog) \
+             && rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK) \
+            || (check(0, "SYNC a = 1 after %s", what), 0)
+
+            if (!realpath(servedir, served))
+                die("realpath served");
+            snprintf(top, sizeof(top), "fsync %s\n", served);
+            snprintf(d1, sizeof(d1), "fsync %s/nm1\n", served);
+            snprintf(d2, sizeof(d2), "fsync %s/nm2\n", served);
+            snprintf(d4, sizeof(d4), "fsync %s/nm4\n", served);
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (names)");
+            check(rpc_path(HOSTFS_OP_MKDIR, 0, "nm1") == HOSTFS_E_OK
+                  && rpc_path(HOSTFS_OP_MKDIR, 0, "nm2") == HOSTFS_E_OK,
+                  "MKDIR nm1, nm2");
+            put_file("nm1/f.txt", "moves later", 0);
+            if (NAMES_SYNC("MKDIR and CREATE"))
+            {
+                snprintf(f, sizeof(f), "fsync %s/nm1/f.txt\n", served);
+                check(log_has(shimlog, f) && log_has(shimlog, d1)
+                      && log_has(shimlog, top),
+                      "a = 1 did not flush the new file, its folder and the "
+                      "folder holding the new folders");
+            }
+            /* A rename of a file already flushed: only names changed. */
+            check(rename_path("nm1/f.txt", "nm2/g.txt") == HOSTFS_E_OK,
+                  "RENAME nm1/f.txt to nm2/g.txt");
+            if (NAMES_SYNC("a rename across folders"))
+                check(log_has(shimlog, d1) && log_has(shimlog, d2)
+                      && log_count(shimlog, "fsync ") == 2,
+                      "a = 1 after a rename did not flush both folders, and "
+                      "only them");
+            check(rpc_path(HOSTFS_OP_CREATE, 0, "nm2/empty.txt") == HOSTFS_E_OK
+                  && rpc(HOSTFS_OP_CLOSE, reply_a, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "CREATE an empty file");
+            if (NAMES_SYNC("an empty CREATE"))
+                check(log_has(shimlog, d2) && log_count(shimlog, "fsync ") == 1,
+                      "a = 1 after an empty CREATE did not flush its folder");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "nm2/g.txt") == HOSTFS_E_OK,
+                  "DELETE nm2/g.txt");
+            if (NAMES_SYNC("a DELETE"))
+                check(log_has(shimlog, d2) && log_count(shimlog, "fsync ") == 1,
+                      "a = 1 after a DELETE did not flush its folder");
+            check(rpc_path(HOSTFS_OP_RMDIR, 0, "nm1") == HOSTFS_E_OK,
+                  "RMDIR nm1");
+            if (NAMES_SYNC("an RMDIR"))
+                check(log_has(shimlog, top) && log_count(shimlog, "fsync ") == 1,
+                      "a = 1 after an RMDIR did not flush the folder above");
+            /* A listed folder renamed before the a = 1: flushed under its
+             * new name, never the old one. */
+            put_file("nm2/h.txt", "in a folder about to move", 0);
+            check(rename_path("nm2", "nm4") == HOSTFS_E_OK, "RENAME nm2 to nm4");
+            if (NAMES_SYNC("a folder rename"))
+                check(log_has(shimlog, d4) && log_has(shimlog, top)
+                      && !log_has(shimlog, d2)
+                      && log_has(log, "hostfsd: sync: folder nm4\n")
+                      && !log_has(log, "hostfsd: sync: folder nm2 is gone"),
+                      "a listed folder did not follow its rename");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && log_has(log, "hostfsd: SYNC a=1: nothing to do\n"),
+                  "a = 1 with every folder flushed still had work");
+            /* More folders than the list holds. */
+            check(rpc_path(HOSTFS_OP_MKDIR, 0, "ov") == HOSTFS_E_OK, "MKDIR ov");
+            for (i = 0; i < 1100 && ok; i++)
+            {
+                snprintf(f, sizeof(f), "ov/d%04d", i);
+                ok = rpc_path(HOSTFS_OP_MKDIR, 0, f) == HOSTFS_E_OK;
+                snprintf(f, sizeof(f), "ov/d%04d/e", i);
+                ok = ok && rpc_path(HOSTFS_OP_CREATE, 0, f) == HOSTFS_E_OK
+                        && rpc(HOSTFS_OP_CLOSE, reply_a, 0, 0, NULL, 0)
+                           == HOSTFS_E_OK;
+            }
+            check(ok, "1100 folders with a file each failed at %d", i);
+            if (NAMES_SYNC("1100 folders changed"))
+                check(log_count(shimlog, "syncfs ") == 1
+                      && log_count(shimlog, "fsync ") == 1024
+                      && log_has(log, "hostfsd: sync: more than 1024 folders "
+                                      "changed: syncfs\n"),
+                      "1100 changed folders did not give 1024 folder flushes "
+                      "and one syncfs (%d and %d)",
+                      log_count(shimlog, "fsync "), log_count(shimlog, "syncfs "));
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && log_count(log, "hostfsd: SYNC a=1: nothing to do\n") == 2,
+                  "the fallback was not done with");
+#undef NAMES_SYNC
+            helper_done(child, "the helper for the folder flushes");
+        }
+        shim_env(NULL, NULL, NULL);
         shim_env(NULL, NULL, NULL);
     }
 

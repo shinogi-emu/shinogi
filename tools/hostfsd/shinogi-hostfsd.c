@@ -1042,7 +1042,8 @@ static void dir_release(dirhandle *d)
  * that serves requests; there is no lock and no queue.
  *
  *   a = 1    flushes all of it before the reply: every dirty open file
- *            through its handle and every listed path. With --sync-fs,
+ *            through its handle, every listed path and, on POSIX, every
+ *            folder whose entries changed (see dsync). With --sync-fs,
  *            Linux instead makes one syncfs() per filesystem involved --
  *            normally just the folder's -- which covers open and closed
  *            files alike, but also everything else being written to that
@@ -1184,14 +1185,21 @@ static int path_char(int c)
 #endif
 }
 
-static unsigned long path_hash(const char *p)
+/* The hash of the first N characters of P. */
+static unsigned long path_hash_n(const char *p, size_t n)
 {
     unsigned long h = 2166136261UL;
+    size_t i;
 
-    for (; *p; p++)
-        h = ((h ^ (unsigned long)path_char((unsigned char)*p)) * 16777619UL)
+    for (i = 0; i < n; i++)
+        h = ((h ^ (unsigned long)path_char((unsigned char)p[i])) * 16777619UL)
           & 0xffffffffUL;
     return h;
+}
+
+static unsigned long path_hash(const char *p)
+{
+    return path_hash_n(p, strlen(p));
 }
 
 /* The length of FROM if P is FROM or lies under it, else 0. */
@@ -1212,10 +1220,11 @@ static int path_same(const char *a, const char *b)
     return n && a[n] == '\0';
 }
 
-/* For messages: the path inside the served folder. */
+/* For messages: the path inside the served folder ("." for the folder
+ * itself). */
 static const char *rel_of(const char *p)
 {
-    return strlen(p) > rootlen ? p + rootlen + 1 : p;
+    return strlen(p) > rootlen ? p + rootlen + 1 : ".";
 }
 
 static void dirty_link(unsigned i)
@@ -1490,6 +1499,237 @@ static void sync_forget(const char *path)
         dirty_remove((unsigned)i);
 }
 
+#ifndef _WIN32
+/*
+ * Folders whose entries changed since they were last flushed. POSIX
+ * makes a name durable -- a file created, renamed or deleted, a folder
+ * made or removed -- only when the folder holding it is flushed, and a
+ * file's own flush does not promise that. syncfs() covered names too;
+ * flushing file by file, a = 1 also flushes these. Windows has no such
+ * flush and needs none: NTFS logs its names itself.
+ *
+ * CREATE, DELETE, MKDIR and RMDIR list the folder holding the name, a
+ * RENAME the folders on both sides, and a renamed folder's entries follow
+ * it as the files' do. The list holds MAX_DSYNC folders; past that, and
+ * when there is no memory for a name, the next a = 1 calls syncfs() on
+ * the served folder's filesystem instead (sync() if a folder left out
+ * lies on another one, or on a host without syncfs()). Posted work
+ * flushes the listed folders but never that fallback: one syncfs() can
+ * wait for every other writer on the filesystem.
+ */
+#define MAX_DSYNC   1024
+#define DSYNC_HASH  2048                /* buckets; a power of two */
+
+typedef struct
+{
+    char *path;
+    unsigned long hash;
+    unsigned long tried;                /* the posted round that tried it */
+    int ferr;                           /* the failure last logged, or 0 */
+} dsync_dir;
+
+static dsync_dir dsync[MAX_DSYNC];
+static unsigned dsync_next[MAX_DSYNC];  /* hash chains: index + 1, 0 ends */
+static unsigned dsync_head[DSYNC_HASH];
+static unsigned ndsync;
+static int dsync_over;                  /* 1: a folder was left out; 2: one
+                                           on another filesystem */
+static dev_t dsync_root_dev;
+
+static void dsync_link(unsigned i)
+{
+    unsigned b = (unsigned)(dsync[i].hash & (DSYNC_HASH - 1));
+
+    dsync_next[i] = dsync_head[b];
+    dsync_head[b] = i + 1;
+}
+
+static void dsync_unlink(unsigned i)
+{
+    unsigned *p = &dsync_head[dsync[i].hash & (DSYNC_HASH - 1)];
+
+    while (*p != i + 1)
+        p = &dsync_next[*p - 1];
+    *p = dsync_next[i];
+}
+
+static void dsync_remove(unsigned i)
+{
+    dsync_unlink(i);
+    free(dsync[i].path);
+    if (i != ndsync - 1)
+    {
+        dsync_unlink(ndsync - 1);
+        dsync[i] = dsync[ndsync - 1];
+        dsync_link(i);
+    }
+    ndsync--;
+}
+
+/* A folder could not be listed: the next a = 1 falls back on syncfs(). */
+static void dsync_overflow(const char *dir)
+{
+    struct stat st;
+
+    dsync_over |= 1;
+    if (lstat(dir, &st) == 0 && st.st_dev != dsync_root_dev)
+        dsync_over |= 2;
+}
+
+/* List the folder P[0..LEN). */
+static void dsync_add(const char *p, size_t len)
+{
+    unsigned long h = path_hash_n(p, len);
+    char *copy;
+    unsigned k;
+
+    for (k = dsync_head[h & (DSYNC_HASH - 1)]; k; k = dsync_next[k - 1])
+        if (dsync[k - 1].hash == h && strlen(dsync[k - 1].path) == len
+         && !memcmp(dsync[k - 1].path, p, len))
+            return;
+    if (ndsync == MAX_DSYNC || (copy = (char *)malloc(len + 1)) == NULL)
+    {
+        char dir[FULLPATH_MAX];
+
+        if (len >= sizeof(dir))
+            len = sizeof(dir) - 1;
+        memcpy(dir, p, len);
+        dir[len] = '\0';
+        dsync_overflow(dir);
+        return;
+    }
+    memcpy(copy, p, len);
+    copy[len] = '\0';
+    dsync[ndsync].path = copy;
+    dsync[ndsync].hash = h;
+    dsync[ndsync].tried = 0;
+    dsync[ndsync].ferr = 0;
+    dsync_link(ndsync);
+    ndsync++;
+}
+
+/* The entries of the folder holding PATH changed. */
+static void dsync_parent(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+
+    if (slash)
+        dsync_add(path, slash > path ? (size_t)(slash - path) : 1);
+}
+
+/* A successful RENAME of FROM to TO: listed folders under FROM follow it,
+ * what TO replaced is gone, and both sides' folders changed. */
+static void dsync_renamed(const char *from, const char *to)
+{
+    unsigned i;
+
+    if (strcmp(from, to) != 0)
+    {
+        for (i = 0; i < ndsync; )
+        {
+            if (path_under(dsync[i].path, to))
+                dsync_remove(i);
+            else
+                i++;
+        }
+    }
+    for (i = 0; i < ndsync; i++)
+    {
+        if (!path_under(dsync[i].path, from))
+            continue;
+        dsync_unlink(i);
+        if (rewrite_path(&dsync[i].path, from, to) < 0)
+            dsync_overflow(to);         /* the old name will be found gone */
+        else
+            dsync[i].hash = path_hash(dsync[i].path);
+        dsync_link(i);
+    }
+    dsync_parent(from);
+    dsync_parent(to);
+}
+
+/* Flush the folder at PATH: 0, 1 when it is gone or no longer a folder,
+ * or FLUSH_FAILED or FLUSH_FULL. */
+static int flush_dir(const char *path, int *ferr)
+{
+    struct stat st;
+    int fd, e = 0, r = 0;
+
+    if (lstat(path, &st) != 0)
+    {
+        e = errno;
+        if (e == ENOENT || e == ENOTDIR)
+        {
+            dbg("hostfsd: sync: folder %s is gone\n", rel_of(path));
+            return 1;
+        }
+    }
+    else if (!S_ISDIR(st.st_mode))
+    {
+        dbg("hostfsd: sync: folder %s is no longer a folder\n", rel_of(path));
+        return 1;
+    }
+    else
+    {
+        fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+        if (fd < 0)
+        {
+            e = errno;
+            if (e == ENOENT || e == ENOTDIR || e == ELOOP)
+            {
+                dbg("hostfsd: sync: folder %s is gone\n", rel_of(path));
+                return 1;
+            }
+        }
+        else
+        {
+            if (fsync(fd) < 0 && errno != EINVAL && errno != EROFS)
+                e = errno;
+            close(fd);
+        }
+    }
+    if (e)
+    {
+        r = flush_failure(e);
+        flush_failed(path, e, ferr);
+        return r;
+    }
+    *ferr = 0;
+    dbg("hostfsd: sync: folder %s\n", rel_of(path));
+    return 0;
+}
+
+/* The fallback for the folders left out: 0, or FLUSH_FAILED/FLUSH_FULL. */
+static int dsync_fallback(void)
+{
+#ifdef __linux__
+    if (!(dsync_over & 2))
+    {
+        int fd = open(root, O_RDONLY | O_DIRECTORY), e = 0;
+
+        dbg("hostfsd: sync: more than %d folders changed: syncfs\n",
+            MAX_DSYNC);
+        if (fd < 0 || syncfs(fd) < 0)
+            e = errno;
+        if (fd >= 0)
+            close(fd);
+        if (e)
+        {
+            fprintf(stderr, "hostfsd: syncfs failed: %s\n", strerror(e));
+            return flush_failure(e);
+        }
+        return 0;
+    }
+#endif
+    dbg("hostfsd: sync: more than %d folders changed: sync\n", MAX_DSYNC);
+    sync();
+    return 0;
+}
+#else
+#define dsync_parent(path)      ((void)0)
+#define dsync_renamed(from, to) ((void)0)
+#endif
+
 /* SETATTR is about to make PATH read-only: on Windows, flush it while it
  * can still be opened for writing (see above). */
 static void sync_before_readonly(const char *path)
@@ -1528,8 +1768,8 @@ static void sync_before_readonly(const char *path)
     }
 }
 
-/* How many files a SYNC would flush now: 0 means there is nothing to
- * flush. */
+/* How many files and folders a SYNC would flush now, one by one: 0
+ * means there is nothing to flush. */
 static unsigned sync_work(void)
 {
     unsigned n = ndirty;
@@ -1538,7 +1778,20 @@ static unsigned sync_work(void)
     for (k = 0; k < MAX_FILES; k++)
         if (files[k].used && files[k].dirty)
             n++;
+#ifndef _WIN32
+    n += ndsync;
+#endif
     return n;
+}
+
+/* Does a = 1 have anything to do: to flush, or to report? */
+static int sync_wanted(void)
+{
+#ifndef _WIN32
+    if (dsync_over)
+        return 1;
+#endif
+    return sync_work() || sync_unreported.n;
 }
 
 /* a = 0. */
@@ -1578,6 +1831,19 @@ static void sync_step(void)
         tally_add(&sync_unreported, r);
         return;
     }
+#ifndef _WIN32
+    /* The folders last: a name is flushed after the file it names. */
+    for (k = 0; (unsigned)k < ndsync; k++)
+        if (dsync[k].tried != sync_round)
+        {
+            dsync[k].tried = sync_round;
+            r = flush_dir(dsync[k].path, &dsync[k].ferr);
+            if (r >= 0)
+                dsync_remove((unsigned)k);
+            tally_add(&sync_unreported, r);
+            return;
+        }
+#endif
     sync_pending = 0;
     dbg("hostfsd: sync: posted work done\n");
 }
@@ -1724,7 +1990,7 @@ static void sync_all_syncfs(sync_tally *failed)
  * gets the failures; what failed stays to be tried again. */
 static void sync_all(sync_tally *failed)
 {
-    unsigned listed = ndirty, open = 0, i;
+    unsigned listed = ndirty, open = 0, folders = 0, i;
     int k;
 
     failed->n = 0;
@@ -1761,7 +2027,34 @@ static void sync_all(sync_tally *failed)
             }
         }
     }
+#ifndef _WIN32
+    /* Then the names: the fallback first, after which the listed folders
+     * have nothing left to write on that filesystem. */
+    folders = ndsync;
+    if (dsync_over)
+    {
+        int r = dsync_fallback();
+
+        if (r == 0)
+            dsync_over = 0;
+        tally_add(failed, r);
+    }
+    for (i = 0; i < ndsync; )
+    {
+        int r = flush_dir(dsync[i].path, &dsync[i].ferr);
+
+        if (r >= 0)
+            dsync_remove(i);
+        else
+        {
+            tally_add(failed, r);
+            i++;
+        }
+    }
+#endif
     sync_pending = 0;
+    if (folders)
+        dbg("hostfsd: sync: %u folder(s) whose entries changed\n", folders);
     dbg("hostfsd: sync: %u listed and %u open file(s) %s, %u failed\n",
         listed, open, sync_file_by_file() ? "file by file" : "by syncfs",
         failed->n);
@@ -1769,9 +2062,13 @@ static void sync_all(sync_tally *failed)
 
 static void sync_init(void)
 {
-#ifdef __linux__
+#ifndef _WIN32
     struct stat st;
 
+    if (stat(root, &st) == 0)
+        dsync_root_dev = st.st_dev;
+#endif
+#ifdef __linux__
     if (!sync_fs)
         return;
     root_fd = open(root, O_RDONLY | O_DIRECTORY);
@@ -2193,6 +2490,8 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         files[i].readonly = op == HOSTFS_OP_CREATE && (a & HOSTFS_FA_RO);
         files[i].tried = 0;
         files[i].ferr = 0;
+        if (op == HOSTFS_OP_CREATE)
+            dsync_parent(path);         /* a new name, or a truncation */
         ra = (unsigned long)(i + 1);
         break;
     }
@@ -2395,19 +2694,30 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         if (unlink(path) != 0)
             status = errno_to_gemdos(errno);
         else
+        {
             sync_forget(path);
+            dsync_parent(path);
+        }
         break;
 
     case HOSTFS_OP_MKDIR:
         status = resolve_path(data, datalen, path);
-        if (status == HOSTFS_E_OK && plat_mkdir(path) != 0)
+        if (status != HOSTFS_E_OK)
+            break;
+        if (plat_mkdir(path) != 0)
             status = errno_to_gemdos(errno);
+        else
+            dsync_parent(path);
         break;
 
     case HOSTFS_OP_RMDIR:
         status = resolve_path(data, datalen, path);
-        if (status == HOSTFS_E_OK && rmdir(path) != 0)
+        if (status != HOSTFS_E_OK)
+            break;
+        if (rmdir(path) != 0)
             status = errno_to_gemdos(errno);
+        else
+            dsync_parent(path);
         break;
 
     case HOSTFS_OP_RENAME:
@@ -2432,7 +2742,10 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         if (rename(path, dst) != 0)
             status = errno_to_gemdos(errno);
         else
+        {
             sync_renamed(path, dst);    /* the set follows the file */
+            dsync_renamed(path, dst);   /* and the names changed */
+        }
         break;
     }
 
@@ -2477,7 +2790,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
                 a, b, c, datalen);
             status = HOSTFS_EDRIVE;
         }
-        else if (!sync_work() && (a == 0 || !sync_unreported.n))
+        else if (a == 0 ? !sync_work() : !sync_wanted())
             dbg("hostfsd: SYNC a=%lu: nothing to do\n", a);
         else if (a == 0)
         {

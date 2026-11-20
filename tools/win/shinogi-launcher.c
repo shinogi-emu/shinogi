@@ -204,11 +204,15 @@ static HANDLE start_helper(const char *dir, const char *drivec,
      * never told to stop, so it keeps running and keeps
      * shinogi-hostfsd.exe open. The next installer cannot overwrite the
      * file and fails with "Error opening file for writing".
+     *
+     * --fsync-on-close: EmuTOS's GEMDOS never asks the helper to put its
+     * data on the disk (no SYNC), so each file it wrote goes to the disk
+     * when it is closed, as before the helper left that to write-back.
      */
     _snprintf(cmd, sizeof(cmd),
               "\"%s\\shinogi-hostfsd.exe\""
               " --root \"%s\\.\" --listen-tcp %s --ready-file \"%s\""
-              " --once%s",
+              " --once --fsync-on-close%s",
               dir, drivec, "0", ready, readonly ? " --read-only" : "");
     cmd[sizeof(cmd) - 1] = '\0';
 

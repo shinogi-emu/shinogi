@@ -92,7 +92,8 @@
 #define HOSTFS_OP_DFREE         16
 #define HOSTFS_OP_CAPS          17
 #define HOSTFS_OP_READDIR_BATCH 18
-#define HOSTFS_OP_MAX           18
+#define HOSTFS_OP_SYNC          19
+#define HOSTFS_OP_MAX           19
 
 /* Optional v1 operations. Old helpers reject CAPS; guests then use READDIR. */
 #define HOSTFS_CAP_READDIR_BATCH 1UL
@@ -114,6 +115,41 @@
  * A helper without the bit leaves `b` at 0 and keeps 4 KB frames.
  */
 #define HOSTFS_CAP_LARGE_FRAME   2UL
+
+/*
+ * SYNC: the guest's Sync(), Fsync() and shutdown, carried to the host.
+ * Writes reach the host's cache as they are made and CLOSE does not
+ * flush, so this is how a guest asks for its data to be on the host's
+ * stable storage.
+ *
+ *   a = 0  posted: the reply comes at once, and the helper flushes what
+ *          the session wrote once no request has come for 20 ms, one file
+ *          at a time; a request that arrives meanwhile waits at most for
+ *          the one flush in progress. Under traffic that never pauses it
+ *          still gets one file per 100 ms once it has waited 5 s. Posting
+ *          again before that is done adds nothing.
+ *   a = 1  wait: when the reply arrives, everything the session wrote
+ *          before the request is on stable storage -- files still open,
+ *          files closed since, and whatever an earlier a = 0 had not
+ *          finished. Status 0, or EACCDN if any of it could not be
+ *          flushed. A file that failed is tried again, and reported
+ *          again, by every later a = 1 until it flushes, is deleted or
+ *          is renamed to something that flushes.
+ *
+ * b, c and the data must be empty; anything else is refused (EDRIVE).
+ * A guest checks this bit first: older helpers answer SYNC with EDRIVE.
+ * The helper does the same flush, as for a = 1, when a session ends.
+ *
+ * On Windows a flush needs a handle that may write. A file the guest
+ * makes read-only -- SETATTR, or CREATE with HOSTFS_FA_RO -- is
+ * therefore flushed before it becomes read-only (or, if it is open, when
+ * it is closed), so its SYNC succeeds. A file the HOST makes read-only,
+ * or that a host program holds open without sharing write access, can
+ * still fail a SYNC there with EACCDN. A name that has meanwhile become
+ * a folder, a pipe or anything but a regular file is dropped unflushed:
+ * the file it named is gone.
+ */
+#define HOSTFS_CAP_SYNC          4UL
 
 /*
  * Per-operation field use. `data` is the remainder of the frame; a path
@@ -147,6 +183,7 @@
  *  DFREE     --                               a = free KB, b = total KB
  *  CAPS      a = largest frame the guest      a = capability bits
  *            accepts (0: HOSTFS_MAX_FRAME)    b = frame limit from now on
+ *  SYNC      a = 0 posted, 1 wait             --
  *  READDIR_BATCH a = handle, b = cookie       a = last cookie, b = count
  *                                             data = repeated little-endian
  *                                             u32 next cookie, u16 name length,

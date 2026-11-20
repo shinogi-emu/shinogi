@@ -2017,6 +2017,8 @@ static void shim_env(const char *ms, const char *fail, const char *log)
     if (ms) setenv("SLOWSYNC_MS", ms, 1); else unsetenv("SLOWSYNC_MS");
     if (fail) setenv("SLOWSYNC_FAIL", fail, 1); else unsetenv("SLOWSYNC_FAIL");
     if (log) setenv("SLOWSYNC_LOG", log, 1); else unsetenv("SLOWSYNC_LOG");
+    unsetenv("SLOWSYNC_FULL");
+    unsetenv("SLOWSYNC_QUOTA");
 }
 
 /* Wait for a helper of ours to exit; kill it if it will not. */
@@ -2189,9 +2191,11 @@ static void test_sync(void)
             host_path(p, sizeof(p), "locked.txt");
             if (chmod(p, 0) != 0)
                 die("chmod locked.txt");
-            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EACCDN,
-                  "a file that could not be flushed did not give EACCDN");
-            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EACCDN,
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO
+                  && reply_len == 12,
+                  "a file that could not be flushed did not give EIO, "
+                  "header only");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
                   "a failed file was reported once and then forgotten");
             chmod(p, 0644);
             check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
@@ -2473,9 +2477,12 @@ per_file_done:
         }
 
         /* ---- Failures: an open file left at a HELLO that will not flush
-         * is not forgotten; every a = 1 reports it until it is deleted. */
+         * is not forgotten; every a = 1 reports it until it is deleted.
+         * A full disk is reported as ENOSPC, anything else as EIO. */
         snprintf(log, sizeof(log), "%s/sync-fail.log", tmproot);
         shim_env("0", "/fail-", NULL);
+        setenv("SLOWSYNC_FULL", "/full-", 1);
+        setenv("SLOWSYNC_QUOTA", "/quota-", 1);
         child = helper_extra("sock9", NULL, log, shim);
         check(child > 0, "a failing-flush helper did not start");
         if (child > 0)
@@ -2489,14 +2496,41 @@ per_file_done:
             check(log_has(log, "hostfsd: hello: 1 written file(s) still open, "
                                "closed as CLOSE does"),
                   "HELLO did not list the open file");
-            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EACCDN,
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
                   "the file HELLO could not flush was forgotten");
-            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EACCDN,
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
                   "a failure was reported only once");
             check(rpc_path(HOSTFS_OP_DELETE, 0, "fail-open.txt") == HOSTFS_E_OK,
                   "DELETE the unflushable file");
             check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
                   "a deleted file still failed SYNC");
+
+            /* ENOSPC and EDQUOT are a full disk; with an I/O error
+             * pending as well, the full disk is what the guest hears. */
+            put_file("full-a.txt", "no room", 0);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_ENOSPC
+                  && reply_len == 12,
+                  "a flush that found the disk full did not give ENOSPC, "
+                  "header only");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "full-a.txt") == HOSTFS_E_OK,
+                  "DELETE full-a.txt");
+            fh = put_file("quota-a.txt", "over quota", 1);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_ENOSPC,
+                  "a flush over quota did not give ENOSPC");
+            check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && rpc_path(HOSTFS_OP_DELETE, 0, "quota-a.txt") == HOSTFS_E_OK,
+                  "CLOSE and DELETE quota-a.txt");
+            put_file("fail-b.txt", "I/O error", 0);
+            put_file("full-b.txt", "no room", 0);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_ENOSPC,
+                  "with a full disk and an I/O error, SYNC did not give ENOSPC");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "full-b.txt") == HOSTFS_E_OK,
+                  "DELETE full-b.txt");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "the I/O error left alone did not give EIO");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "fail-b.txt") == HOSTFS_E_OK
+                  && rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC after the failing files were deleted");
             helper_done(child, "the failing-flush helper");
         }
         shim_env(NULL, NULL, NULL);

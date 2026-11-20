@@ -131,10 +131,13 @@
  *   a = 1  wait: when the reply arrives, everything the session wrote
  *          before the request is on stable storage -- files still open,
  *          files closed since, and whatever an earlier a = 0 had not
- *          finished. Status 0, or EACCDN if any of it could not be
- *          flushed. A file that failed is tried again, and reported
- *          again, by every later a = 1 until it flushes, is deleted or
- *          is renamed to something that flushes.
+ *          finished. Status 0, or an error if any of it could not be
+ *          flushed: HOSTFS_ENOSPC when the host said its disk is full,
+ *          HOSTFS_EIO for any other failure, and ENOSPC when there are
+ *          both. The error reply is the 12-byte header alone. A file
+ *          that failed is tried again, and reported again, by every
+ *          later a = 1 until it flushes, is deleted or is renamed to
+ *          something that flushes.
  *
  * b, c and the data must be empty; anything else is refused (EDRIVE).
  * A guest checks this bit first: older helpers answer SYNC with EDRIVE.
@@ -145,7 +148,7 @@
  * therefore flushed before it becomes read-only (or, if it is open, when
  * it is closed), so its SYNC succeeds. A file the HOST makes read-only,
  * or that a host program holds open without sharing write access, can
- * still fail a SYNC there with EACCDN. A name that has meanwhile become
+ * still fail a SYNC there with EIO. A name that has meanwhile become
  * a folder, a pipe or anything but a regular file is dropped unflushed:
  * the file it named is gone.
  */
@@ -237,7 +240,7 @@
  * across hosts; readdir order itself is not.
  */
 
-/* GEMDOS errors, the only values `status` may carry besides 0. */
+/* GEMDOS and MiNT errors, the only values `status` may carry besides 0. */
 #define HOSTFS_E_OK             0
 #define HOSTFS_EFILNF           (-33)
 #define HOSTFS_EPTHNF           (-34)
@@ -247,5 +250,8 @@
 #define HOSTFS_ENSMEM           (-39)
 #define HOSTFS_EDRIVE           (-46)
 #define HOSTFS_ENMFIL           (-49)
+/* MiNT's I/O error and full disk, which only SYNC a = 1 answers with. */
+#define HOSTFS_EIO              (-90)
+#define HOSTFS_ENOSPC           (-91)
 
 #endif /* SHINOGI_HOSTFS_PROTO_H */

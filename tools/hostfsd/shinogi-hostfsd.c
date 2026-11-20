@@ -105,8 +105,19 @@ typedef struct { SOCKET fd; } listener_t;
 /* Windows has no fsync.  _commit() is the same operation on a CRT file
  * descriptor -- flush this handle's buffers to the disk -- and is
  * declared in <io.h> above.  Without this the mingw link fails on an
- * undefined reference, which is how the Windows package job found it. */
-#define plat_fsync(fd)  _commit(fd)
+ * undefined reference, which is how the Windows package job found it.
+ * It reports every failure of FlushFileBuffers as EBADF and leaves the
+ * Windows error in _doserrno, so a full disk is picked out here: SYNC
+ * tells the guest about that one by name. */
+static int plat_fsync(int fd)
+{
+    _doserrno = 0;
+    if (_commit(fd) == 0)
+        return 0;
+    if (_doserrno == ERROR_DISK_FULL || _doserrno == ERROR_HANDLE_DISK_FULL)
+        errno = ENOSPC;
+    return -1;
+}
 /* No lstat: Windows has no symlink that stat() would not follow in the
  * only case this probe cares about -- "does this name exist". */
 #define plat_lstat(p, st) stat((p), (st))
@@ -1058,9 +1069,10 @@ static void dir_release(dirhandle *d)
  *            on its reply, so there the open files are closed as CLOSE
  *            would close them, and flushed no more than CLOSE would.
  *
- * A file that cannot be flushed stays in the set, and every later a = 1
- * tries it again and reports EACCDN until it flushes, is deleted, or is
- * renamed to a name that flushes. RENAME and DELETE keep the set in step
+ * A failed a = 1 answers EIO, or ENOSPC when the host said its disk is
+ * full (ENOSPC wins when there are both). A file that cannot be flushed
+ * stays in the set, and every later a = 1 tries it again and reports it
+ * until it flushes, is deleted, or is renamed to a name that flushes. RENAME and DELETE keep the set in step
  * with the folder: a rename rewrites the path itself and anything under a
  * renamed folder. Only regular files are flushed; a listed name that has
  * become a folder, a pipe or a link is dropped without being opened.
@@ -1101,6 +1113,14 @@ typedef struct
     dev_t dev;
 } dirty_file;
 
+/* A count of failed flushes, and whether any of them found the disk
+ * full -- which, of the two, is what the guest is told. */
+typedef struct
+{
+    unsigned n;
+    int full;
+} sync_tally;
+
 static dirty_file dirty[MAX_DIRTY];
 static unsigned dirty_next[MAX_DIRTY];  /* hash chains: index + 1, 0 ends */
 static unsigned dirty_head[DIRTY_HASH];
@@ -1110,8 +1130,8 @@ static unsigned long long sync_waiting_since;   /* posted, or last idle */
 static unsigned long long sync_last_forced;     /* the last starved step */
 static unsigned long sync_round;        /* posted rounds, for `tried` */
 static unsigned sync_cursor;            /* this round has tried dirty[0..cursor) */
-static int sync_lost;                   /* a failure no entry could keep:
-                                           the next a = 1 reports it once */
+static sync_tally sync_lost;            /* failures no entry could keep:
+                                           the next a = 1 reports them once */
 static int sync_fs;                     /* --sync-fs (Linux) */
 #ifdef __linux__
 static int root_fd = -1;
@@ -1247,8 +1267,50 @@ static int dirty_add(const char *path, dev_t dev)
 }
 
 /*
+ * A failed flush, as a flush returns it: FLUSH_FULL when the host said
+ * its disk is full (ENOSPC or EDQUOT; ERROR_DISK_FULL or
+ * ERROR_HANDLE_DISK_FULL on Windows), FLUSH_FAILED for anything else.
+ * The guest hears the first as ENOSPC and the second as EIO.
+ */
+#define FLUSH_FAILED   (-1)
+#define FLUSH_FULL     (-2)
+
+static int flush_failure(int e)
+{
+#ifdef EDQUOT
+    if (e == EDQUOT)
+        return FLUSH_FULL;
+#endif
+    return e == ENOSPC ? FLUSH_FULL : FLUSH_FAILED;
+}
+
+static void tally_add(sync_tally *t, int r)
+{
+    if (r >= 0)
+        return;
+    t->n++;
+    if (r == FLUSH_FULL)
+        t->full = 1;
+}
+
+static void tally_merge(sync_tally *t, const sync_tally *more)
+{
+    t->n += more->n;
+    t->full |= more->full;
+}
+
+/* The status of a SYNC a = 1 that met these failures. */
+static int tally_status(const sync_tally *t)
+{
+    if (!t->n)
+        return HOSTFS_E_OK;
+    return t->full ? HOSTFS_ENOSPC : HOSTFS_EIO;
+}
+
+/*
  * Flush the file at PATH: 0 when done, 1 when there is nothing left to
- * flush (gone, or no longer a regular file), -1 for a failure.
+ * flush (gone, or no longer a regular file), FLUSH_FAILED or FLUSH_FULL
+ * for a failure.
  */
 static int flush_path(const char *path)
 {
@@ -1265,12 +1327,12 @@ static int flush_path(const char *path)
         if (plat_fsync(fd) < 0 && errno != EINVAL && errno != EROFS)
         {
             e = errno;
-            r = -1;
+            r = flush_failure(e);
         }
         close(fd);
     }
     else
-        r = -1;
+        r = flush_failure(e);
     if (r < 0)
         fprintf(stderr, "hostfsd: could not flush %s: %s\n", rel_of(path),
                 strerror(e));
@@ -1279,14 +1341,17 @@ static int flush_path(const char *path)
     return r;
 }
 
-/* Flush an open file through its handle: 0, or -1 for a failure. */
+/* Flush an open file through its handle: 0, or FLUSH_FAILED or
+ * FLUSH_FULL for a failure. */
 static int flush_handle(filehandle *f)
 {
     if (plat_fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
     {
+        int e = errno;
+
         fprintf(stderr, "hostfsd: could not flush %s: %s\n", rel_of(f->path),
-                strerror(errno));
-        return -1;
+                strerror(e));
+        return flush_failure(e);
     }
     dbg("hostfsd: sync: %s (open)\n", rel_of(f->path));
     return 0;
@@ -1334,8 +1399,7 @@ static void sync_renamed(const char *from, const char *to)
              * rather than keep a name that no longer exists. */
             snprintf(moved, sizeof(moved), "%s%s", to, dirty[i].path + n);
             dirty_link(i);
-            if (flush_path(moved) < 0)
-                sync_lost = 1;
+            tally_add(&sync_lost, flush_path(moved));
             dirty_remove(i);
             continue;
         }
@@ -1391,7 +1455,7 @@ static void sync_before_readonly(const char *path)
  * 0 means there is nothing to do. */
 static unsigned sync_owed(void)
 {
-    unsigned n = ndirty + (sync_lost ? 1 : 0);
+    unsigned n = ndirty + (sync_lost.n ? 1 : 0);
     int k;
 
     for (k = 0; k < MAX_FILES; k++)
@@ -1469,11 +1533,11 @@ static void sync_when_idle(conn_t c)
 
 #ifdef __linux__
 /* a = 1 by syncfs(): once per filesystem that holds something to flush. */
-static int sync_all_syncfs(void)
+static void sync_all_syncfs(sync_tally *failed)
 {
     dev_t devs[16];
     unsigned ndev = 0, i, j;
-    int k, failed = 0;
+    int k;
 
     for (i = 0; i < ndirty + MAX_FILES; i++)
     {
@@ -1496,7 +1560,7 @@ static int sync_all_syncfs(void)
                     dirty_remove(ndirty - 1);
                 for (k = 0; k < MAX_FILES; k++)
                     files[k].dirty = 0;
-                return 0;
+                return;
             }
             devs[ndev++] = dev;
         }
@@ -1535,14 +1599,16 @@ static int sync_all_syncfs(void)
                 {
                     fprintf(stderr, "hostfsd: could not flush %s\n",
                             rel_of(dirty[i].path));
-                    failed++;
+                    tally_add(failed, FLUSH_FAILED);
                 }
             continue;
         }
         if (syncfs(fd) < 0)
         {
-            fprintf(stderr, "hostfsd: syncfs failed: %s\n", strerror(errno));
-            failed++;
+            int e = errno;
+
+            fprintf(stderr, "hostfsd: syncfs failed: %s\n", strerror(e));
+            tally_add(failed, flush_failure(e));
         }
         else
         {
@@ -1558,54 +1624,60 @@ static int sync_all_syncfs(void)
         if (own)
             close(fd);
     }
-    return failed;
 }
 #endif
 
-/* a = 1, and the end of a session: everything, before returning. The
- * number of failures; what failed stays to be tried again. */
-static int sync_all(void)
+/* a = 1, and the end of a session: everything, before returning. FAILED
+ * gets the failures; what failed stays to be tried again. */
+static void sync_all(sync_tally *failed)
 {
     unsigned listed = ndirty, open = 0, i;
-    int k, failed = 0;
+    int k;
 
+    failed->n = 0;
+    failed->full = 0;
     for (k = 0; k < MAX_FILES; k++)
         if (files[k].used && files[k].dirty)
             open++;
     sync_cursor = 0;
 #ifdef __linux__
     if (sync_fs)
-        failed = sync_all_syncfs();
+        sync_all_syncfs(failed);
     else
 #endif
     {
         for (k = 0; k < MAX_FILES; k++)
             if (files[k].used && files[k].dirty)
             {
-                if (flush_handle(&files[k]) == 0)
+                int r = flush_handle(&files[k]);
+
+                if (r == 0)
                     files[k].dirty = 0;
-                else
-                    failed++;
+                tally_add(failed, r);
             }
         for (i = 0; i < ndirty; )
-            if (flush_path(dirty[i].path) >= 0)
+        {
+            int r = flush_path(dirty[i].path);
+
+            if (r >= 0)
                 dirty_remove(i);
             else
             {
-                failed++;
+                tally_add(failed, r);
                 i++;
             }
+        }
     }
-    if (sync_lost)
+    if (sync_lost.n)
     {
-        failed++;
-        sync_lost = 0;
+        tally_merge(failed, &sync_lost);
+        sync_lost.n = 0;
+        sync_lost.full = 0;
     }
     sync_pending = 0;
-    dbg("hostfsd: sync: %u listed and %u open file(s) %s, %d failed\n",
+    dbg("hostfsd: sync: %u listed and %u open file(s) %s, %u failed\n",
         listed, open, sync_file_by_file() ? "file by file" : "by syncfs",
-        failed);
-    return failed;
+        failed->n);
 }
 
 static void sync_init(void)
@@ -1664,8 +1736,7 @@ static void file_close(filehandle *f)
     {
         dbg("hostfsd: sync: %s, the list is full, flushed at close\n",
             rel_of(f->path));
-        if (flush_handle(f) < 0)
-            sync_lost = 1;
+        tally_add(&sync_lost, flush_handle(f));
     }
     close(f->fd);
     free(f->path);
@@ -1693,11 +1764,17 @@ static void handles_reset(int end)
 
     frame_max = HOSTFS_MAX_FRAME;
 
-    if (end && sync_all())
+    if (end)
     {
-        fprintf(stderr, "hostfsd: some of what the guest wrote could not be "
-                        "flushed when it went away\n");
-        fflush(stderr);
+        sync_tally failed;
+
+        sync_all(&failed);
+        if (failed.n)
+        {
+            fprintf(stderr, "hostfsd: some of what the guest wrote could not "
+                            "be flushed when it went away\n");
+            fflush(stderr);
+        }
     }
 
     /* These are the handles the guest still had open when it went away
@@ -2313,12 +2390,12 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         else
         {
             unsigned owed = sync_owed();
-            int failed = sync_all();
+            sync_tally failed;
 
-            dbg("hostfsd: SYNC a=1: flushed %u, failed %d\n",
-                owed >= (unsigned)failed ? owed - (unsigned)failed : 0, failed);
-            if (failed)
-                status = HOSTFS_EACCDN;
+            sync_all(&failed);
+            dbg("hostfsd: SYNC a=1: flushed %u, failed %u\n",
+                owed >= failed.n ? owed - failed.n : 0, failed.n);
+            status = tally_status(&failed);
         }
         break;
 

@@ -1132,8 +1132,8 @@ static void dir_release(dirhandle *d)
 #define STARVE_EVERY_MS  100    /* ... then gets one file per this much traffic */
 
 /* a = 1 starts no new flush this long after the request arrived; the
- * guest gives the reply 300 s. HOSTFSD_TEST_SYNC_DEADLINE_MS shortens it
- * for the test suite. */
+ * guest gives the reply 300 s. HOSTFSD_TEST_SYNC_DEADLINE_MS, for the
+ * test suite only, can shorten it (see sync_init). */
 #define SYNC_DEADLINE_MS 240000UL
 
 #define MAX_DIRTY   16384
@@ -2132,14 +2132,22 @@ static void sync_init(void)
     struct stat st;
 #endif
 
-    /* The test suite's way to reach the deadline of a = 1 in seconds. */
-    if (test_deadline && *test_deadline)
+    /* For the test suite only: its way to reach the deadline of a = 1 in
+     * seconds rather than minutes. It can only shorten the deadline, to
+     * 1..SYNC_DEADLINE_MS milliseconds; anything else is ignored. */
+    if (test_deadline)
     {
         char *end;
-        unsigned long ms = strtoul(test_deadline, &end, 10);
+        unsigned long ms;
 
-        if (!*end && ms)
+        errno = 0;
+        ms = strtoul(test_deadline, &end, 10);
+        if (!errno && *test_deadline >= '0' && *test_deadline <= '9' && !*end
+         && ms >= 1 && ms <= SYNC_DEADLINE_MS)
             sync_deadline_ms = ms;
+        else
+            dbg("hostfsd: HOSTFSD_TEST_SYNC_DEADLINE_MS=%s ignored: not 1 to "
+                "%lu\n", test_deadline, (unsigned long)SYNC_DEADLINE_MS);
     }
 #ifndef _WIN32
     if (stat(root, &st) == 0)

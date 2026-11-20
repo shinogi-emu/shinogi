@@ -3005,9 +3005,43 @@ per_file_done:
             check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
                   && log_has(log, "hostfsd: SYNC a=1: nothing to do\n"),
                   "a = 1 after the posted rest was done");
+            check(!log_has(log, "HOSTFSD_TEST_SYNC_DEADLINE_MS"),
+                  "a deadline of 1000 ms was not taken as given");
             helper_done(child, "the deadline helper");
         }
         shim_env(NULL, NULL, NULL);
+
+        /* The variable can only shorten the deadline: 1..240000 ms, and
+         * anything else is ignored with a line under --verbose. */
+        {
+            static const char *const values[] = {
+                "240000", "240001", "0", "-5", "5x", "", "99999999999999999999"
+            };
+            unsigned v;
+
+            for (v = 0; v < sizeof(values) / sizeof(values[0]); v++)
+            {
+                char name[32];
+                int ignored;
+
+                snprintf(name, sizeof(name), "sock%u", 18 + v);
+                snprintf(log, sizeof(log), "%s/sync-deadline-%u.log", tmproot, v);
+                setenv("HOSTFSD_TEST_SYNC_DEADLINE_MS", values[v], 1);
+                child = helper_extra(name, NULL, log, NULL);
+                unsetenv("HOSTFSD_TEST_SYNC_DEADLINE_MS");
+                check(child > 0, "a helper with the deadline \"%s\" did not "
+                      "start", values[v]);
+                if (child <= 0)
+                    continue;
+                ignored = log_has(log, "ignored: not 1 to 240000\n");
+                check(ignored == (v != 0), "the deadline \"%s\" was %s",
+                      values[v], ignored ? "ignored" : "taken");
+                /* One request, or --once would not let the helper go. */
+                check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                      == HOSTFS_E_OK, "HELLO (deadline \"%s\")", values[v]);
+                helper_done(child, "a helper with a test deadline");
+            }
+        }
         shim_env(NULL, NULL, NULL);
     }
 

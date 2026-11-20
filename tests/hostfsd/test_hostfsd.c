@@ -1964,8 +1964,9 @@ static void many_files(const char *dir, int n)
     check(ok, "writing %d files into %s failed at %d", n, dir, i);
 }
 
-/* How many lines of the file LOG contain WHAT (0 if there is none). */
-static int log_count(const char *log, const char *what)
+/* How many lines in the first UPTO bytes of the file LOG (all of it if
+ * UPTO is negative) contain WHAT; 0 if there is no such file. */
+static int log_count_upto(const char *log, const char *what, long upto)
 {
     FILE *f = fopen(log, "rb");
     char line[8192];
@@ -1973,11 +1974,24 @@ static int log_count(const char *log, const char *what)
 
     if (!f)
         return 0;
-    while (fgets(line, sizeof(line), f))
+    while ((upto < 0 || ftell(f) < upto) && fgets(line, sizeof(line), f))
         if (strstr(line, what))
             n++;
     fclose(f);
     return n;
+}
+
+static int log_count(const char *log, const char *what)
+{
+    return log_count_upto(log, what, -1);
+}
+
+/* The size of the file LOG now: where it ends at a given moment. */
+static long log_size(const char *log)
+{
+    struct stat st;
+
+    return stat(log, &st) == 0 ? (long)st.st_size : 0;
 }
 
 /* Wait up to MS for LOG to contain WHAT, sending nothing meanwhile. */
@@ -2420,8 +2434,13 @@ per_file_done:
                     gap = now_ms() - last;
                 last = now_ms();
             }
-            forced = log_count(log, "hostfsd: sync: busy for 5000 ms, one file");
+            /* The flushes first, while the drive cannot yet have been idle
+             * for 20 ms: the idle drain starts soon after the traffic stops,
+             * and reading the long --verbose log takes a while. A starved
+             * step is logged before its flush, so the later count may be
+             * one ahead. */
             flushed = log_count(shimlog, "fsync ");
+            forced = log_count(log, "hostfsd: sync: busy for 5000 ms, one file");
             printf("busy test: longest round trip and pause %.1f ms; flushes "
                    "%d in the first 4 s, %d by 7 s, %d of them for starvation\n",
                    gap, early, flushed, forced);
@@ -2431,8 +2450,8 @@ per_file_done:
                       "traffic after a = 0", early);
                 check(forced >= 5 && forced <= 23, "%d starved flushes in the "
                       "2 s past the 5 s bound: not one per 100 ms", forced);
-                check(flushed == forced, "%d flushes, but only %d for starvation",
-                      flushed, forced);
+                check(flushed <= forced && forced <= flushed + 1,
+                      "%d flushes, but %d for starvation", flushed, forced);
             }
             else
                 check(forced >= 1 || flushed >= 1,
@@ -2440,6 +2459,66 @@ per_file_done:
             check(log_waits_for(shimlog, "/busy/f00199.txt", 15000),
                   "the posted work did not drain once the drive was idle");
             helper_done(child, "the busy helper");
+        }
+
+        /* ---- The same with slow flushes, 300 ms each, as on a USB stick
+         * or a network share: past the 5 s bound a request still waits at
+         * most for the one flush in progress, because 100 ms of traffic
+         * is served between two flushes however long each takes. */
+        snprintf(log, sizeof(log), "%s/sync-starve.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-starve.fsync", tmproot);
+        shim_env("300", NULL, shimlog);
+        child = helper_extra("sock12", NULL, log, shim);
+        check(child > 0, "a helper for the slow starvation test did not start");
+        if (child > 0)
+        {
+            double t0, t, last, worst = 0, at = 0, pause = 0;
+            int forced, idle, n = 0;
+            long end;
+
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (slow starvation)");
+            many_files("starve", 12);
+            t0 = last = now_ms();
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (slow starvation)");
+            while ((t = now_ms()) - t0 < 7500)
+            {
+                if (t - last > pause)
+                    pause = t - last;   /* the client's own pause */
+                if (rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") != HOSTFS_E_OK)
+                    break;
+                last = now_ms();
+                n++;
+                if (last - t > worst)
+                {
+                    worst = last - t;
+                    at = last - t0;
+                }
+            }
+            /* Where the log stood when the traffic stopped: the helper goes
+             * idle 20 ms later, and reading the log takes longer. */
+            end = log_size(log);
+            forced = log_count_upto(log, "hostfsd: sync: busy for 5000 ms, "
+                                    "one file", end);
+            idle = log_count_upto(log, "hostfsd: sync: idle, flushing", end);
+            printf("slow starvation test: %d requests, longest round trip "
+                   "%.0f ms at %.1f s, client pause up to %.1f ms, %d starved "
+                   "flushes of 300 ms, %d idle windows\n", n, worst, at / 1000,
+                   pause, forced, idle);
+            check(worst < 300 + 200, "a request waited %.0f ms behind 300 ms "
+                  "flushes: more than the one in progress", worst);
+            /* Three or more unless the helper saw the client pause for
+             * 20 ms (on a loaded host): an idle window restarts the 5 s
+             * clock. Some progress either way. */
+            if (!idle)
+                check(forced >= 3, "only %d starved flushes in the 2.5 s past "
+                      "the 5 s bound", forced);
+            else
+                check(log_count(shimlog, "fsync ") >= 1,
+                      "no progress on posted work in 7.5 s of traffic");
+            helper_done(child, "the slow starvation helper");
         }
 
         /* ---- A HELLO is not held up by a slow flush: with every flush a

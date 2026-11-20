@@ -1062,8 +1062,8 @@ static void dir_release(dirhandle *d)
  * host's own write-back keeps writing the data out; a = 1 and the end of
  * a session remain the guarantees. So that posted work cannot starve
  * behind endless traffic, once it has waited STARVE_MS without an idle
- * window it gets one file per STARVE_EVERY_MS of traffic, a fraction of
- * a percent of the time.
+ * window it gets one file, then STARVE_EVERY_MS of traffic is served
+ * before the next file, however long each flush takes.
  *   the end  of a session flushes everything, as a = 1 does. A HELLO on
  *            a live connection is a guest starting over with a deadline
  *            on its reply, so there the open files are closed as CLOSE
@@ -1090,11 +1090,10 @@ static void dir_release(dirhandle *d)
  * none of this: there a read-only file waits for SYNC like any other.
  *
  * Who waits: posted work runs only when the drive has been idle for
- * IDLE_MS, so a request waits at most for the one flush that idle
- * started -- a flush already in progress cannot be interrupted, so its
- * length is the wait that remains -- and, under traffic that never
- * pauses, for one file every STARVE_EVERY_MS once the work has waited
- * STARVE_MS. Beyond that, a = 1, the end of a session, the CLOSE of one
+ * IDLE_MS, or for one file at a time with STARVE_EVERY_MS of traffic
+ * between two once it has waited STARVE_MS. Either way a request waits
+ * at most for the one flush in progress -- a flush cannot be
+ * interrupted, so its length is the wait that remains. Beyond that, a = 1, the end of a session, the CLOSE of one
  * that finds the set full and, on Windows only, a SETATTR making a
  * written file read-only and the CLOSE of a read-only file flush in
  * place; so does a HELLO, for the same files as CLOSE and no others.
@@ -1512,30 +1511,42 @@ static void sync_step(void)
 
 /*
  * After a reply, with work posted: flush only once the drive is idle, and
- * under traffic that never pauses, one file per STARVE_EVERY_MS once the
- * work has waited STARVE_MS. Returns when a request is waiting or the
- * work is done.
+ * under traffic that never pauses, once the work has waited STARVE_MS,
+ * one file and then at least STARVE_EVERY_MS of traffic before the next.
+ * Returns when a request is waiting or the work is done.
  */
 static void sync_when_idle(conn_t c)
 {
     while (sync_pending)
     {
         unsigned long long now = plat_now_ms();
+        int stepped = 0;
 
         if (now - sync_waiting_since >= STARVE_MS
          && now - sync_last_forced >= STARVE_EVERY_MS)
         {
             dbg("hostfsd: sync: busy for %d ms, one file\n", STARVE_MS);
-            sync_last_forced = now;
             sync_step();
+            /* Timed from the end of the flush, however long it took, so
+             * that a waiting request is always served before the next
+             * one: stamped before it, a flush of STARVE_EVERY_MS or more
+             * would chain into the next, and a request would wait for
+             * the whole set. */
+            sync_last_forced = plat_now_ms();
             continue;
         }
         if (conn_wait_input(c, IDLE_MS))
             return;                     /* a request: serve it first */
         dbg("hostfsd: sync: idle, flushing\n");
         while (sync_pending && !conn_wait_input(c, 0))
+        {
             sync_step();
-        sync_waiting_since = plat_now_ms();
+            stepped = 1;
+        }
+        /* An idle window restarts the STARVE_MS clock, but only if it was
+         * long enough to flush something. */
+        if (stepped)
+            sync_waiting_since = plat_now_ms();
         return;
     }
 }

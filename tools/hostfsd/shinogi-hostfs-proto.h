@@ -125,9 +125,11 @@
  *   a = 0  posted: the reply comes at once, and the helper flushes what
  *          the session wrote once no request has come for 20 ms, one file
  *          at a time; a request that arrives meanwhile waits at most for
- *          the one flush in progress. Under traffic that never pauses it
- *          still gets one file per 100 ms once it has waited 5 s. Posting
- *          again before that is done adds nothing.
+ *          the one flush in progress. Under traffic that never pauses,
+ *          once it has waited 5 s, it flushes one file, serves 100 ms of
+ *          requests, flushes the next, and so on; a request still waits
+ *          at most for one flush. Posting again before that is done adds
+ *          nothing.
  *   a = 1  wait: when the reply arrives, everything the session wrote
  *          before the request is on stable storage -- files still open,
  *          files closed since, and whatever an earlier a = 0 had not

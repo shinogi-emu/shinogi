@@ -619,6 +619,7 @@ typedef struct
     dev_t dev;                  /* its filesystem, for syncfs() */
     int readonly;               /* created or made read-only: flush at CLOSE */
     unsigned long tried;        /* the posted round that last tried it */
+    int ferr;                   /* the failure last logged for it, or 0 */
 } filehandle;
 
 typedef struct
@@ -1072,7 +1073,9 @@ static void dir_release(dirhandle *d)
  * A failed a = 1 answers EIO, or ENOSPC when the host said its disk is
  * full (ENOSPC wins when there are both). A file that cannot be flushed
  * stays in the set, and every later a = 1 tries it again and reports it
- * until it flushes, is deleted, or is renamed to a name that flushes. RENAME and DELETE keep the set in step
+ * until it flushes, is deleted, or is renamed to a name that flushes.
+ * Posted rounds try it again too, but its failure is logged once, and
+ * again only if it changes. RENAME and DELETE keep the set in step
  * with the folder: a rename rewrites the path itself and anything under a
  * renamed folder. Only regular files are flushed; a listed name that has
  * become a folder, a pipe or a link is dropped without being opened.
@@ -1088,6 +1091,11 @@ static void dir_release(dirhandle *d)
  * its handle at SETATTR and again at its CLOSE, and one created read-only
  * at its CLOSE. POSIX flushes through a read-only descriptor and needs
  * none of this: there a read-only file waits for SYNC like any other.
+ * Windows' _commit() also reports every failure of FlushFileBuffers as
+ * EBADF; only a full disk is picked out (see plat_fsync). So a folder on
+ * a filesystem that cannot flush at all fails every SYNC there, where
+ * POSIX excuses EINVAL and EROFS. That is accepted: such a filesystem is
+ * rare under a Windows drive letter, and EIO says what happened.
  *
  * Who waits: posted work runs only when the drive has been idle for
  * IDLE_MS, or for one file at a time with STARVE_EVERY_MS of traffic
@@ -1111,6 +1119,7 @@ typedef struct
     char *path;
     unsigned long hash;
     dev_t dev;
+    int ferr;                   /* the failure last logged for it, or 0 */
 } dirty_file;
 
 /* A count of failed flushes, and whether any of them found the disk
@@ -1255,9 +1264,10 @@ static void dirty_remove(unsigned i)
     ndirty--;
 }
 
-/* List a file closed dirty. 0 if the set is full (or memory is), and
- * then the caller flushes it instead. */
-static int dirty_add(const char *path, dev_t dev)
+/* List a file closed dirty, with the failure last logged for it (FERR).
+ * 0 if the set is full (or memory is), and then the caller flushes it
+ * instead. */
+static int dirty_add(const char *path, dev_t dev, int ferr)
 {
     char *copy;
 
@@ -1269,6 +1279,7 @@ static int dirty_add(const char *path, dev_t dev)
     dirty[ndirty].path = copy;
     dirty[ndirty].hash = path_hash(path);
     dirty[ndirty].dev = dev;
+    dirty[ndirty].ferr = ferr;
     dirty_link(ndirty);
     ndirty++;
     return 1;
@@ -1316,11 +1327,28 @@ static int tally_status(const sync_tally *t)
 }
 
 /*
+ * A failed flush of PATH, with errno E. *FERR holds the failure last
+ * logged for that file: a file that keeps failing in the same way is
+ * logged once, not at every posted round (the update daemon posts one
+ * every 5 s), and again only when the failure changes.
+ */
+static void flush_failed(const char *path, int e, int *ferr)
+{
+    if (*ferr == e)
+        dbg("hostfsd: sync: %s still cannot be flushed: %s\n", rel_of(path),
+            strerror(e));
+    else
+        fprintf(stderr, "hostfsd: could not flush %s: %s\n", rel_of(path),
+                strerror(e));
+    *ferr = e;
+}
+
+/*
  * Flush the file at PATH: 0 when done, 1 when there is nothing left to
  * flush (gone, or no longer a regular file), FLUSH_FAILED or FLUSH_FULL
- * for a failure.
+ * for a failure. *FERR: see flush_failed().
  */
-static int flush_path(const char *path)
+static int flush_path(const char *path, int *ferr)
 {
     int why, fd = plat_open_flush(path, &why), e = errno, r = 0;
 
@@ -1342,10 +1370,12 @@ static int flush_path(const char *path)
     else
         r = flush_failure(e);
     if (r < 0)
-        fprintf(stderr, "hostfsd: could not flush %s: %s\n", rel_of(path),
-                strerror(e));
+        flush_failed(path, e, ferr);
     else
+    {
+        *ferr = 0;
         dbg("hostfsd: sync: %s\n", rel_of(path));
+    }
     return r;
 }
 
@@ -1357,10 +1387,10 @@ static int flush_handle(filehandle *f)
     {
         int e = errno;
 
-        fprintf(stderr, "hostfsd: could not flush %s: %s\n", rel_of(f->path),
-                strerror(e));
+        flush_failed(f->path, e, &f->ferr);
         return flush_failure(e);
     }
+    f->ferr = 0;
     dbg("hostfsd: sync: %s (open)\n", rel_of(f->path));
     return 0;
 }
@@ -1389,6 +1419,20 @@ static void sync_renamed(const char *from, const char *to)
     unsigned i;
     int k;
 
+    /* What the rename replaced, a file at TO or an empty folder there, is
+     * gone: its entries would only be duplicates of those moving in. (A
+     * rename to the same name -- on Windows perhaps in another case --
+     * replaces nothing.) */
+    if (!path_same(from, to))
+    {
+        for (i = 0; i < ndirty; )
+        {
+            if (path_under(dirty[i].path, to))
+                dirty_remove(i);
+            else
+                i++;
+        }
+    }
     for (i = 0; i < ndirty; )
     {
         size_t n = path_under(dirty[i].path, from);
@@ -1407,7 +1451,7 @@ static void sync_renamed(const char *from, const char *to)
              * rather than keep a name that no longer exists. */
             snprintf(moved, sizeof(moved), "%s%s", to, dirty[i].path + n);
             dirty_link(i);
-            tally_add(&sync_lost, flush_path(moved));
+            tally_add(&sync_lost, flush_path(moved, &dirty[i].ferr));
             dirty_remove(i);
             continue;
         }
@@ -1453,7 +1497,7 @@ static void sync_before_readonly(const char *path)
     while ((i = dirty_find(path)) >= 0)
     {
         dbg("hostfsd: sync: %s, before it is made read-only\n", rel_of(path));
-        if (flush_path(path) < 0)
+        if (flush_path(path, &dirty[i].ferr) < 0)
             break;                          /* stays listed: a = 1 says so */
         dirty_remove((unsigned)i);
     }
@@ -1499,7 +1543,7 @@ static void sync_step(void)
         }
     if (sync_cursor < ndirty)
     {
-        if (flush_path(dirty[sync_cursor].path) >= 0)
+        if (flush_path(dirty[sync_cursor].path, &dirty[sync_cursor].ferr) >= 0)
             dirty_remove(sync_cursor);
         else
             sync_cursor++;
@@ -1677,7 +1721,7 @@ static void sync_all(sync_tally *failed)
             }
         for (i = 0; i < ndirty; )
         {
-            int r = flush_path(dirty[i].path);
+            int r = flush_path(dirty[i].path, &dirty[i].ferr);
 
             if (r >= 0)
                 dirty_remove(i);
@@ -1752,7 +1796,7 @@ static void file_close(filehandle *f)
     }
     /* What is not flushed goes in the set for the next SYNC; if the
      * set is full, it is flushed now instead. */
-    if (f->dirty && !fsync_on_close && !dirty_add(f->path, f->dev))
+    if (f->dirty && !fsync_on_close && !dirty_add(f->path, f->dev, f->ferr))
     {
         dbg("hostfsd: sync: %s, the list is full, flushed at close\n",
             rel_of(f->path));
@@ -2115,6 +2159,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         files[i].dirty = 0;
         files[i].readonly = op == HOSTFS_OP_CREATE && (a & HOSTFS_FA_RO);
         files[i].tried = 0;
+        files[i].ferr = 0;
         ra = (unsigned long)(i + 1);
         break;
     }

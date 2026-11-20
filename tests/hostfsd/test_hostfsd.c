@@ -2203,9 +2203,12 @@ static void test_sync(void)
                   && log_has(shimlog, "/ro-open.txt\n"),
                   "SYNC a = 1 made no fsync of the read-only files");
 
-        /* A failure is reported by every a = 1 until it is resolved. */
+        /* A failure is reported by every a = 1 until it is resolved, and
+         * retried by posted rounds -- but logged once, not every time. */
         if (getuid() != 0)      /* root opens anything */
         {
+            int i;
+
             put_file("locked.txt", "cannot reopen", 0);
             host_path(p, sizeof(p), "locked.txt");
             if (chmod(p, 0) != 0)
@@ -2214,14 +2217,46 @@ static void test_sync(void)
                   && reply_len == 12,
                   "a file that could not be flushed did not give EIO, "
                   "header only");
+            for (i = 0; i < 3; i++)
+            {
+                check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                      "SYNC a = 0 with a failing file listed");
+                usleep(200000);         /* idle: the posted round retries */
+            }
             check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
                   "a failed file was reported once and then forgotten");
+            check(log_count(log, "hostfsd: could not flush locked.txt") == 1,
+                  "a file that kept failing was logged %d times, not once",
+                  log_count(log, "hostfsd: could not flush locked.txt"));
+            check(log_count(log, "hostfsd: sync: locked.txt still cannot be "
+                                 "flushed") == 4,
+                  "%d retries of the failing file were noted, not 3 posted "
+                  "and 1 waited", log_count(log, "hostfsd: sync: locked.txt "
+                                            "still cannot be flushed"));
             chmod(p, 0644);
             check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
                   "a file that flushes on retry still failed");
             check(log_has(log, "hostfsd: sync: locked.txt\n"),
                   "the retried file was not flushed");
         }
+
+        /* Renamed onto a listed name: the file it replaced is gone, and
+         * one entry is left, flushed once. */
+        put_file("dup-a.txt", "moves", 0);
+        put_file("dup-b.txt", "is replaced", 0);
+        check(rename_path("dup-a.txt", "dup-b.txt") == HOSTFS_E_OK,
+              "RENAME onto a listed name");
+        if (have_shim && truncate(shimlog, 0) != 0)
+            die("truncate the shim log");
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after a rename onto a listed name");
+        check(log_has(log, "hostfsd: SYNC a=1: flushed 1, failed 0\n"),
+              "a rename onto a listed name left two entries");
+        if (have_shim)
+            check(log_count(shimlog, "/dup-b.txt") == 1
+                  && !log_has(shimlog, "/dup-a.txt"),
+                  "the file renamed onto a listed name was flushed %d times",
+                  log_count(shimlog, "/dup-b.txt"));
 
         /* A file written before a thousand others and closed after them
          * is flushed by the next a = 1. */
@@ -2255,20 +2290,18 @@ static void test_sync(void)
         host_path(p, sizeof(p), "nowdir.txt");
         if (unlink(p) != 0 || mkdir(p, 0777) != 0)
             die("nowdir.txt");
+        /* The host replaces listed files with a pipe, a link inside the
+         * folder and a link out of it. (A RENAME by the guest onto a
+         * listed name drops that entry: the file it named is gone.) */
         put_file("x.txt", "replaced by a pipe", 0);
-        host_path(p, sizeof(p), "pipe");
-        if (mkfifo(p, 0666) != 0)
-            die("mkfifo");
-        check(rename_path("pipe", "x.txt") == HOSTFS_E_OK, "RENAME pipe onto x.txt");
-        /* A link inside the folder renamed onto a listed name by the
-         * guest, and one pointing out of the folder put there by the host
-         * (the guest could not rename that one: it is outside). */
+        host_path(p, sizeof(p), "x.txt");
+        if (unlink(p) != 0 || mkfifo(p, 0666) != 0)
+            die("mkfifo x.txt");
         put_file("y.txt", "replaced by a link", 0);
-        host_path(p, sizeof(p), "lnk");
+        host_path(p, sizeof(p), "y.txt");
         host_path(q, sizeof(q), "hello.txt");
-        if (symlink(q, p) != 0)
-            die("symlink lnk");
-        check(rename_path("lnk", "y.txt") == HOSTFS_E_OK, "RENAME link onto y.txt");
+        if (unlink(p) != 0 || symlink(q, p) != 0)
+            die("symlink y.txt");
         put_file("z.txt", "replaced by a link out", 0);
         host_path(p, sizeof(p), "z.txt");
         snprintf(q, sizeof(q), "%s/outside.txt", tmproot);

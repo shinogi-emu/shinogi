@@ -79,7 +79,9 @@ def main():
         with socket.socket(socket.AF_UNIX) as connection:
             connection.connect(str(out / "socket"))
             assert rpc(connection, 1, 1)[0] == 0
-            assert rpc(connection, 17) == (0, 1, 0, b"")
+            # Batches, larger frames on request, and a 4 KB limit for a
+            # guest that does not ask for more.
+            assert rpc(connection, 17) == (0, 3, 4096, b"")
             legacy_handle = rpc(connection, 7)[1]
             batch_handle = rpc(connection, 7)[1]
             # Both snapshots retain the names/cookies, and skip deletion.

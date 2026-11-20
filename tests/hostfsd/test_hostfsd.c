@@ -152,9 +152,17 @@ static int recv_all(unsigned char *buf, unsigned n)
 }
 
 /* Reply of the last rpc(), for the tests that look at the payload. */
-static unsigned char reply[HOSTFS_MAX_FRAME];
+static unsigned char reply[HOSTFS_MAX_FRAME_LIMIT];
 static unsigned reply_len;
 static unsigned long reply_a, reply_b;
+
+/*
+ * The largest reply this client accepts. It stays at HOSTFS_MAX_FRAME --
+ * what every guest older than HOSTFS_CAP_LARGE_FRAME can hold -- except
+ * inside test_frames(), so every other test also checks that the helper
+ * never sends an old guest more than 4 KB.
+ */
+static unsigned client_frame = HOSTFS_MAX_FRAME;
 
 /*
  * One request, one reply. Returns the GEMDOS status, or -1000 if the
@@ -166,11 +174,11 @@ static unsigned long reply_a, reply_b;
 static int rpc(unsigned op, unsigned long a, unsigned long b, unsigned long c,
                const void *data, unsigned dlen)
 {
-    unsigned char req[HOSTFS_MAX_FRAME];
+    static unsigned char req[HOSTFS_MAX_FRAME_LIMIT];
     unsigned len = HOSTFS_REQ_HDR + dlen;
     int status;
 
-    if (len > HOSTFS_MAX_FRAME)
+    if (len > HOSTFS_MAX_FRAME_LIMIT)
         die("test built an oversized request");
 
     req[0] = (unsigned char)(len & 0xff);
@@ -201,7 +209,7 @@ static int rpc(unsigned op, unsigned long a, unsigned long b, unsigned long c,
         return RPC_DEAD;
 
     reply_len = (unsigned)reply[0] | ((unsigned)reply[1] << 8);
-    if (reply_len < HOSTFS_REP_HDR || reply_len > HOSTFS_MAX_FRAME)
+    if (reply_len < HOSTFS_REP_HDR || reply_len > client_frame)
         return RPC_DEAD;
     if (reply_len > HOSTFS_REP_HDR
      && recv_all(reply + HOSTFS_REP_HDR, reply_len - HOSTFS_REP_HDR) < 0)
@@ -1430,7 +1438,7 @@ static unsigned raw(const unsigned char *buf, unsigned n)
     if (recv_all(reply, HOSTFS_REP_HDR) < 0)
         return 0;
     len = (unsigned)reply[0] | ((unsigned)reply[1] << 8);
-    if (len > HOSTFS_REP_HDR && len <= HOSTFS_MAX_FRAME)
+    if (len > HOSTFS_REP_HDR && len <= client_frame)
         recv_all(reply + HOSTFS_REP_HDR, len - HOSTFS_REP_HDR);
     return len;
 }
@@ -1544,6 +1552,210 @@ static void test_malformed(void)
         snprintf(p, sizeof(p), "%s/outside.txt", tmproot);
         check(host_exists(p), "fuzzing destroyed the file outside the root");
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Frame size                                                          */
+
+/*
+ * Larger frames are a per-session agreement made with CAPS. The contract
+ * that matters most is the one for guests that never ask: their session
+ * stays at 4 KB both ways, whatever the helper could do -- the kernel's
+ * and EmuTOS's receive buffers are exactly HOSTFS_MAX_FRAME, and a longer
+ * reply kills their drive.
+ */
+static void test_frames(void)
+{
+    enum { BIG = 200000 };
+    static unsigned char want[BIG], got[BIG], b[HOSTFS_MAX_FRAME_LIMIT];
+    unsigned long off;
+    unsigned i;
+    int fh, ok;
+
+    for (i = 0; i < BIG; i++)
+        want[i] = (unsigned char)(i * 13 + (i >> 9));
+
+    check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+          == HOSTFS_E_OK, "HELLO before the frame tests");
+
+    /* A guest of today: CAPS with nothing in `a`. Header-only reply (the
+     * EmuTOS transport refuses anything else), both bits, 4 KB limit. */
+    check(rpc(HOSTFS_OP_CAPS, 0, 0, 0, NULL, 0) == HOSTFS_E_OK, "CAPS");
+    check(reply_len == HOSTFS_REP_HDR, "CAPS reply carries %u bytes of data",
+          reply_datalen());
+    check((reply_a & HOSTFS_CAP_READDIR_BATCH)
+          && (reply_a & HOSTFS_CAP_LARGE_FRAME), "CAPS bits %lx", reply_a);
+    check(reply_b == HOSTFS_MAX_FRAME,
+          "CAPS without an offer set the limit to %lu", reply_b);
+    check(rpc(HOSTFS_OP_CAPS, HOSTFS_MAX_FRAME, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == HOSTFS_MAX_FRAME, "an offer of 4 KB gave %lu", reply_b);
+    check(rpc(HOSTFS_OP_CAPS, 100, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == HOSTFS_MAX_FRAME,
+          "an offer below 4 KB lowered the limit to %lu", reply_b);
+
+    /* Write the file 4 KB at a time, as any guest can. */
+    check(rpc_path(HOSTFS_OP_CREATE, 0, "frames.bin") == HOSTFS_E_OK,
+          "CREATE frames.bin");
+    fh = (int)reply_a;
+    for (ok = 1, off = 0; off < BIG / 2; off += HOSTFS_MAX_REQ_DATA)
+    {
+        unsigned n = BIG / 2 - off > HOSTFS_MAX_REQ_DATA
+                   ? HOSTFS_MAX_REQ_DATA : (unsigned)(BIG / 2 - off);
+        if (rpc(HOSTFS_OP_WRITE, fh, off, 0, want + off, n) != HOSTFS_E_OK
+         || reply_a != n)
+            ok = 0;
+    }
+    check(ok, "4 KB writes failed");
+
+    /* Still 4 KB: a READ asking for 64 KB is clamped (client_frame would
+     * refuse a longer reply), and a request one byte over is a broken
+     * stream, as it always was. */
+    check(rpc(HOSTFS_OP_READ, fh, 0, 65535, NULL, 0) == HOSTFS_E_OK
+          && reply_a == HOSTFS_MAX_REP_DATA,
+          "an unraised session READ %lu bytes", reply_a);
+
+    /* A raised session: the guest can take 64 KB. */
+    check(rpc(HOSTFS_OP_CAPS, 0x7fffffffUL, 0, 0, NULL, 0) == HOSTFS_E_OK,
+          "CAPS with a large offer");
+    check(reply_len == HOSTFS_REP_HDR && reply_b == HOSTFS_MAX_FRAME_LIMIT,
+          "a large offer gave a limit of %lu", reply_b);
+    client_frame = HOSTFS_MAX_FRAME_LIMIT;
+
+    /* The second half in frames of up to 64 KB. */
+    for (ok = 1, off = BIG / 2; off < BIG; )
+    {
+        unsigned max = HOSTFS_MAX_FRAME_LIMIT - HOSTFS_REQ_HDR;
+        unsigned n = BIG - off > max ? max : (unsigned)(BIG - off);
+        if (rpc(HOSTFS_OP_WRITE, fh, off, 0, want + off, n) != HOSTFS_E_OK
+         || reply_a != n)
+        {
+            ok = 0;
+            break;
+        }
+        off += n;
+    }
+    check(ok, "64 KB writes failed");
+
+    /* And back in 64 KB frames, exactly as much as asked for. */
+    for (ok = 1, off = 0; off < BIG; )
+    {
+        if (rpc(HOSTFS_OP_READ, fh, off, 65535, NULL, 0) != HOSTFS_E_OK
+         || reply_a == 0 || reply_datalen() != reply_a
+         || reply_a > HOSTFS_MAX_FRAME_LIMIT - HOSTFS_REP_HDR)
+        {
+            ok = 0;
+            break;
+        }
+        if (off + reply_a < BIG)
+            check(reply_a == HOSTFS_MAX_FRAME_LIMIT - HOSTFS_REP_HDR,
+                  "a mid-file READ of 65535 returned %lu", reply_a);
+        memcpy(got + off, reply_data(), reply_a);
+        off += reply_a;
+    }
+    check(ok && off == BIG && !memcmp(want, got, BIG),
+          "a file did not round-trip through 64 KB frames");
+    check(rpc(HOSTFS_OP_READ, fh, 0, 100, NULL, 0) == HOSTFS_E_OK
+          && reply_a == 100, "a small READ in a raised session gave %lu",
+          reply_a);
+
+    /* READDIR_BATCH does not grow: guests size its buffer from 4 KB. Only
+     * long names can reach that bound -- sixteen entries of 6 + 252 bytes
+     * are 4128 -- so list a folder of them, as a guest may create. */
+    {
+        char name[300], pad[245];
+        int dh, batches = 0, entries = 0;
+
+        memset(pad, 'x', 244);
+        pad[244] = '\0';
+        host_path(name, sizeof(name), "longnames");
+        if (mkdir(name, 0777) != 0)
+            die("mkdir longnames");
+        for (i = 0; i < 17; i++)
+        {
+            snprintf(name, sizeof(name), "longnames/n%02u-%s.txt", i, pad);
+            host_write(name, "long");
+        }
+        check(rpc_path(HOSTFS_OP_OPENDIR, 0, "longnames") == HOSTFS_E_OK,
+              "OPENDIR longnames");
+        dh = (int)reply_a;
+        for (off = 0; ; )
+        {
+            int st = rpc(HOSTFS_OP_READDIR_BATCH, dh, off, 0, NULL, 0);
+            if (st != HOSTFS_E_OK)
+                break;
+            check(reply_datalen() <= HOSTFS_MAX_REP_DATA,
+                  "a batch of %u bytes in a raised session", reply_datalen());
+            batches++;
+            entries += (int)reply_b;
+            off = reply_a;
+        }
+        check(entries == 17 && batches >= 2,
+              "long names listed as %d entries in %d batches", entries, batches);
+        check(rpc(HOSTFS_OP_CLOSEDIR, dh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "CLOSEDIR longnames");
+    }
+
+    /* A middle-sized offer is honoured as made: 16 KB both ways. */
+    check(rpc(HOSTFS_OP_CAPS, 16384, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 16384, "an offer of 16 KB gave %lu", reply_b);
+    check(rpc(HOSTFS_OP_READ, fh, 0, 65535, NULL, 0) == HOSTFS_E_OK
+          && reply_a == 16384 - HOSTFS_REP_HDR,
+          "a 16 KB session READ %lu bytes", reply_a);
+    put_hdr(b, 16385, HOSTFS_OP_WRITE);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "a frame over the agreed 16 KB was not refused");
+    check(helper_alive(), "the helper died on a frame over the agreed limit");
+
+    /* A new connection starts at 4 KB before any HELLO: raise the limit,
+     * hang up, reconnect and send a 4097-byte frame first thing. A helper
+     * that reset only on HELLO would take the header and wait for the
+     * body. */
+    check(rpc(HOSTFS_OP_CAPS, 65535, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 65535, "raise before reconnecting");
+    t_connect();
+    put_hdr(b, HOSTFS_MAX_FRAME + 1, HOSTFS_OP_READ);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "a new connection inherited the last session's frame limit");
+    check(helper_alive(), "the helper died after a reconnect");
+    client_frame = HOSTFS_MAX_FRAME;
+
+    /* helper_alive() reconnected and said HELLO: a new session, back at
+     * 4 KB, with no CAPS. The file must be reopened, and READ is clamped
+     * again. */
+    check(rpc_path(HOSTFS_OP_OPEN, HOSTFS_O_RDONLY, "frames.bin") == HOSTFS_E_OK,
+          "reopen frames.bin");
+    fh = (int)reply_a;
+    check(rpc(HOSTFS_OP_READ, fh, 0, 65535, NULL, 0) == HOSTFS_E_OK
+          && reply_a == HOSTFS_MAX_REP_DATA,
+          "a new session READ %lu bytes", reply_a);
+    check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE");
+
+    /* HELLO on the same connection resets a raised limit as well: a guest
+     * that rebooted may be an older one. */
+    check(rpc(HOSTFS_OP_CAPS, 65535, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 65535, "raise again");
+    check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+          == HOSTFS_E_OK, "HELLO in a raised session");
+    put_hdr(b, HOSTFS_MAX_FRAME + 1, HOSTFS_OP_READ);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "HELLO did not put the limit back to 4 KB");
+    check(helper_alive(), "the helper died after the frame tests");
+
+    /* So does a HELLO the helper refuses: the session goes on, at 4 KB. */
+    check(rpc(HOSTFS_OP_CAPS, 65535, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 65535, "raise before a refused HELLO");
+    check(rpc(HOSTFS_OP_HELLO, 999, 0, 0, NULL, 0) == HOSTFS_EDRIVE,
+          "HELLO of version 999 was not refused");
+    check(rpc(HOSTFS_OP_READ, 99, 0, 1, NULL, 0) == HOSTFS_EIHNDL,
+          "the session did not go on after a refused HELLO");
+    put_hdr(b, HOSTFS_MAX_FRAME + 1, HOSTFS_OP_READ);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "a refused HELLO did not put the limit back to 4 KB");
+    check(helper_alive(), "the helper died after the frame tests");
 }
 
 /* ------------------------------------------------------------------ */
@@ -1763,6 +1975,7 @@ int main(void)
     test_containment();
     test_still_usable();
     test_malformed();
+    test_frames();
     test_fsync_option();
     test_connect_mode();
 

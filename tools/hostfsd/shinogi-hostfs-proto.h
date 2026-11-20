@@ -52,13 +52,20 @@
 #define HOSTFS_REP_HDR          12
 
 /*
- * The largest frame either side will send or accept. Both ends size a
- * static buffer from this, and both reject a `len` larger than it before
- * a single field is read -- a length from the peer is never trusted.
+ * The largest frame either side sends or accepts in a session that has
+ * not raised it with CAPS (HOSTFS_CAP_LARGE_FRAME below) -- which is
+ * every session to begin with, and every session of a guest that never
+ * asks. A guest that never asks can size its buffers from this and need
+ * never see a larger frame in either direction. Both ends reject a `len`
+ * larger than the session's limit before a single field is read -- a
+ * length from the peer is never trusted.
  */
 #define HOSTFS_MAX_FRAME        4096
 #define HOSTFS_MAX_REQ_DATA     (HOSTFS_MAX_FRAME - HOSTFS_REQ_HDR)
 #define HOSTFS_MAX_REP_DATA     (HOSTFS_MAX_FRAME - HOSTFS_REP_HDR)
+
+/* The most CAPS can raise it to: `len` is a u16. */
+#define HOSTFS_MAX_FRAME_LIMIT  65535
 
 /* Longest single path a request may carry, and longest entry name a
  * READDIR may return. Both well inside HOSTFS_MAX_REP_DATA so a name
@@ -91,6 +98,24 @@
 #define HOSTFS_CAP_READDIR_BATCH 1UL
 
 /*
+ * Frames larger than HOSTFS_MAX_FRAME, by agreement. A guest that wants
+ * them sends CAPS with `a` = the largest frame it can receive (and is
+ * prepared to send); the helper answers with this bit set and `b` = the
+ * frame limit for the rest of the session, in both directions:
+ * min(a, the helper's own limit), never below HOSTFS_MAX_FRAME. An `a`
+ * of HOSTFS_MAX_FRAME or less -- every guest written before this bit --
+ * keeps the session at HOSTFS_MAX_FRAME, and HELLO always puts it back
+ * there, because a guest that rebooted may be an older one.
+ *
+ * What changes inside a raised session: a request may be up to `b` bytes
+ * long, and READ returns up to `b` - HOSTFS_REP_HDR bytes if asked for
+ * that many. Nothing else grows: READDIR_BATCH still fills at most
+ * HOSTFS_MAX_REP_DATA, so a guest's batch buffer needs no resizing.
+ * A helper without the bit leaves `b` at 0 and keeps 4 KB frames.
+ */
+#define HOSTFS_CAP_LARGE_FRAME   2UL
+
+/*
  * Per-operation field use. `data` is the remainder of the frame; a path
  * is NOT NUL-terminated on the wire, its length is len - 16.
  *
@@ -98,6 +123,8 @@
  *  --------  -------------------------------  ---------------------------
  *  HELLO     a = guest protocol version       a = host version
  *                                             b = max data bytes per frame
+ *                                             (HOSTFS_MAX_REP_DATA; a
+ *                                             larger frame needs CAPS)
  *                                             data = folder label
  *  OPEN      a = HOSTFS_O_*, data = path      a = handle
  *  CLOSE     a = handle                       --
@@ -118,7 +145,8 @@
  *  RMDIR     data = path                      --
  *  SETATTR   a = attribute byte, data = path  --
  *  DFREE     --                               a = free KB, b = total KB
- *  CAPS      --                               a = capability bits
+ *  CAPS      a = largest frame the guest      a = capability bits
+ *            accepts (0: HOSTFS_MAX_FRAME)    b = frame limit from now on
  *  READDIR_BATCH a = handle, b = cookie       a = last cookie, b = count
  *                                             data = repeated little-endian
  *                                             u32 next cookie, u16 name length,

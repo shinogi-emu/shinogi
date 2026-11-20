@@ -493,6 +493,12 @@ static dirhandle dirs[MAX_DIRS];
 static int verbose;
 static int fsync_on_close;              /* --fsync-on-close: the old commit */
 
+/*
+ * The frame limit for this session, both ways. HOSTFS_MAX_FRAME until the
+ * guest asks for more with CAPS; see HOSTFS_CAP_LARGE_FRAME.
+ */
+static unsigned frame_max = HOSTFS_MAX_FRAME;
+
 static void dbg(const char *fmt, ...)
 {
     va_list ap;
@@ -880,10 +886,14 @@ static void dir_release(dirhandle *d)
 }
 
 /* A new client is a new session: nothing may survive from the last one,
- * or a handle number the previous guest opened would still work. */
+ * or a handle number the previous guest opened would still work. That
+ * includes a raised frame limit: the next guest may be one that never
+ * heard of CAPS and has a 4 KB buffer. */
 static void handles_reset(void)
 {
     int i;
+
+    frame_max = HOSTFS_MAX_FRAME;
 
     for (i = 0; i < MAX_FILES; i++)
         if (files[i].used)
@@ -1057,11 +1067,12 @@ static int dir_snapshot(dirhandle *d, const char *path)
 /*
  * Serve one request.
  *
- * REQ/REQLEN is a frame whose length has already been validated, so the
- * header is known to be present and `data` is known to be reqlen - 16
- * bytes. REP is a HOSTFS_MAX_FRAME buffer; the return value is its
- * length. This function never fails fatally: everything wrong with the
- * request becomes a status.
+ * REQ/REQLEN is a frame whose length has already been validated against
+ * frame_max, so the header is known to be present and `data` is known to
+ * be reqlen - 16 bytes. REP is a HOSTFS_MAX_FRAME_LIMIT buffer, of which
+ * a reply uses at most frame_max; the return value is its length. This
+ * function never fails fatally: everything wrong with the request
+ * becomes a status.
  */
 static unsigned serve(const unsigned char *req, unsigned reqlen,
                       unsigned char *rep)
@@ -1092,10 +1103,23 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
     switch (op)
     {
     case HOSTFS_OP_CAPS:
-        ra = HOSTFS_CAP_READDIR_BATCH;
+        /* `a` is the largest frame the guest can take; 0 from every guest
+         * older than HOSTFS_CAP_LARGE_FRAME, which keeps 4 KB. The reply
+         * itself is header-only either way, so it is safe to send under
+         * the old limit or the new. */
+        if (a > HOSTFS_MAX_FRAME)
+            frame_max = a > HOSTFS_MAX_FRAME_LIMIT ? HOSTFS_MAX_FRAME_LIMIT
+                                                   : (unsigned)a;
+        else
+            frame_max = HOSTFS_MAX_FRAME;
+        ra = HOSTFS_CAP_READDIR_BATCH | HOSTFS_CAP_LARGE_FRAME;
+        rb = frame_max;
         break;
 
     case HOSTFS_OP_HELLO:
+        /* Every HELLO, refused or not, puts the frame limit back to 4 KB:
+         * whatever comes next is a guest starting over. */
+        frame_max = HOSTFS_MAX_FRAME;
         if (a != HOSTFS_PROTO_VERSION)
         {
             /* Refuse rather than guess: a version we do not understand
@@ -1226,8 +1250,8 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             status = HOSTFS_EIHNDL;
             break;
         }
-        if (c > HOSTFS_MAX_REP_DATA)
-            c = HOSTFS_MAX_REP_DATA;    /* the guest reads in chunks */
+        if (c > frame_max - HOSTFS_REP_HDR)
+            c = frame_max - HOSTFS_REP_HDR;  /* the guest reads in chunks */
 
         if (lseek(f->fd, (off_t)b, SEEK_SET) == (off_t)-1)
         {
@@ -1354,6 +1378,9 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             if (op == HOSTFS_OP_READDIR_BATCH)
             {
                 unsigned length = (unsigned)strlen(name);
+                /* HOSTFS_MAX_REP_DATA, not frame_max: guests size their
+                 * batch buffer from it, and a raised session does not
+                 * change what READDIR_BATCH returns. */
                 if (outlen + 6 + length > HOSTFS_MAX_REP_DATA)
                     break;
                 put32(out + outlen, idx);
@@ -1544,50 +1571,53 @@ static int send_all(conn_t c, const unsigned char *buf, unsigned n)
 /*
  * Serve one client until it goes away.
  *
- * A `len` outside [HOSTFS_REQ_HDR, HOSTFS_MAX_FRAME] means the stream is
+ * A `len` outside [HOSTFS_REQ_HDR, frame_max] means the stream is
  * desynchronised: there is no way to know where the next frame starts,
  * and guessing risks answering the wrong request with the wrong file.
  * The session gets one error reply and is then dropped -- the guest sees
  * EDRIVE, which is diagnosable, and the helper stays up for the next
  * connection.
  */
+/* Sized for the largest frame CAPS can agree to; frame_max says how much
+ * of them the current session may use. Static, not on the stack: 128 KB
+ * is more than some threads are given. */
+static unsigned char req_buf[HOSTFS_MAX_FRAME_LIMIT];
+static unsigned char rep_buf[HOSTFS_MAX_FRAME_LIMIT];
+
 static long serve_client(conn_t c)
 {
     long served = 0;
-
-    unsigned char req[HOSTFS_MAX_FRAME];
-    unsigned char rep[HOSTFS_MAX_FRAME];
 
     handles_reset();
 
     for (;;)
     {
         unsigned len, replen;
-        int r = recv_exact(c, req, HOSTFS_REQ_HDR);
+        int r = recv_exact(c, req_buf, HOSTFS_REQ_HDR);
 
         if (r <= 0)
             break;              /* clean close, or a truncated header */
 
         served++;
 
-        len = get16(req);
-        if (len < HOSTFS_REQ_HDR || len > HOSTFS_MAX_FRAME)
+        len = get16(req_buf);
+        if (len < HOSTFS_REQ_HDR || len > frame_max)
         {
             dbg("hostfsd: bad frame length %u, dropping the session\n", len);
-            put16(rep + 0, HOSTFS_REP_HDR);
-            put16(rep + 2, (unsigned)(HOSTFS_EDRIVE & 0xffff));
-            put32(rep + 4, 0);
-            put32(rep + 8, 0);
-            send_all(c, rep, HOSTFS_REP_HDR);
+            put16(rep_buf + 0, HOSTFS_REP_HDR);
+            put16(rep_buf + 2, (unsigned)(HOSTFS_EDRIVE & 0xffff));
+            put32(rep_buf + 4, 0);
+            put32(rep_buf + 8, 0);
+            send_all(c, rep_buf, HOSTFS_REP_HDR);
             break;
         }
 
         if (len > HOSTFS_REQ_HDR
-         && recv_exact(c, req + HOSTFS_REQ_HDR, len - HOSTFS_REQ_HDR) <= 0)
+         && recv_exact(c, req_buf + HOSTFS_REQ_HDR, len - HOSTFS_REQ_HDR) <= 0)
             break;
 
-        replen = serve(req, len, rep);
-        if (send_all(c, rep, replen) < 0)
+        replen = serve(req_buf, len, rep_buf);
+        if (send_all(c, rep_buf, replen) < 0)
             break;
     }
 

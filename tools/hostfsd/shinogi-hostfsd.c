@@ -32,6 +32,11 @@
  * dies takes the user's drive with it.
  */
 
+/* syncfs(), for SYNC on Linux. Before any header. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -100,8 +105,19 @@ typedef struct { SOCKET fd; } listener_t;
 /* Windows has no fsync.  _commit() is the same operation on a CRT file
  * descriptor -- flush this handle's buffers to the disk -- and is
  * declared in <io.h> above.  Without this the mingw link fails on an
- * undefined reference, which is how the Windows package job found it. */
-#define plat_fsync(fd)  _commit(fd)
+ * undefined reference, which is how the Windows package job found it.
+ * It reports every failure of FlushFileBuffers as EBADF and leaves the
+ * Windows error in _doserrno, so a full disk is picked out here: SYNC
+ * tells the guest about that one by name. */
+static int plat_fsync(int fd)
+{
+    _doserrno = 0;
+    if (_commit(fd) == 0)
+        return 0;
+    if (_doserrno == ERROR_DISK_FULL || _doserrno == ERROR_HANDLE_DISK_FULL)
+        errno = ENOSPC;
+    return -1;
+}
 /* No lstat: Windows has no symlink that stat() would not follow in the
  * only case this probe cares about -- "does this name exist". */
 #define plat_lstat(p, st) stat((p), (st))
@@ -243,6 +259,59 @@ static void conn_close(conn_t c)
         closesocket(c);
 }
 
+/* Does a request arrive within MS milliseconds (0: is one waiting now)?
+ * An error counts as yes, so that recv() is the one to see it. */
+static int conn_wait_input(conn_t c, int ms)
+{
+    fd_set r;
+    struct timeval tv;
+
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    FD_ZERO(&r);
+    FD_SET(c, &r);
+    return select(0, &r, NULL, NULL, &tv) != 0;
+}
+
+/* Milliseconds on a clock that only goes forward. */
+static unsigned long long plat_now_ms(void)
+{
+    return (unsigned long long)GetTickCount64();
+}
+
+/*
+ * Open PATH to flush it, if it is still a regular file -- for writing,
+ * because FlushFileBuffers needs that. -1 otherwise, with *WHY 1 when
+ * the file is gone, 2 when the name is now a folder or anything but a
+ * file (nothing of the file is left either way), 0 for a real failure.
+ */
+static int plat_open_flush(const char *path, int *why)
+{
+    DWORD at = GetFileAttributesA(path);
+    int fd;
+
+    *why = 0;
+    if (at == INVALID_FILE_ATTRIBUTES)
+    {
+        DWORD e = GetLastError();
+
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
+            *why = 1;
+        errno = *why ? ENOENT : EACCES;
+        return -1;
+    }
+    if (at & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
+            | FILE_ATTRIBUTE_DEVICE))
+    {
+        *why = 2;
+        return -1;
+    }
+    fd = open(path, O_WRONLY | O_BINARY);
+    if (fd < 0 && errno == ENOENT)
+        *why = 1;
+    return fd;
+}
+
 /* GetFinalPathNameByHandle is the only call that resolves junctions and
  * symlinks, which is exactly what the containment check needs. */
 #include "windows-path.h"
@@ -310,6 +379,7 @@ static int plat_init(void)
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/statvfs.h>
+#include <poll.h>
 
 typedef int conn_t;
 #define CONN_NONE (-1)
@@ -420,6 +490,77 @@ static void conn_close(conn_t c)
         close(c);
 }
 
+/* Does a request arrive within MS milliseconds (0: is one waiting now)?
+ * A hang-up or an error counts as yes, so that read() is the one to see
+ * it. */
+static int conn_wait_input(conn_t c, int ms)
+{
+    struct pollfd p;
+    int r;
+
+    p.fd = c;
+    p.events = POLLIN;
+    p.revents = 0;
+    do {
+        r = poll(&p, 1, ms);
+    } while (r < 0 && errno == EINTR);
+    return r != 0;
+}
+
+/* Milliseconds on a clock that only goes forward. */
+static unsigned long long plat_now_ms(void)
+{
+    struct timespec t;
+
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (unsigned long long)t.tv_sec * 1000ULL
+         + (unsigned long long)t.tv_nsec / 1000000ULL;
+}
+
+/*
+ * Open PATH to flush it, if it is still a regular file. -1 otherwise,
+ * with *WHY 1 when the file is gone, 2 when the name is now a folder, a
+ * pipe, a symlink or anything but a file (nothing of the file is left
+ * either way), 0 for a real failure. The type is checked before the open
+ * and again after it, and the open neither blocks nor follows a link: a
+ * pipe renamed onto a listed name must not hang the helper, and a link
+ * must not take a flush outside the folder.
+ */
+static int plat_open_flush(const char *path, int *why)
+{
+    struct stat st;
+    int fd;
+
+    *why = 0;
+    if (lstat(path, &st) != 0)
+    {
+        if (errno == ENOENT || errno == ENOTDIR)
+            *why = 1;
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode))
+    {
+        *why = 2;
+        return -1;
+    }
+    fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    if (fd < 0)
+    {
+        if (errno == ENOENT || errno == ENOTDIR)
+            *why = 1;
+        else if (errno == ELOOP)
+            *why = 2;
+        return -1;
+    }
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))
+    {
+        close(fd);
+        *why = 2;
+        return -1;
+    }
+    return fd;
+}
+
 static char *plat_realpath(const char *in, char *out)
 {
     return realpath(in, out);
@@ -473,7 +614,12 @@ typedef struct
 {
     int used;
     int fd;
-    int dirty;                  /* written to since it was opened */
+    int dirty;                  /* written to since opened or last flushed */
+    char *path;                 /* host path, for the flush list at CLOSE */
+    dev_t dev;                  /* its filesystem, for syncfs() */
+    int readonly;               /* created or made read-only: flush at CLOSE */
+    unsigned long tried;        /* the posted round that last tried it */
+    int ferr;                   /* the failure last logged for it, or 0 */
 } filehandle;
 
 typedef struct
@@ -491,6 +637,13 @@ static char label[16];                  /* folder basename, for HELLO */
 static filehandle files[MAX_FILES];
 static dirhandle dirs[MAX_DIRS];
 static int verbose;
+static int fsync_on_close;              /* --fsync-on-close: the old commit */
+
+/*
+ * The frame limit for this session, both ways. HOSTFS_MAX_FRAME until the
+ * guest asks for more with CAPS; see HOSTFS_CAP_LARGE_FRAME.
+ */
+static unsigned frame_max = HOSTFS_MAX_FRAME;
 
 static void dbg(const char *fmt, ...)
 {
@@ -878,26 +1031,1258 @@ static void dir_release(dirhandle *d)
     d->used = 0;
 }
 
-/* A new client is a new session: nothing may survive from the last one,
- * or a handle number the previous guest opened would still work. */
-static void handles_reset(void)
+/*
+ * ===========================================================================
+ * Flushing: SYNC and the end of a session
+ * ===========================================================================
+ *
+ * CLOSE does not flush (see there), so the helper keeps account of what
+ * it has not flushed: the open files written to (`dirty`), and a set of
+ * the files closed dirty since. Everything happens on the one thread
+ * that serves requests; there is no lock and no queue.
+ *
+ *   a = 1    flushes all of it before the reply: every dirty open file
+ *            through its handle, every listed path and, on POSIX, every
+ *            folder whose entries changed (see dsync) -- unless it runs
+ *            out of time: no flush starts once SYNC_DEADLINE_MS (240 s)
+ *            have passed since the request arrived, inside the guest's
+ *            300 s for the reply. The rest is then posted, as by a = 0,
+ *            and the reply says EIO. With --sync-fs,
+ *            Linux instead makes one syncfs() per filesystem involved --
+ *            normally just the folder's -- which covers open and closed
+ *            files alike, but also everything else being written to that
+ *            filesystem: a busy host writer can make it take seconds,
+ *            where flushing the guest's own files takes milliseconds.
+ *            File by file is therefore the default everywhere.
+ *   a = 0    only marks the work as posted, and the work waits for the
+ *            drive to go idle: once no request has come for IDLE_MS, the
+ *            main loop flushes one file, looks for a request, and goes
+ *            on until the work is done or one arrives. Posting again
+ *            before that changes nothing, so a guest that posts in a
+ *            loop costs nothing beyond the flushes.
+ *
+ * Why wait for idle: FreeMiNT's update daemon calls Sync() every five
+ * seconds, so a copy that runs longer than that would otherwise pay a
+ * flush in nearly every gap between its requests -- the per-file cost
+ * that CLOSE stopped paying, moved to the next request. Meanwhile the
+ * host's own write-back keeps writing the data out; a = 1 and the end of
+ * a session remain the guarantees. So that posted work cannot starve
+ * behind endless traffic, once it has waited STARVE_MS without an idle
+ * window it gets one file, then STARVE_EVERY_MS of traffic is served
+ * before the next file, however long each flush takes.
+ *   the end  of a session flushes everything, as a = 1 does. A HELLO on
+ *            a live connection is a guest starting over with a deadline
+ *            on its reply, so there the open files are closed as CLOSE
+ *            would close them, and flushed no more than CLOSE would.
+ *
+ * RENAME and DELETE keep the set in step with the folder: a rename
+ * rewrites the path itself and anything under a renamed folder, and drops
+ * what it replaced. Only regular files are flushed; a listed name that
+ * has become a folder, a pipe or a link is dropped without being opened.
+ *
+ * A failed a = 1 answers EIO, or ENOSPC when the host said its disk is
+ * full (ENOSPC wins when there are both). A file that cannot be flushed
+ * stays in the set, and every later a = 1 tries it again and reports it
+ * until it flushes, is deleted, or is renamed to a name that flushes.
+ * Posted rounds try it again too, but its failure is logged once, and
+ * again only if it changes.
+ *
+ * A failure met outside a = 1 -- by posted work, or by a flush made in
+ * place (at CLOSE, at SETATTR, after a rename that ran out of memory) --
+ * is also counted, and the next a = 1 reports it and clears the count.
+ * Linux reports a writeback error to the first fsync() that looks and
+ * never again, so without the count the retry would pass with nothing
+ * written. The count belongs to one boot of the guest: a HELLO (a new
+ * boot) and the end of the connection drop it, saying how many, so that
+ * a new boot's first a = 1 does not answer for the last one's failures.
+ * Each was logged when it happened. The set is kept, and a file in it
+ * that still fails is reported anew.
+ *
+ * The set holds MAX_DIRTY files. The CLOSE that finds it full flushes
+ * that one file there and then instead of listing it, so nothing written
+ * is ever lost track of. If that flush fails, the next a = 1 reports it,
+ * once, as above: there is no entry left to keep it in.
+ *
+ * Windows needs write access to flush (FlushFileBuffers), which a
+ * read-only file refuses. So, on Windows, a file is flushed before the
+ * guest makes it read-only: a listed one at SETATTR, an open one through
+ * its handle at SETATTR and again at its CLOSE, and one created read-only
+ * at its CLOSE. POSIX flushes through a read-only descriptor and needs
+ * none of this: there a read-only file waits for SYNC like any other.
+ * Windows' _commit() also reports every failure of FlushFileBuffers as
+ * EBADF; only a full disk is picked out (see plat_fsync). So a folder on
+ * a filesystem that cannot flush at all fails every SYNC there, where
+ * POSIX excuses EINVAL and EROFS. That is accepted: such a filesystem is
+ * rare under a Windows drive letter, and EIO says what happened.
+ *
+ * Who waits: posted work runs only when the drive has been idle for
+ * IDLE_MS, or for one file at a time with STARVE_EVERY_MS of traffic
+ * between two once it has waited STARVE_MS. Either way a request waits
+ * at most for the one flush in progress -- a flush cannot be
+ * interrupted, so its length is the wait that remains. Beyond that,
+ * these flush in place: a = 1, for up to SYNC_DEADLINE_MS plus the one
+ * flush in progress then; the end of a session, with no deadline; the
+ * CLOSE of a file that finds the set full; on Windows only, a SETATTR
+ * making a written file read-only and the CLOSE of a read-only file;
+ * and a HELLO, for the same files as CLOSE and no others.
+ */
+
+#define IDLE_MS          20     /* no request for this long: idle */
+#define STARVE_MS        5000   /* posted work waits at most this long ... */
+#define STARVE_EVERY_MS  100    /* ... then gets one file per this much traffic */
+
+/* a = 1 starts no new flush this long after the request arrived; the
+ * guest gives the reply 300 s. HOSTFSD_TEST_SYNC_DEADLINE_MS, for the
+ * test suite only, can shorten it (see sync_init). */
+#define SYNC_DEADLINE_MS 240000UL
+
+#define MAX_DIRTY   16384
+#define DIRTY_HASH  32768               /* buckets; a power of two */
+
+typedef struct
 {
+    char *path;
+    unsigned long hash;
+    dev_t dev;
+    int ferr;                   /* the failure last logged for it, or 0 */
+} dirty_file;
+
+/* A count of failed flushes, and whether any of them found the disk
+ * full -- which, of the two, is what the guest is told. */
+typedef struct
+{
+    unsigned n;
+    int full;
+} sync_tally;
+
+static dirty_file dirty[MAX_DIRTY];
+static unsigned dirty_next[MAX_DIRTY];  /* hash chains: index + 1, 0 ends */
+static unsigned dirty_head[DIRTY_HASH];
+static unsigned ndirty;
+static int sync_pending;                /* a = 0 work not yet done */
+static unsigned long long sync_waiting_since;   /* posted, or last idle */
+static unsigned long long sync_last_forced;     /* the last starved step */
+static unsigned long sync_round;        /* posted rounds, for `tried` */
+static unsigned sync_cursor;            /* this round has tried dirty[0..cursor) */
+static sync_tally sync_unreported;      /* failures met outside a = 1:
+                                           the next a = 1 of the same boot
+                                           reports them */
+static int sync_fs;                     /* --sync-fs (Linux) */
+static unsigned long sync_deadline_ms = SYNC_DEADLINE_MS;
+#ifdef __linux__
+static int root_fd = -1;
+static dev_t root_dev;
+#endif
+
+/* Can a file only be flushed through a handle that may write? On Windows
+ * (FlushFileBuffers): see above. */
+#ifdef _WIN32
+#define FLUSH_NEEDS_WRITE 1
+#else
+#define FLUSH_NEEDS_WRITE 0
+#endif
+
+/* Does a = 1 flush file by file? Everywhere but with --sync-fs on Linux. */
+static int sync_file_by_file(void)
+{
+#ifdef __linux__
+    return !sync_fs;
+#else
+    return 1;
+#endif
+}
+
+/* One character of a path as the host compares it: NTFS names ignore
+ * case and Win32 takes either separator. */
+static int path_char(int c)
+{
+#ifdef _WIN32
+    return c == '\\' ? '/' : ascii_lower(c);
+#else
+    return c;
+#endif
+}
+
+/* The hash of the first N characters of P. */
+static unsigned long path_hash_n(const char *p, size_t n)
+{
+    unsigned long h = 2166136261UL;
+    size_t i;
+
+    for (i = 0; i < n; i++)
+        h = ((h ^ (unsigned long)path_char((unsigned char)p[i])) * 16777619UL)
+          & 0xffffffffUL;
+    return h;
+}
+
+static unsigned long path_hash(const char *p)
+{
+    return path_hash_n(p, strlen(p));
+}
+
+/* The length of FROM if P is FROM or lies under it, else 0. */
+static size_t path_under(const char *p, const char *from)
+{
+    size_t i;
+
+    for (i = 0; from[i]; i++)
+        if (path_char((unsigned char)p[i]) != path_char((unsigned char)from[i]))
+            return 0;
+    return (p[i] == '\0' || path_char((unsigned char)p[i]) == '/') ? i : 0;
+}
+
+static int path_same(const char *a, const char *b)
+{
+    size_t n = path_under(a, b);
+
+    return n && a[n] == '\0';
+}
+
+/* For messages: the path inside the served folder ("." for the folder
+ * itself). */
+static const char *rel_of(const char *p)
+{
+    return strlen(p) > rootlen ? p + rootlen + 1 : ".";
+}
+
+static void dirty_link(unsigned i)
+{
+    unsigned b = (unsigned)(dirty[i].hash & (DIRTY_HASH - 1));
+
+    dirty_next[i] = dirty_head[b];
+    dirty_head[b] = i + 1;
+}
+
+static void dirty_unlink(unsigned i)
+{
+    unsigned *p = &dirty_head[dirty[i].hash & (DIRTY_HASH - 1)];
+
+    while (*p != i + 1)
+        p = &dirty_next[*p - 1];
+    *p = dirty_next[i];
+}
+
+/* The index of PATH in the set, or -1. */
+static long dirty_find(const char *path)
+{
+    unsigned long h = path_hash(path);
+    unsigned k;
+
+    for (k = dirty_head[h & (DIRTY_HASH - 1)]; k; k = dirty_next[k - 1])
+        if (dirty[k - 1].hash == h && path_same(dirty[k - 1].path, path))
+            return (long)(k - 1);
+    return -1;
+}
+
+static void dirty_move(unsigned from, unsigned to)
+{
+    dirty_unlink(from);
+    dirty[to] = dirty[from];
+    dirty_link(to);
+}
+
+/* Drop entry I. The posted round's tried entries stay in front of the
+ * cursor, so the filling-in keeps that order. */
+static void dirty_remove(unsigned i)
+{
+    dirty_unlink(i);
+    free(dirty[i].path);
+    if (i < sync_cursor)
+    {
+        sync_cursor--;
+        if (i != sync_cursor)
+            dirty_move(sync_cursor, i);
+        i = sync_cursor;
+    }
+    if (i != ndirty - 1)
+        dirty_move(ndirty - 1, i);
+    ndirty--;
+}
+
+/* List a file closed dirty, with the failure last logged for it (FERR).
+ * 0 if the set is full (or memory is), and then the caller flushes it
+ * instead. */
+static int dirty_add(const char *path, dev_t dev, int ferr)
+{
+    char *copy;
+
+    if (dirty_find(path) >= 0)
+        return 1;
+    if (ndirty == MAX_DIRTY || (copy = (char *)malloc(strlen(path) + 1)) == NULL)
+        return 0;
+    strcpy(copy, path);
+    dirty[ndirty].path = copy;
+    dirty[ndirty].hash = path_hash(path);
+    dirty[ndirty].dev = dev;
+    dirty[ndirty].ferr = ferr;
+    dirty_link(ndirty);
+    ndirty++;
+    return 1;
+}
+
+/*
+ * A failed flush, as a flush returns it: FLUSH_FULL when the host said
+ * its disk is full (ENOSPC or EDQUOT; ERROR_DISK_FULL or
+ * ERROR_HANDLE_DISK_FULL on Windows), FLUSH_FAILED for anything else.
+ * The guest hears the first as ENOSPC and the second as EIO.
+ */
+#define FLUSH_FAILED   (-1)
+#define FLUSH_FULL     (-2)
+
+static int flush_failure(int e)
+{
+#ifdef EDQUOT
+    if (e == EDQUOT)
+        return FLUSH_FULL;
+#endif
+    return e == ENOSPC ? FLUSH_FULL : FLUSH_FAILED;
+}
+
+static void tally_add(sync_tally *t, int r)
+{
+    if (r >= 0)
+        return;
+    t->n++;
+    if (r == FLUSH_FULL)
+        t->full = 1;
+}
+
+static void tally_merge(sync_tally *t, const sync_tally *more)
+{
+    t->n += more->n;
+    t->full |= more->full;
+}
+
+/* The status of a SYNC a = 1 that met these failures. */
+static int tally_status(const sync_tally *t)
+{
+    if (!t->n)
+        return HOSTFS_E_OK;
+    return t->full ? HOSTFS_ENOSPC : HOSTFS_EIO;
+}
+
+/*
+ * A failed flush of PATH, with errno E. *FERR holds the failure last
+ * logged for that file: a file that keeps failing in the same way is
+ * logged once, not at every posted round (the update daemon posts one
+ * every 5 s), and again only when the failure changes.
+ */
+static void flush_failed(const char *path, int e, int *ferr)
+{
+    if (*ferr == e)
+        dbg("hostfsd: sync: %s still cannot be flushed: %s\n", rel_of(path),
+            strerror(e));
+    else
+        fprintf(stderr, "hostfsd: could not flush %s: %s\n", rel_of(path),
+                strerror(e));
+    *ferr = e;
+}
+
+/*
+ * Flush the file at PATH: 0 when done, 1 when there is nothing left to
+ * flush (gone, or no longer a regular file), FLUSH_FAILED or FLUSH_FULL
+ * for a failure. *FERR: see flush_failed().
+ */
+static int flush_path(const char *path, int *ferr)
+{
+    int why, fd = plat_open_flush(path, &why), e = errno, r = 0;
+
+    if (fd < 0 && why)
+    {
+        dbg("hostfsd: sync: %s %s\n", rel_of(path),
+            why == 1 ? "is gone" : "is no longer a file");
+        return 1;
+    }
+    if (fd >= 0)
+    {
+        if (plat_fsync(fd) < 0 && errno != EINVAL && errno != EROFS)
+        {
+            e = errno;
+            r = flush_failure(e);
+        }
+        close(fd);
+    }
+    else
+        r = flush_failure(e);
+    if (r < 0)
+        flush_failed(path, e, ferr);
+    else
+    {
+        *ferr = 0;
+        dbg("hostfsd: sync: %s\n", rel_of(path));
+    }
+    return r;
+}
+
+/* Flush an open file through its handle: 0, or FLUSH_FAILED or
+ * FLUSH_FULL for a failure. */
+static int flush_handle(filehandle *f)
+{
+    if (plat_fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
+    {
+        int e = errno;
+
+        flush_failed(f->path, e, &f->ferr);
+        return flush_failure(e);
+    }
+    f->ferr = 0;
+    dbg("hostfsd: sync: %s (open)\n", rel_of(f->path));
+    return 0;
+}
+
+/* *P under FROM becomes the same under TO: 0, or -1 when there was no
+ * memory for the new name and *P is left as it was. */
+static int rewrite_path(char **p, const char *from, const char *to)
+{
+    size_t n = path_under(*p, from);
+    char *q;
+
+    if (!n)
+        return 0;
+    q = (char *)malloc(strlen(to) + strlen(*p + n) + 1);
+    if (!q)
+        return -1;
+    strcpy(q, to);
+    strcat(q, *p + n);
+    free(*p);
+    *p = q;
+    return 0;
+}
+
+/* A successful RENAME of FROM to TO: the set and the open files follow. */
+static void sync_renamed(const char *from, const char *to)
+{
+    char moved[FULLPATH_MAX];
+    unsigned i;
+    int k;
+
+    /* What the rename replaced, a file at TO or an empty folder there, is
+     * gone: its entries would only be duplicates of those moving in. (A
+     * rename to the same name -- on Windows perhaps in another case --
+     * replaces nothing.) */
+    if (!path_same(from, to))
+    {
+        for (i = 0; i < ndirty; )
+        {
+            if (path_under(dirty[i].path, to))
+                dirty_remove(i);
+            else
+                i++;
+        }
+    }
+    for (i = 0; i < ndirty; )
+    {
+        size_t n = path_under(dirty[i].path, from);
+
+        if (!n)
+        {
+            i++;
+            continue;
+        }
+        dirty_unlink(i);
+        if (rewrite_path(&dirty[i].path, from, to) < 0)
+        {
+            /* No memory for the new name: flush it under that name now
+             * rather than keep a name that no longer exists. */
+            snprintf(moved, sizeof(moved), "%s%s", to, dirty[i].path + n);
+            dirty_link(i);
+            tally_add(&sync_unreported, flush_path(moved, &dirty[i].ferr));
+            dirty_remove(i);
+            continue;
+        }
+        dirty[i].hash = path_hash(dirty[i].path);
+        dirty_link(i);
+        i++;
+    }
+    for (k = 0; k < MAX_FILES; k++)
+        if (files[k].used && files[k].path
+         && rewrite_path(&files[k].path, from, to) < 0)
+        {
+            /* No memory for the new name: its CLOSE would list a name that
+             * no longer exists, and nothing would flush the file. The next
+             * a = 1 reports that as a failure. */
+            fprintf(stderr, "hostfsd: out of memory following %s to its new "
+                            "name; SYNC will not flush it\n",
+                    rel_of(files[k].path));
+            tally_add(&sync_unreported, FLUSH_FAILED);
+        }
+}
+
+/* A successful DELETE of PATH. */
+static void sync_forget(const char *path)
+{
+    long i;
+
+    while ((i = dirty_find(path)) >= 0)
+        dirty_remove((unsigned)i);
+}
+
+#ifndef _WIN32
+/*
+ * Folders whose entries changed since they were last flushed. POSIX
+ * makes a name durable -- a file created, renamed or deleted, a folder
+ * made or removed -- only when the folder holding it is flushed, and a
+ * file's own flush does not promise that. syncfs() covered names too;
+ * flushing file by file, a = 1 also flushes these. Windows has no such
+ * flush and needs none: NTFS logs its names itself.
+ *
+ * CREATE, DELETE, MKDIR and RMDIR list the folder holding the name, a
+ * RENAME the folders on both sides, and a renamed folder's entries follow
+ * it as the files' do. The list holds MAX_DSYNC folders; past that, and
+ * when there is no memory for a name, the next a = 1 calls syncfs() on
+ * the served folder's filesystem instead (sync() if a folder left out
+ * lies on another one, or on a host without syncfs()). Posted work
+ * flushes the listed folders but never that fallback: one syncfs() can
+ * wait for every other writer on the filesystem.
+ */
+#define MAX_DSYNC   1024
+#define DSYNC_HASH  2048                /* buckets; a power of two */
+
+typedef struct
+{
+    char *path;
+    unsigned long hash;
+    unsigned long tried;                /* the posted round that tried it */
+    int ferr;                           /* the failure last logged, or 0 */
+} dsync_dir;
+
+static dsync_dir dsync[MAX_DSYNC];
+static unsigned dsync_next[MAX_DSYNC];  /* hash chains: index + 1, 0 ends */
+static unsigned dsync_head[DSYNC_HASH];
+static unsigned ndsync;
+static int dsync_over;                  /* 1: a folder was left out; 2: one
+                                           on another filesystem */
+static dev_t dsync_root_dev;
+
+static void dsync_link(unsigned i)
+{
+    unsigned b = (unsigned)(dsync[i].hash & (DSYNC_HASH - 1));
+
+    dsync_next[i] = dsync_head[b];
+    dsync_head[b] = i + 1;
+}
+
+static void dsync_unlink(unsigned i)
+{
+    unsigned *p = &dsync_head[dsync[i].hash & (DSYNC_HASH - 1)];
+
+    while (*p != i + 1)
+        p = &dsync_next[*p - 1];
+    *p = dsync_next[i];
+}
+
+static void dsync_remove(unsigned i)
+{
+    dsync_unlink(i);
+    free(dsync[i].path);
+    if (i != ndsync - 1)
+    {
+        dsync_unlink(ndsync - 1);
+        dsync[i] = dsync[ndsync - 1];
+        dsync_link(i);
+    }
+    ndsync--;
+}
+
+/* A folder could not be listed: the next a = 1 falls back on syncfs(). */
+static void dsync_overflow(const char *dir)
+{
+    struct stat st;
+
+    dsync_over |= 1;
+    if (!(dsync_over & 2) && lstat(dir, &st) == 0
+     && st.st_dev != dsync_root_dev)
+        dsync_over |= 2;
+}
+
+/* List the folder P[0..LEN). */
+static void dsync_add(const char *p, size_t len)
+{
+    unsigned long h = path_hash_n(p, len);
+    char *copy;
+    unsigned k;
+
+    for (k = dsync_head[h & (DSYNC_HASH - 1)]; k; k = dsync_next[k - 1])
+        if (dsync[k - 1].hash == h && strlen(dsync[k - 1].path) == len
+         && !memcmp(dsync[k - 1].path, p, len))
+            return;
+    if (ndsync == MAX_DSYNC || (copy = (char *)malloc(len + 1)) == NULL)
+    {
+        char dir[FULLPATH_MAX];
+
+        if (len >= sizeof(dir))
+            len = sizeof(dir) - 1;
+        memcpy(dir, p, len);
+        dir[len] = '\0';
+        dsync_overflow(dir);
+        return;
+    }
+    memcpy(copy, p, len);
+    copy[len] = '\0';
+    dsync[ndsync].path = copy;
+    dsync[ndsync].hash = h;
+    dsync[ndsync].tried = 0;
+    dsync[ndsync].ferr = 0;
+    dsync_link(ndsync);
+    ndsync++;
+}
+
+/* The entries of the folder holding PATH changed. */
+static void dsync_parent(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+
+    if (slash)
+        dsync_add(path, slash > path ? (size_t)(slash - path) : 1);
+}
+
+/* A successful RENAME of FROM to TO: listed folders under FROM follow it,
+ * what TO replaced is gone, and both sides' folders changed. */
+static void dsync_renamed(const char *from, const char *to)
+{
+    unsigned i;
+
+    if (strcmp(from, to) != 0)
+    {
+        for (i = 0; i < ndsync; )
+        {
+            if (path_under(dsync[i].path, to))
+                dsync_remove(i);
+            else
+                i++;
+        }
+    }
+    for (i = 0; i < ndsync; i++)
+    {
+        if (!path_under(dsync[i].path, from))
+            continue;
+        dsync_unlink(i);
+        if (rewrite_path(&dsync[i].path, from, to) < 0)
+            dsync_overflow(to);         /* the old name will be found gone */
+        else
+            dsync[i].hash = path_hash(dsync[i].path);
+        dsync_link(i);
+    }
+    dsync_parent(from);
+    dsync_parent(to);
+}
+
+/* Flush the folder at PATH: 0, 1 when it is gone or no longer a folder,
+ * or FLUSH_FAILED or FLUSH_FULL. */
+static int flush_dir(const char *path, int *ferr)
+{
+    struct stat st;
+    int fd, e = 0, r = 0;
+
+    if (lstat(path, &st) != 0)
+    {
+        e = errno;
+        if (e == ENOENT || e == ENOTDIR)
+        {
+            dbg("hostfsd: sync: folder %s is gone\n", rel_of(path));
+            return 1;
+        }
+    }
+    else if (!S_ISDIR(st.st_mode))
+    {
+        dbg("hostfsd: sync: folder %s is no longer a folder\n", rel_of(path));
+        return 1;
+    }
+    else
+    {
+        fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK);
+        if (fd < 0)
+        {
+            e = errno;
+            if (e == ENOENT || e == ENOTDIR || e == ELOOP)
+            {
+                dbg("hostfsd: sync: folder %s is gone\n", rel_of(path));
+                return 1;
+            }
+        }
+        else
+        {
+            if (fsync(fd) < 0 && errno != EINVAL && errno != EROFS)
+                e = errno;
+            close(fd);
+        }
+    }
+    if (e)
+    {
+        r = flush_failure(e);
+        flush_failed(path, e, ferr);
+        return r;
+    }
+    *ferr = 0;
+    dbg("hostfsd: sync: folder %s\n", rel_of(path));
+    return 0;
+}
+
+/* The fallback for the folders left out: 0, or FLUSH_FAILED/FLUSH_FULL. */
+static int dsync_fallback(void)
+{
+#ifdef __linux__
+    if (!(dsync_over & 2))
+    {
+        int fd = open(root, O_RDONLY | O_DIRECTORY), e = 0;
+
+        dbg("hostfsd: sync: more than %d folders changed: syncfs\n",
+            MAX_DSYNC);
+        if (fd < 0 || syncfs(fd) < 0)
+            e = errno;
+        if (fd >= 0)
+            close(fd);
+        if (e)
+        {
+            fprintf(stderr, "hostfsd: syncfs failed: %s\n", strerror(e));
+            return flush_failure(e);
+        }
+        return 0;
+    }
+#endif
+    dbg("hostfsd: sync: more than %d folders changed: sync\n", MAX_DSYNC);
+    sync();
+    return 0;
+}
+#else
+#define dsync_parent(path)      ((void)0)
+#define dsync_renamed(from, to) ((void)0)
+#endif
+
+/* SETATTR is about to make PATH read-only: on Windows, flush it while it
+ * can still be opened for writing (see above). */
+static void sync_before_readonly(const char *path)
+{
+    long i;
+    int k;
+
+    if (!FLUSH_NEEDS_WRITE)
+        return;
+    for (k = 0; k < MAX_FILES; k++)
+        if (files[k].used && path_same(files[k].path, path))
+        {
+            files[k].readonly = 1;          /* and flush at its CLOSE */
+            if (files[k].dirty)
+            {
+                int r;
+
+                dbg("hostfsd: sync: %s, open, before it is made read-only\n",
+                    rel_of(path));
+                r = flush_handle(&files[k]);
+                if (r == 0)
+                    files[k].dirty = 0;
+                tally_add(&sync_unreported, r);
+            }
+        }
+    while ((i = dirty_find(path)) >= 0)
+    {
+        int r;
+
+        dbg("hostfsd: sync: %s, before it is made read-only\n", rel_of(path));
+        r = flush_path(path, &dirty[i].ferr);
+        tally_add(&sync_unreported, r);
+        if (r < 0)
+            break;                          /* stays listed: a = 1 says so */
+        dirty_remove((unsigned)i);
+    }
+}
+
+/* How many files and folders a SYNC would flush now, one by one: 0
+ * means there is nothing to flush. */
+static unsigned sync_work(void)
+{
+    unsigned n = ndirty;
+    int k;
+
+    for (k = 0; k < MAX_FILES; k++)
+        if (files[k].used && files[k].dirty)
+            n++;
+#ifndef _WIN32
+    n += ndsync;
+#endif
+    return n;
+}
+
+/* Does a = 1 have anything to do: to flush, or to report? */
+static int sync_wanted(void)
+{
+#ifndef _WIN32
+    if (dsync_over)
+        return 1;
+#endif
+    return sync_work() || sync_unreported.n;
+}
+
+/* a = 0. */
+static void sync_post(void)
+{
+    if (sync_pending)
+        return;
+    sync_pending = 1;
+    sync_round++;
+    sync_cursor = 0;
+    sync_waiting_since = plat_now_ms();
+}
+
+/* One file of the posted work, or the news that there is none left. A
+ * file that fails is passed over, and the next a = 1 reports it. */
+static void sync_step(void)
+{
+    int k, r;
+
+    for (k = 0; k < MAX_FILES; k++)
+        if (files[k].used && files[k].dirty && files[k].tried != sync_round)
+        {
+            files[k].tried = sync_round;
+            r = flush_handle(&files[k]);
+            if (r == 0)
+                files[k].dirty = 0;
+            tally_add(&sync_unreported, r);
+            return;
+        }
+    if (sync_cursor < ndirty)
+    {
+        r = flush_path(dirty[sync_cursor].path, &dirty[sync_cursor].ferr);
+        if (r >= 0)
+            dirty_remove(sync_cursor);
+        else
+            sync_cursor++;
+        tally_add(&sync_unreported, r);
+        return;
+    }
+#ifndef _WIN32
+    /* The folders last: a name is flushed after the file it names. */
+    for (k = 0; (unsigned)k < ndsync; k++)
+        if (dsync[k].tried != sync_round)
+        {
+            dsync[k].tried = sync_round;
+            r = flush_dir(dsync[k].path, &dsync[k].ferr);
+            if (r >= 0)
+                dsync_remove((unsigned)k);
+            tally_add(&sync_unreported, r);
+            return;
+        }
+#endif
+    sync_pending = 0;
+    dbg("hostfsd: sync: posted work done\n");
+}
+
+/*
+ * After a reply, with work posted: flush only once the drive is idle, and
+ * under traffic that never pauses, once the work has waited STARVE_MS,
+ * one file and then at least STARVE_EVERY_MS of traffic before the next.
+ * Returns when a request is waiting or the work is done.
+ */
+static void sync_when_idle(conn_t c)
+{
+    while (sync_pending)
+    {
+        unsigned long long now = plat_now_ms();
+        int stepped = 0;
+
+        if (now - sync_waiting_since >= STARVE_MS
+         && now - sync_last_forced >= STARVE_EVERY_MS)
+        {
+            dbg("hostfsd: sync: busy for %d ms, one file\n", STARVE_MS);
+            sync_step();
+            /* Timed from the end of the flush, however long it took, so
+             * that a waiting request is always served before the next
+             * one: stamped before it, a flush of STARVE_EVERY_MS or more
+             * would chain into the next, and a request would wait for
+             * the whole set. */
+            sync_last_forced = plat_now_ms();
+            continue;
+        }
+        if (conn_wait_input(c, IDLE_MS))
+            return;                     /* a request: serve it first */
+        dbg("hostfsd: sync: idle, flushing\n");
+        while (sync_pending && !conn_wait_input(c, 0))
+        {
+            sync_step();
+            stepped = 1;
+        }
+        /* An idle window restarts the STARVE_MS clock, but only if it was
+         * long enough to flush something. */
+        if (stepped)
+            sync_waiting_since = plat_now_ms();
+        return;
+    }
+}
+
+/* The deadline of an a = 1: when it began, and whether it has run out. */
+typedef struct
+{
+    int timed;                          /* 0: none (the end of a session) */
+    unsigned long long since;
+    int late;
+    unsigned started;                   /* flushes begun */
+} sync_clock;
+
+/* May the flush about to begin still begin? Counts it if so. */
+static int sync_may_start(sync_clock *c)
+{
+    if (c->timed && !c->late
+     && plat_now_ms() - c->since >= (unsigned long long)sync_deadline_ms)
+        c->late = 1;
+    if (c->late)
+        return 0;
+    c->started++;
+    return 1;
+}
+
+#ifdef __linux__
+/* a = 1 by syncfs(): once per filesystem that holds something to flush. */
+static void sync_all_syncfs(sync_tally *failed, sync_clock *clock)
+{
+    dev_t devs[16];
+    unsigned ndev = 0, i, j;
+    int k;
+
+    for (i = 0; i < ndirty + MAX_FILES; i++)
+    {
+        dev_t dev;
+
+        if (i < ndirty)
+            dev = dirty[i].dev;
+        else if (files[i - ndirty].used && files[i - ndirty].dirty)
+            dev = files[i - ndirty].dev;
+        else
+            continue;
+        for (j = 0; j < ndev && devs[j] != dev; j++)
+            ;
+        if (j == ndev)
+        {
+            if (ndev == sizeof(devs) / sizeof(devs[0]))
+            {
+                if (!sync_may_start(clock))
+                    return;
+                sync();                 /* too many to name: all of them */
+                while (ndirty)
+                    dirty_remove(ndirty - 1);
+                for (k = 0; k < MAX_FILES; k++)
+                    files[k].dirty = 0;
+                return;
+            }
+            devs[ndev++] = dev;
+        }
+    }
+    for (j = 0; j < ndev && sync_may_start(clock); j++)
+    {
+        int fd = -1, own = 0;
+
+        if (devs[j] == root_dev && root_fd >= 0)
+            fd = root_fd;
+        for (k = 0; fd < 0 && k < MAX_FILES; k++)
+            if (files[k].used && files[k].dirty && files[k].dev == devs[j])
+                fd = files[k].fd;
+        for (i = 0; fd < 0 && i < ndirty; )
+        {
+            int why;
+
+            if (dirty[i].dev != devs[j])
+            {
+                i++;
+                continue;
+            }
+            fd = plat_open_flush(dirty[i].path, &why);
+            if (fd >= 0)
+                own = 1;
+            else if (why)
+                dirty_remove(i);        /* nothing of it left */
+            else
+                i++;
+        }
+        if (fd < 0)
+        {
+            /* What is left on that filesystem cannot be opened at all. */
+            for (i = 0; i < ndirty; i++)
+                if (dirty[i].dev == devs[j])
+                {
+                    fprintf(stderr, "hostfsd: could not flush %s\n",
+                            rel_of(dirty[i].path));
+                    tally_add(failed, FLUSH_FAILED);
+                }
+            continue;
+        }
+        if (syncfs(fd) < 0)
+        {
+            int e = errno;
+
+            fprintf(stderr, "hostfsd: syncfs failed: %s\n", strerror(e));
+            tally_add(failed, flush_failure(e));
+        }
+        else
+        {
+            for (i = 0; i < ndirty; )
+                if (dirty[i].dev == devs[j])
+                    dirty_remove(i);
+                else
+                    i++;
+            for (k = 0; k < MAX_FILES; k++)
+                if (files[k].used && files[k].dev == devs[j])
+                    files[k].dirty = 0;
+        }
+        if (own)
+            close(fd);
+    }
+}
+#endif
+
+/*
+ * a = 1, and the end of a session: everything, before returning. FAILED
+ * gets the failures; what failed stays to be tried again. TIMED (a = 1)
+ * starts no flush once sync_deadline_ms have passed SINCE the request
+ * arrived: what is left is posted instead, for idle time to finish, and
+ * counted as a failure.
+ */
+static void sync_all(sync_tally *failed, int timed, unsigned long long since)
+{
+    unsigned listed = ndirty, open = 0, folders = 0, owed = sync_work(), i;
+    sync_clock clock;
+    int k;
+
+    failed->n = 0;
+    failed->full = 0;
+    clock.timed = timed;
+    clock.since = since;
+    clock.late = 0;
+    clock.started = 0;
+    for (k = 0; k < MAX_FILES; k++)
+        if (files[k].used && files[k].dirty)
+            open++;
+    sync_cursor = 0;
+#ifdef __linux__
+    if (sync_fs)
+        sync_all_syncfs(failed, &clock);
+    else
+#endif
+    {
+        for (k = 0; k < MAX_FILES; k++)
+            if (files[k].used && files[k].dirty)
+            {
+                int r;
+
+                if (!sync_may_start(&clock))
+                    break;
+                r = flush_handle(&files[k]);
+                if (r == 0)
+                    files[k].dirty = 0;
+                tally_add(failed, r);
+            }
+        for (i = 0; i < ndirty && sync_may_start(&clock); )
+        {
+            int r = flush_path(dirty[i].path, &dirty[i].ferr);
+
+            if (r >= 0)
+                dirty_remove(i);
+            else
+            {
+                tally_add(failed, r);
+                i++;
+            }
+        }
+    }
+#ifndef _WIN32
+    /* Then the names: the fallback first, after which the listed folders
+     * have nothing left to write on that filesystem. */
+    folders = ndsync;
+    if (dsync_over && sync_may_start(&clock))
+    {
+        int r = dsync_fallback();
+
+        if (r == 0)
+            dsync_over = 0;
+        tally_add(failed, r);
+    }
+    for (i = 0; i < ndsync && sync_may_start(&clock); )
+    {
+        int r = flush_dir(dsync[i].path, &dsync[i].ferr);
+
+        if (r >= 0)
+            dsync_remove(i);
+        else
+        {
+            tally_add(failed, r);
+            i++;
+        }
+    }
+#endif
+    sync_pending = 0;
+    if (folders)
+        dbg("hostfsd: sync: %u folder(s) whose entries changed\n", folders);
+    dbg("hostfsd: sync: %u listed and %u open file(s) %s, %u failed\n",
+        listed, open, sync_file_by_file() ? "file by file" : "by syncfs",
+        failed->n);
+    if (clock.late)
+    {
+        /* Out of time: the guest gets its answer while it still waits for
+         * one, and the rest is finished as posted work. */
+        fprintf(stderr, "hostfsd: SYNC a=1: out of time after %u of %u "
+                        "flush(es) in %lu ms; the rest is posted\n",
+                clock.started, owed, (unsigned long)(plat_now_ms() - since));
+        tally_add(failed, FLUSH_FAILED);
+        sync_post();
+    }
+}
+
+static void sync_init(void)
+{
+    const char *test_deadline = getenv("HOSTFSD_TEST_SYNC_DEADLINE_MS");
+#ifndef _WIN32
+    struct stat st;
+#endif
+
+    /* For the test suite only: its way to reach the deadline of a = 1 in
+     * seconds rather than minutes. It can only shorten the deadline, to
+     * 1..SYNC_DEADLINE_MS milliseconds; anything else is ignored. */
+    if (test_deadline)
+    {
+        char *end;
+        unsigned long ms;
+
+        errno = 0;
+        ms = strtoul(test_deadline, &end, 10);
+        if (!errno && *test_deadline >= '0' && *test_deadline <= '9' && !*end
+         && ms >= 1 && ms <= SYNC_DEADLINE_MS)
+            sync_deadline_ms = ms;
+        else
+            dbg("hostfsd: HOSTFSD_TEST_SYNC_DEADLINE_MS=%s ignored: not 1 to "
+                "%lu\n", test_deadline, (unsigned long)SYNC_DEADLINE_MS);
+    }
+#ifndef _WIN32
+    if (stat(root, &st) == 0)
+        dsync_root_dev = st.st_dev;
+#endif
+#ifdef __linux__
+    if (!sync_fs)
+        return;
+    root_fd = open(root, O_RDONLY | O_DIRECTORY);
+    if (root_fd < 0 || fstat(root_fd, &st) != 0)
+        sync_fs = 0;
+    else
+        root_dev = st.st_dev;
+#endif
+}
+
+/*
+ * CLOSE, for the guest's request and for a HELLO that finds files still
+ * open.
+ */
+static void file_close(filehandle *f)
+{
+    /*
+     * No flush here, by default. Every WRITE has already reached the
+     * host's page cache -- nothing is buffered in this process -- so
+     * a closed file survives the guest, QEMU or this helper being
+     * killed. What can lose the last writes is the host's cache never
+     * reaching the medium: the host crashing or losing power, a
+     * removable folder (a USB stick) pulled out, or a network share
+     * dropping, before the host's own write-back. That is the rule
+     * drive C follows: fast writes, flushed when the guest asks.
+     * Committing every file on close cost a disk flush per file -- on
+     * Windows a FlushFileBuffers each -- and copying a folder of
+     * small files paid it hundreds of times. --fsync-on-close
+     * restores the commit; removable and network folders want it.
+     */
+    /* A failure of any flush here is the next a = 1's to report. */
+    if (f->dirty && fsync_on_close)
+    {
+        int r;
+
+        dbg("hostfsd: fsync on close\n");
+        r = flush_handle(f);
+        if (r == 0)
+            f->dirty = 0;
+        tally_add(&sync_unreported, r);
+    }
+    else if (FLUSH_NEEDS_WRITE && f->dirty && f->readonly)
+    {
+        int r;
+
+        /* A read-only file could not be reopened for a flush on
+         * Windows: flush it now, through its own handle. */
+        dbg("hostfsd: sync: %s, read-only, flushed at close\n",
+            rel_of(f->path));
+        r = flush_handle(f);
+        if (r == 0)
+            f->dirty = 0;
+        tally_add(&sync_unreported, r);
+    }
+    /* What is not flushed goes in the set for the next SYNC -- including
+     * a file whose flush just failed, so that a = 1 tries it again; if
+     * the set is full, it is flushed now instead. */
+    if (f->dirty && !dirty_add(f->path, f->dev, f->ferr))
+    {
+        dbg("hostfsd: sync: %s, the list is full, flushed at close\n",
+            rel_of(f->path));
+        tally_add(&sync_unreported, flush_handle(f));
+    }
+    close(f->fd);
+    free(f->path);
+    f->path = NULL;
+    f->dirty = 0;
+    f->used = 0;
+}
+
+/* A new client is a new session: nothing may survive from the last one,
+ * or a handle number the previous guest opened would still work. That
+ * includes a raised frame limit: the next guest may be one that never
+ * heard of CAPS and has a 4 KB buffer.
+ *
+ * END is set when the connection has gone: the guest halted, rebooted or
+ * QEMU quit or was killed. Everything the session wrote is flushed then,
+ * as SYNC with a = 1 would. A HELLO on a live connection is a guest
+ * starting over with a deadline on its reply, so there each file still
+ * open is closed exactly as CLOSE would close it -- listed for SYNC, and
+ * flushed in place only where CLOSE flushes in place -- and the set is
+ * kept. */
+static void handles_reset(int end)
+{
+    unsigned listed = 0;
     int i;
 
+    frame_max = HOSTFS_MAX_FRAME;
+
+    if (end)
+    {
+        sync_tally failed;
+
+        sync_all(&failed, 0, 0);
+        if (failed.n)
+        {
+            fprintf(stderr, "hostfsd: some of what the guest wrote could not "
+                            "be flushed when it went away\n");
+            fflush(stderr);
+        }
+    }
+
+    /* These are the handles the guest still had open when it went away
+     * or started over -- a reboot, a halt, or the emulator being killed.
+     * After the flush above, any still marked written is one that would
+     * not flush, and goes in the set for SYNC to report. */
     for (i = 0; i < MAX_FILES; i++)
         if (files[i].used)
         {
-            /*
-             * These are the handles the guest still had open when it
-             * went away - a reboot, a halt, or the emulator being
-             * killed. They are the ones most likely to be mid-write,
-             * so commit them rather than just dropping them.
-             */
             if (files[i].dirty)
-                (void) plat_fsync(files[i].fd);
-            close(files[i].fd);
-            files[i].used = 0;
+                listed++;
+            file_close(&files[i]);
         }
+    if (listed && !end)
+        dbg("hostfsd: hello: %u written file(s) still open, closed as CLOSE "
+            "does\n", listed);
+
+    /* Failures no a = 1 has reported belong to the boot that is over,
+     * including any met just now closing its files: the next guest's
+     * a = 1 answers for its own session only. */
+    if (sync_unreported.n)
+    {
+        fprintf(stderr, "hostfsd: dropping %u flush failure(s) no SYNC a=1 "
+                        "reported: the guest %s\n", sync_unreported.n,
+                end ? "went away" : "started over");
+        fflush(stderr);
+        sync_unreported.n = 0;
+        sync_unreported.full = 0;
+    }
 
     for (i = 0; i < MAX_DIRS; i++)
         if (dirs[i].used)
@@ -1053,11 +2438,12 @@ static int dir_snapshot(dirhandle *d, const char *path)
 /*
  * Serve one request.
  *
- * REQ/REQLEN is a frame whose length has already been validated, so the
- * header is known to be present and `data` is known to be reqlen - 16
- * bytes. REP is a HOSTFS_MAX_FRAME buffer; the return value is its
- * length. This function never fails fatally: everything wrong with the
- * request becomes a status.
+ * REQ/REQLEN is a frame whose length has already been validated against
+ * frame_max, so the header is known to be present and `data` is known to
+ * be reqlen - 16 bytes. REP is a HOSTFS_MAX_FRAME_LIMIT buffer, of which
+ * a reply uses at most frame_max; the return value is its length. This
+ * function never fails fatally: everything wrong with the request
+ * becomes a status.
  */
 static unsigned serve(const unsigned char *req, unsigned reqlen,
                       unsigned char *rep)
@@ -1088,10 +2474,23 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
     switch (op)
     {
     case HOSTFS_OP_CAPS:
-        ra = HOSTFS_CAP_READDIR_BATCH;
+        /* `a` is the largest frame the guest can take; 0 from every guest
+         * older than HOSTFS_CAP_LARGE_FRAME, which keeps 4 KB. The reply
+         * itself is header-only either way, so it is safe to send under
+         * the old limit or the new. */
+        if (a > HOSTFS_MAX_FRAME)
+            frame_max = a > HOSTFS_MAX_FRAME_LIMIT ? HOSTFS_MAX_FRAME_LIMIT
+                                                   : (unsigned)a;
+        else
+            frame_max = HOSTFS_MAX_FRAME;
+        ra = HOSTFS_CAP_READDIR_BATCH | HOSTFS_CAP_LARGE_FRAME | HOSTFS_CAP_SYNC;
+        rb = frame_max;
         break;
 
     case HOSTFS_OP_HELLO:
+        /* Every HELLO, refused or not, puts the frame limit back to 4 KB:
+         * whatever comes next is a guest starting over. */
+        frame_max = HOSTFS_MAX_FRAME;
         if (a != HOSTFS_PROTO_VERSION)
         {
             /* Refuse rather than guess: a version we do not understand
@@ -1101,7 +2500,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         }
         /* A HELLO is the start of a session -- the guest may have
          * rebooted without the connection ever dropping. */
-        handles_reset();
+        handles_reset(0);
         ra = HOSTFS_PROTO_VERSION;
         rb = HOSTFS_MAX_REP_DATA;
         outlen = (unsigned)strlen(label);
@@ -1162,17 +2561,35 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
          * which GEMDOS has no word for. Refuse it at the door. */
         {
             struct stat st;
-            if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode))
+            char *copy;
+
+            if (fstat(fd, &st) != 0)
+                st.st_dev = 0;
+            else if (S_ISDIR(st.st_mode))
             {
                 close(fd);
                 status = HOSTFS_EACCDN;
                 break;
             }
+            copy = (char *)malloc(strlen(path) + 1);
+            if (!copy)
+            {
+                close(fd);
+                status = HOSTFS_ENSMEM;
+                break;
+            }
+            strcpy(copy, path);
+            files[i].path = copy;
+            files[i].dev = st.st_dev;
         }
-
         files[i].used = 1;
         files[i].fd = fd;
         files[i].dirty = 0;
+        files[i].readonly = op == HOSTFS_OP_CREATE && (a & HOSTFS_FA_RO);
+        files[i].tried = 0;
+        files[i].ferr = 0;
+        if (op == HOSTFS_OP_CREATE)
+            dsync_parent(path);         /* a new name, or a truncation */
         ra = (unsigned long)(i + 1);
         break;
     }
@@ -1186,22 +2603,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             status = HOSTFS_EIHNDL;
             break;
         }
-        /*
-         * Push the file out before letting go of it.  Writes reach the
-         * host's page cache as the guest makes them, so they already
-         * survive the emulator being killed - but not the host losing
-         * power.  A file the guest has finished with is exactly the
-         * point where that is worth paying for, and it costs nothing
-         * for the files nobody wrote to.
-         */
-        if (f->dirty)
-        {
-            if (plat_fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
-                dbg("hostfsd: fsync failed on close: %s\n", strerror(errno));
-            f->dirty = 0;
-        }
-        close(f->fd);
-        f->used = 0;
+        file_close(f);
         break;
     }
 
@@ -1215,8 +2617,8 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             status = HOSTFS_EIHNDL;
             break;
         }
-        if (c > HOSTFS_MAX_REP_DATA)
-            c = HOSTFS_MAX_REP_DATA;    /* the guest reads in chunks */
+        if (c > frame_max - HOSTFS_REP_HDR)
+            c = frame_max - HOSTFS_REP_HDR;  /* the guest reads in chunks */
 
         if (lseek(f->fd, (off_t)b, SEEK_SET) == (off_t)-1)
         {
@@ -1343,6 +2745,9 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             if (op == HOSTFS_OP_READDIR_BATCH)
             {
                 unsigned length = (unsigned)strlen(name);
+                /* HOSTFS_MAX_REP_DATA, not frame_max: guests size their
+                 * batch buffer from it, and a raised session does not
+                 * change what READDIR_BATCH returns. */
                 if (outlen + 6 + length > HOSTFS_MAX_REP_DATA)
                     break;
                 put32(out + outlen, idx);
@@ -1382,20 +2787,35 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
 
     case HOSTFS_OP_DELETE:
         status = resolve_path(data, datalen, path);
-        if (status == HOSTFS_E_OK && unlink(path) != 0)
+        if (status != HOSTFS_E_OK)
+            break;
+        if (unlink(path) != 0)
             status = errno_to_gemdos(errno);
+        else
+        {
+            sync_forget(path);
+            dsync_parent(path);
+        }
         break;
 
     case HOSTFS_OP_MKDIR:
         status = resolve_path(data, datalen, path);
-        if (status == HOSTFS_E_OK && plat_mkdir(path) != 0)
+        if (status != HOSTFS_E_OK)
+            break;
+        if (plat_mkdir(path) != 0)
             status = errno_to_gemdos(errno);
+        else
+            dsync_parent(path);
         break;
 
     case HOSTFS_OP_RMDIR:
         status = resolve_path(data, datalen, path);
-        if (status == HOSTFS_E_OK && rmdir(path) != 0)
+        if (status != HOSTFS_E_OK)
+            break;
+        if (rmdir(path) != 0)
             status = errno_to_gemdos(errno);
+        else
+            dsync_parent(path);
         break;
 
     case HOSTFS_OP_RENAME:
@@ -1419,6 +2839,11 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             break;
         if (rename(path, dst) != 0)
             status = errno_to_gemdos(errno);
+        else
+        {
+            sync_renamed(path, dst);    /* the set follows the file */
+            dsync_renamed(path, dst);   /* and the names changed */
+        }
         break;
     }
 
@@ -1443,6 +2868,8 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
          * entire point of the feature.
          */
         mode = (int)(st.st_mode & 0777);
+        if ((a & HOSTFS_FA_RO) && (mode & 0222))
+            sync_before_readonly(path);
         if (a & HOSTFS_FA_RO)
             mode &= ~0222;
         else
@@ -1451,6 +2878,47 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             status = errno_to_gemdos(errno);
         break;
     }
+
+    case HOSTFS_OP_SYNC:
+        /* --verbose logs every SYNC, whatever it does, so that the log
+         * can be counted against the requests. */
+        if (a > 1 || b != 0 || c != 0 || datalen != 0)
+        {
+            dbg("hostfsd: SYNC a=%lu b=%lu c=%lu data=%u: refused\n",
+                a, b, c, datalen);
+            status = HOSTFS_EDRIVE;
+        }
+        else if (a == 0 ? !sync_work() : !sync_wanted())
+            dbg("hostfsd: SYNC a=%lu: nothing to do\n", a);
+        else if (a == 0)
+        {
+            dbg("hostfsd: SYNC a=0: %s\n", sync_pending ? "already posted"
+                                                        : "posted");
+            sync_post();
+        }
+        else
+        {
+            unsigned long long since = plat_now_ms();
+            unsigned owed = sync_work();
+            sync_tally failed, earlier = sync_unreported;
+
+            /* What failed before this request -- in posted work, or in a
+             * flush made in place -- is reported now, and only now: on
+             * Linux a writeback error is told to the first fsync() that
+             * looks, and the retry below would succeed with nothing
+             * written. */
+            sync_all(&failed, 1, since);
+            dbg("hostfsd: SYNC a=1: flushed %u, failed %u",
+                owed >= failed.n ? owed - failed.n : 0, failed.n);
+            if (earlier.n)
+                dbg(", and %u failure(s) since the last a=1", earlier.n);
+            dbg("\n");
+            tally_merge(&failed, &earlier);
+            sync_unreported.n = 0;
+            sync_unreported.full = 0;
+            status = tally_status(&failed);
+        }
+        break;
 
     case HOSTFS_OP_DFREE:
     {
@@ -1533,54 +3001,61 @@ static int send_all(conn_t c, const unsigned char *buf, unsigned n)
 /*
  * Serve one client until it goes away.
  *
- * A `len` outside [HOSTFS_REQ_HDR, HOSTFS_MAX_FRAME] means the stream is
+ * A `len` outside [HOSTFS_REQ_HDR, frame_max] means the stream is
  * desynchronised: there is no way to know where the next frame starts,
  * and guessing risks answering the wrong request with the wrong file.
  * The session gets one error reply and is then dropped -- the guest sees
  * EDRIVE, which is diagnosable, and the helper stays up for the next
  * connection.
  */
+/* Sized for the largest frame CAPS can agree to; frame_max says how much
+ * of them the current session may use. Static, not on the stack: 128 KB
+ * is more than some threads are given. */
+static unsigned char req_buf[HOSTFS_MAX_FRAME_LIMIT];
+static unsigned char rep_buf[HOSTFS_MAX_FRAME_LIMIT];
+
 static long serve_client(conn_t c)
 {
     long served = 0;
 
-    unsigned char req[HOSTFS_MAX_FRAME];
-    unsigned char rep[HOSTFS_MAX_FRAME];
-
-    handles_reset();
+    handles_reset(0);
 
     for (;;)
     {
         unsigned len, replen;
-        int r = recv_exact(c, req, HOSTFS_REQ_HDR);
+        int r = recv_exact(c, req_buf, HOSTFS_REQ_HDR);
 
         if (r <= 0)
             break;              /* clean close, or a truncated header */
 
         served++;
 
-        len = get16(req);
-        if (len < HOSTFS_REQ_HDR || len > HOSTFS_MAX_FRAME)
+        len = get16(req_buf);
+        if (len < HOSTFS_REQ_HDR || len > frame_max)
         {
             dbg("hostfsd: bad frame length %u, dropping the session\n", len);
-            put16(rep + 0, HOSTFS_REP_HDR);
-            put16(rep + 2, (unsigned)(HOSTFS_EDRIVE & 0xffff));
-            put32(rep + 4, 0);
-            put32(rep + 8, 0);
-            send_all(c, rep, HOSTFS_REP_HDR);
+            put16(rep_buf + 0, HOSTFS_REP_HDR);
+            put16(rep_buf + 2, (unsigned)(HOSTFS_EDRIVE & 0xffff));
+            put32(rep_buf + 4, 0);
+            put32(rep_buf + 8, 0);
+            send_all(c, rep_buf, HOSTFS_REP_HDR);
             break;
         }
 
         if (len > HOSTFS_REQ_HDR
-         && recv_exact(c, req + HOSTFS_REQ_HDR, len - HOSTFS_REQ_HDR) <= 0)
+         && recv_exact(c, req_buf + HOSTFS_REQ_HDR, len - HOSTFS_REQ_HDR) <= 0)
             break;
 
-        replen = serve(req, len, rep);
-        if (send_all(c, rep, replen) < 0)
+        replen = serve(req_buf, len, rep_buf);
+        if (send_all(c, rep_buf, replen) < 0)
             break;
+
+        /* Posted SYNC work, when the drive is idle. */
+        if (sync_pending)
+            sync_when_idle(c);
     }
 
-    handles_reset();
+    handles_reset(1);
 
     return served;
 }
@@ -1598,6 +3073,8 @@ static void usage(void)
         "                       [--listen-tcp PORT]\n"
 #endif
         "                       [--read-only] [--once] [--verbose]\n"
+        "                       [--fsync-on-close] [--sync-fs]\n"
+        "                       [--ready-file P]\n"
         "\n"
         "  --root DIR      the folder served as an Atari drive\n"
         "  --listen PATH   listen on a Unix socket and serve each client\n"
@@ -1609,6 +3086,17 @@ static void usage(void)
         "                  server=on is the listener in that arrangement\n"
         "  --read-only     refuse writes and leave host attributes unchanged\n"
         "  --once          exit after the first client disconnects\n"
+        "  --fsync-on-close  flush each written file to the disk when the\n"
+        "                  guest closes it. Off by default: closed files\n"
+        "                  are in the host's cache and survive QEMU being\n"
+        "                  killed; a host crash or power cut, or a removable\n"
+        "                  or network folder going away, can lose the last\n"
+        "                  writes. Use it for such folders. Files still open\n"
+        "                  when the guest goes away are flushed either way\n"
+        "  --sync-fs       Linux: SYNC with a = 1 calls syncfs() on the folder's\n"
+        "                  filesystem instead of flushing the guest's files one\n"
+        "                  by one -- one call, but it waits for every other\n"
+        "                  writer on that filesystem too (ignored elsewhere)\n"
         "  --ready-file P  create P once the channel is up, and only\n"
         "                  then -- the launcher waits for it rather than\n"
         "                  sleeping, so QEMU never starts before the\n"
@@ -1844,6 +3332,10 @@ int main(int argc, char **argv)
             read_only = 1;
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
+        else if (!strcmp(argv[i], "--fsync-on-close"))
+            fsync_on_close = 1;
+        else if (!strcmp(argv[i], "--sync-fs"))
+            sync_fs = 1;
         else
         {
             usage();
@@ -1883,6 +3375,7 @@ int main(int argc, char **argv)
     }
 
     make_label(root);
+    sync_init();
 
     /* POSIX trees are fast enough to prepare before the channel comes up.
      * Windows does the same work after readiness on a worker thread, because

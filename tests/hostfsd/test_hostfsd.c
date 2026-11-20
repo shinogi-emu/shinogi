@@ -29,6 +29,8 @@
 #include <fcntl.h>
 #include <ftw.h>
 #include <signal.h>
+#include <time.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -152,9 +154,17 @@ static int recv_all(unsigned char *buf, unsigned n)
 }
 
 /* Reply of the last rpc(), for the tests that look at the payload. */
-static unsigned char reply[HOSTFS_MAX_FRAME];
+static unsigned char reply[HOSTFS_MAX_FRAME_LIMIT];
 static unsigned reply_len;
 static unsigned long reply_a, reply_b;
+
+/*
+ * The largest reply this client accepts. It stays at HOSTFS_MAX_FRAME --
+ * what every guest older than HOSTFS_CAP_LARGE_FRAME can hold -- except
+ * inside test_frames(), so every other test also checks that the helper
+ * never sends an old guest more than 4 KB.
+ */
+static unsigned client_frame = HOSTFS_MAX_FRAME;
 
 /*
  * One request, one reply. Returns the GEMDOS status, or -1000 if the
@@ -166,11 +176,11 @@ static unsigned long reply_a, reply_b;
 static int rpc(unsigned op, unsigned long a, unsigned long b, unsigned long c,
                const void *data, unsigned dlen)
 {
-    unsigned char req[HOSTFS_MAX_FRAME];
+    static unsigned char req[HOSTFS_MAX_FRAME_LIMIT];
     unsigned len = HOSTFS_REQ_HDR + dlen;
     int status;
 
-    if (len > HOSTFS_MAX_FRAME)
+    if (len > HOSTFS_MAX_FRAME_LIMIT)
         die("test built an oversized request");
 
     req[0] = (unsigned char)(len & 0xff);
@@ -201,7 +211,7 @@ static int rpc(unsigned op, unsigned long a, unsigned long b, unsigned long c,
         return RPC_DEAD;
 
     reply_len = (unsigned)reply[0] | ((unsigned)reply[1] << 8);
-    if (reply_len < HOSTFS_REP_HDR || reply_len > HOSTFS_MAX_FRAME)
+    if (reply_len < HOSTFS_REP_HDR || reply_len > client_frame)
         return RPC_DEAD;
     if (reply_len > HOSTFS_REP_HDR
      && recv_all(reply + HOSTFS_REP_HDR, reply_len - HOSTFS_REP_HDR) < 0)
@@ -270,7 +280,14 @@ static void scratch_make(void)
 {
     char p[512], link[512];
 
-    strcpy(tmproot, "/tmp/hostfsd-test-XXXXXX");
+    /* $TMPDIR if set, as mktemp(1) does: a machine where /tmp is small
+     * or shared can point the run elsewhere. */
+    {
+        const char *t = getenv("TMPDIR");
+
+        snprintf(tmproot, sizeof(tmproot), "%s/hostfsd-test-XXXXXX",
+                 t && *t ? t : "/tmp");
+    }
     if (!mkdtemp(tmproot))
         die("mkdtemp");
 
@@ -1423,7 +1440,7 @@ static unsigned raw(const unsigned char *buf, unsigned n)
     if (recv_all(reply, HOSTFS_REP_HDR) < 0)
         return 0;
     len = (unsigned)reply[0] | ((unsigned)reply[1] << 8);
-    if (len > HOSTFS_REP_HDR && len <= HOSTFS_MAX_FRAME)
+    if (len > HOSTFS_REP_HDR && len <= client_frame)
         recv_all(reply + HOSTFS_REP_HDR, len - HOSTFS_REP_HDR);
     return len;
 }
@@ -1540,6 +1557,1548 @@ static void test_malformed(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Frame size                                                          */
+
+/*
+ * Larger frames are a per-session agreement made with CAPS. The contract
+ * that matters most is the one for guests that never ask: their session
+ * stays at 4 KB both ways, whatever the helper could do -- the kernel's
+ * and EmuTOS's receive buffers are exactly HOSTFS_MAX_FRAME, and a longer
+ * reply kills their drive.
+ */
+static void test_frames(void)
+{
+    enum { BIG = 200000 };
+    static unsigned char want[BIG], got[BIG], b[HOSTFS_MAX_FRAME_LIMIT];
+    unsigned long off;
+    unsigned i;
+    int fh, ok;
+
+    for (i = 0; i < BIG; i++)
+        want[i] = (unsigned char)(i * 13 + (i >> 9));
+
+    check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+          == HOSTFS_E_OK, "HELLO before the frame tests");
+
+    /* A guest of today: CAPS with nothing in `a`. Header-only reply (the
+     * EmuTOS transport refuses anything else), both bits, 4 KB limit. */
+    check(rpc(HOSTFS_OP_CAPS, 0, 0, 0, NULL, 0) == HOSTFS_E_OK, "CAPS");
+    check(reply_len == HOSTFS_REP_HDR, "CAPS reply carries %u bytes of data",
+          reply_datalen());
+    check((reply_a & HOSTFS_CAP_READDIR_BATCH)
+          && (reply_a & HOSTFS_CAP_LARGE_FRAME), "CAPS bits %lx", reply_a);
+    check(reply_b == HOSTFS_MAX_FRAME,
+          "CAPS without an offer set the limit to %lu", reply_b);
+    check(rpc(HOSTFS_OP_CAPS, HOSTFS_MAX_FRAME, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == HOSTFS_MAX_FRAME, "an offer of 4 KB gave %lu", reply_b);
+    check(rpc(HOSTFS_OP_CAPS, 100, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == HOSTFS_MAX_FRAME,
+          "an offer below 4 KB lowered the limit to %lu", reply_b);
+
+    /* Write the file 4 KB at a time, as any guest can. */
+    check(rpc_path(HOSTFS_OP_CREATE, 0, "frames.bin") == HOSTFS_E_OK,
+          "CREATE frames.bin");
+    fh = (int)reply_a;
+    for (ok = 1, off = 0; off < BIG / 2; off += HOSTFS_MAX_REQ_DATA)
+    {
+        unsigned n = BIG / 2 - off > HOSTFS_MAX_REQ_DATA
+                   ? HOSTFS_MAX_REQ_DATA : (unsigned)(BIG / 2 - off);
+        if (rpc(HOSTFS_OP_WRITE, fh, off, 0, want + off, n) != HOSTFS_E_OK
+         || reply_a != n)
+            ok = 0;
+    }
+    check(ok, "4 KB writes failed");
+
+    /* Still 4 KB: a READ asking for 64 KB is clamped (client_frame would
+     * refuse a longer reply), and a request one byte over is a broken
+     * stream, as it always was. */
+    check(rpc(HOSTFS_OP_READ, fh, 0, 65535, NULL, 0) == HOSTFS_E_OK
+          && reply_a == HOSTFS_MAX_REP_DATA,
+          "an unraised session READ %lu bytes", reply_a);
+
+    /* A raised session: the guest can take 64 KB. */
+    check(rpc(HOSTFS_OP_CAPS, 0x7fffffffUL, 0, 0, NULL, 0) == HOSTFS_E_OK,
+          "CAPS with a large offer");
+    check(reply_len == HOSTFS_REP_HDR && reply_b == HOSTFS_MAX_FRAME_LIMIT,
+          "a large offer gave a limit of %lu", reply_b);
+    client_frame = HOSTFS_MAX_FRAME_LIMIT;
+
+    /* The second half in frames of up to 64 KB. */
+    for (ok = 1, off = BIG / 2; off < BIG; )
+    {
+        unsigned max = HOSTFS_MAX_FRAME_LIMIT - HOSTFS_REQ_HDR;
+        unsigned n = BIG - off > max ? max : (unsigned)(BIG - off);
+        if (rpc(HOSTFS_OP_WRITE, fh, off, 0, want + off, n) != HOSTFS_E_OK
+         || reply_a != n)
+        {
+            ok = 0;
+            break;
+        }
+        off += n;
+    }
+    check(ok, "64 KB writes failed");
+
+    /* And back in 64 KB frames, exactly as much as asked for. */
+    for (ok = 1, off = 0; off < BIG; )
+    {
+        if (rpc(HOSTFS_OP_READ, fh, off, 65535, NULL, 0) != HOSTFS_E_OK
+         || reply_a == 0 || reply_datalen() != reply_a
+         || reply_a > HOSTFS_MAX_FRAME_LIMIT - HOSTFS_REP_HDR)
+        {
+            ok = 0;
+            break;
+        }
+        if (off + reply_a < BIG)
+            check(reply_a == HOSTFS_MAX_FRAME_LIMIT - HOSTFS_REP_HDR,
+                  "a mid-file READ of 65535 returned %lu", reply_a);
+        memcpy(got + off, reply_data(), reply_a);
+        off += reply_a;
+    }
+    check(ok && off == BIG && !memcmp(want, got, BIG),
+          "a file did not round-trip through 64 KB frames");
+    check(rpc(HOSTFS_OP_READ, fh, 0, 100, NULL, 0) == HOSTFS_E_OK
+          && reply_a == 100, "a small READ in a raised session gave %lu",
+          reply_a);
+
+    /* READDIR_BATCH does not grow: guests size its buffer from 4 KB. Only
+     * long names can reach that bound -- sixteen entries of 6 + 252 bytes
+     * are 4128 -- so list a folder of them, as a guest may create. */
+    {
+        char name[300], pad[245];
+        int dh, batches = 0, entries = 0;
+
+        memset(pad, 'x', 244);
+        pad[244] = '\0';
+        host_path(name, sizeof(name), "longnames");
+        if (mkdir(name, 0777) != 0)
+            die("mkdir longnames");
+        for (i = 0; i < 17; i++)
+        {
+            snprintf(name, sizeof(name), "longnames/n%02u-%s.txt", i, pad);
+            host_write(name, "long");
+        }
+        check(rpc_path(HOSTFS_OP_OPENDIR, 0, "longnames") == HOSTFS_E_OK,
+              "OPENDIR longnames");
+        dh = (int)reply_a;
+        for (off = 0; ; )
+        {
+            int st = rpc(HOSTFS_OP_READDIR_BATCH, dh, off, 0, NULL, 0);
+            if (st != HOSTFS_E_OK)
+                break;
+            check(reply_datalen() <= HOSTFS_MAX_REP_DATA,
+                  "a batch of %u bytes in a raised session", reply_datalen());
+            batches++;
+            entries += (int)reply_b;
+            off = reply_a;
+        }
+        check(entries == 17 && batches >= 2,
+              "long names listed as %d entries in %d batches", entries, batches);
+        check(rpc(HOSTFS_OP_CLOSEDIR, dh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "CLOSEDIR longnames");
+    }
+
+    /* A middle-sized offer is honoured as made: 16 KB both ways. */
+    check(rpc(HOSTFS_OP_CAPS, 16384, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 16384, "an offer of 16 KB gave %lu", reply_b);
+    check(rpc(HOSTFS_OP_READ, fh, 0, 65535, NULL, 0) == HOSTFS_E_OK
+          && reply_a == 16384 - HOSTFS_REP_HDR,
+          "a 16 KB session READ %lu bytes", reply_a);
+    put_hdr(b, 16385, HOSTFS_OP_WRITE);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "a frame over the agreed 16 KB was not refused");
+    check(helper_alive(), "the helper died on a frame over the agreed limit");
+
+    /* A new connection starts at 4 KB before any HELLO: raise the limit,
+     * hang up, reconnect and send a 4097-byte frame first thing. A helper
+     * that reset only on HELLO would take the header and wait for the
+     * body. */
+    check(rpc(HOSTFS_OP_CAPS, 65535, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 65535, "raise before reconnecting");
+    t_connect();
+    put_hdr(b, HOSTFS_MAX_FRAME + 1, HOSTFS_OP_READ);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "a new connection inherited the last session's frame limit");
+    check(helper_alive(), "the helper died after a reconnect");
+    client_frame = HOSTFS_MAX_FRAME;
+
+    /* helper_alive() reconnected and said HELLO: a new session, back at
+     * 4 KB, with no CAPS. The file must be reopened, and READ is clamped
+     * again. */
+    check(rpc_path(HOSTFS_OP_OPEN, HOSTFS_O_RDONLY, "frames.bin") == HOSTFS_E_OK,
+          "reopen frames.bin");
+    fh = (int)reply_a;
+    check(rpc(HOSTFS_OP_READ, fh, 0, 65535, NULL, 0) == HOSTFS_E_OK
+          && reply_a == HOSTFS_MAX_REP_DATA,
+          "a new session READ %lu bytes", reply_a);
+    check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE");
+
+    /* HELLO on the same connection resets a raised limit as well: a guest
+     * that rebooted may be an older one. */
+    check(rpc(HOSTFS_OP_CAPS, 65535, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 65535, "raise again");
+    check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+          == HOSTFS_E_OK, "HELLO in a raised session");
+    put_hdr(b, HOSTFS_MAX_FRAME + 1, HOSTFS_OP_READ);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "HELLO did not put the limit back to 4 KB");
+    check(helper_alive(), "the helper died after the frame tests");
+
+    /* So does a HELLO the helper refuses: the session goes on, at 4 KB. */
+    check(rpc(HOSTFS_OP_CAPS, 65535, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && reply_b == 65535, "raise before a refused HELLO");
+    check(rpc(HOSTFS_OP_HELLO, 999, 0, 0, NULL, 0) == HOSTFS_EDRIVE,
+          "HELLO of version 999 was not refused");
+    check(rpc(HOSTFS_OP_READ, 99, 0, 1, NULL, 0) == HOSTFS_EIHNDL,
+          "the session did not go on after a refused HELLO");
+    put_hdr(b, HOSTFS_MAX_FRAME + 1, HOSTFS_OP_READ);
+    check(raw(b, HOSTFS_REQ_HDR) == HOSTFS_REP_HDR
+          && (short)(reply[2] | (reply[3] << 8)) == HOSTFS_EDRIVE,
+          "a refused HELLO did not put the limit back to 4 KB");
+    check(helper_alive(), "the helper died after the frame tests");
+}
+
+/* ------------------------------------------------------------------ */
+/* Durability option                                                   */
+
+/*
+ * A second helper of our own on socket NAME, serving the same folder with
+ * EXTRA (or nothing), --verbose and --once, its log in LOG and PRELOAD (or
+ * nothing) in its LD_PRELOAD; the shim's SLOWSYNC_* settings come from
+ * our own environment. Returns its pid with `sock` connected to it, or
+ * -1 -- and then the child is gone, not left running.
+ */
+static pid_t helper_extra(const char *name, const char *extra, const char *log,
+                          const char *preload)
+{
+    char path[400], ready[400];
+    pid_t child;
+    int tries;
+
+    snprintf(path, sizeof(path), "%s/%s", tmproot, name);
+    snprintf(ready, sizeof(ready), "%s/%s.ready", tmproot, name);
+    child = fork();
+    if (child < 0)
+        die("fork");
+    if (child == 0)
+    {
+        int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd >= 0)
+            dup2(fd, 2);
+        if (preload)
+            setenv("LD_PRELOAD", preload, 1);
+        execl("../../tools/hostfsd/shinogi-hostfsd", "shinogi-hostfsd",
+              "--root", servedir, "--listen", path, "--ready-file", ready,
+              "--once", "--verbose", extra, (char *)NULL);
+        _exit(127);
+    }
+    for (tries = 0; tries < 400 && !host_exists(ready); tries++)
+        usleep(5000);
+    if (host_exists(ready))
+    {
+        struct sockaddr_un sa;
+
+        memset(&sa, 0, sizeof(sa));
+        sa.sun_family = AF_UNIX;
+        strcpy(sa.sun_path, path);
+        sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock >= 0 && connect(sock, (struct sockaddr *)&sa, sizeof(sa)) == 0)
+        {
+            t_deadline(sock);
+            return child;
+        }
+        if (sock >= 0)
+            close(sock);
+        sock = -1;
+    }
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+    return -1;
+}
+
+/* Does the file LOG contain WHAT? A --verbose log runs to megabytes. */
+static int log_has(const char *log, const char *what)
+{
+    FILE *f = fopen(log, "rb");
+    char *buf = NULL;
+    long n = 0;
+    int found = 0;
+
+    if (f && fseek(f, 0, SEEK_END) == 0 && (n = ftell(f)) >= 0
+     && fseek(f, 0, SEEK_SET) == 0 && (buf = (char *)malloc((size_t)n + 1)))
+    {
+        n = (long)fread(buf, 1, (size_t)n, f);
+        buf[n] = '\0';
+        found = strstr(buf, what) != NULL;
+    }
+    if (f)
+        fclose(f);
+    free(buf);
+    return found;
+}
+
+/*
+ * --fsync-on-close puts the flush back on every close of a written file,
+ * and only then. The helper's --verbose log says when it flushes, so a
+ * run with the option must log it and a run without must not.
+ */
+static void test_fsync_option(void)
+{
+    static const char *const modes[2] = { "--fsync-on-close", NULL };
+    int saved = sock, m;
+
+    for (m = 0; m < 2; m++)
+    {
+        char log[400], path[400], back[16];
+        pid_t child;
+        int fh;
+        FILE *f;
+
+        snprintf(log, sizeof(log), "%s/fsync-%d.log", tmproot, m);
+        child = helper_extra(m ? "sock4" : "sock3", modes[m], log, NULL);
+        check(child > 0, "a helper %s did not start",
+              modes[m] ? modes[m] : "without --fsync-on-close");
+        if (child <= 0)
+            continue;
+        check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+              == HOSTFS_E_OK, "HELLO (fsync option %d)", m);
+        check(rpc_path(HOSTFS_OP_CREATE, 0, "synced.txt") == HOSTFS_E_OK,
+              "CREATE (fsync option %d)", m);
+        fh = (int)reply_a;
+        check(rpc(HOSTFS_OP_WRITE, fh, 0, 0, "flushed", 7) == HOSTFS_E_OK
+              && reply_a == 7, "WRITE (fsync option %d)", m);
+        check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "CLOSE (fsync option %d)", m);
+        /* The CLOSE reply follows the log line, so it is there now. */
+        check(log_has(log, "fsync on close") == !m,
+              m ? "a close was flushed without --fsync-on-close"
+                : "--fsync-on-close did not flush the close");
+        host_path(path, sizeof(path), "synced.txt");
+        f = fopen(path, "rb");
+        check(f && fread(back, 1, sizeof(back), f) == 7
+              && !memcmp(back, "flushed", 7),
+              "a file closed with fsync option %d is not intact", m);
+        if (f)
+            fclose(f);
+        t_disconnect();
+        check(waitpid(child, NULL, 0) == child,
+              "the helper with fsync option %d did not exit with --once", m);
+    }
+    sock = saved;
+}
+
+/* ------------------------------------------------------------------ */
+/* SYNC                                                                */
+
+static double now_ms(void)
+{
+    struct timespec t;
+
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+/* Replies may now wait for a disk: give them longer than t_deadline(). */
+static void t_patient(void)
+{
+    struct timeval tv;
+
+    tv.tv_sec = 60;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+/* CREATE NAME holding TEXT; CLOSE it unless KEEP. Returns the handle. */
+static int put_file(const char *name, const char *text, int keep)
+{
+    int fh;
+
+    if (rpc_path(HOSTFS_OP_CREATE, 0, name) != HOSTFS_E_OK)
+    {
+        check(0, "CREATE %s", name);
+        return -1;
+    }
+    fh = (int)reply_a;
+    check(rpc(HOSTFS_OP_WRITE, fh, 0, 0, text, (unsigned)strlen(text))
+          == HOSTFS_E_OK && reply_a == strlen(text), "WRITE %s", name);
+    if (!keep)
+        check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "CLOSE %s", name);
+    return fh;
+}
+
+static int rename_path(const char *from, const char *to)
+{
+    char both[600];
+    size_t nf = strlen(from), nt = strlen(to);
+
+    memcpy(both, from, nf);
+    both[nf] = '\0';
+    memcpy(both + nf + 1, to, nt);
+    return rpc(HOSTFS_OP_RENAME, 0, 0, 0, both, (unsigned)(nf + 1 + nt));
+}
+
+/* N closed files in folder DIR (made here); FH, if not negative, is a
+ * file already open and written that is closed last. */
+static void many_files(const char *dir, int n)
+{
+    char name[64];
+    int i, ok = 1;
+
+    check(rpc_path(HOSTFS_OP_MKDIR, 0, dir) == HOSTFS_E_OK, "MKDIR %s", dir);
+    for (i = 0; i < n && ok; i++)
+    {
+        snprintf(name, sizeof(name), "%s/f%05d.txt", dir, i);
+        if (rpc_path(HOSTFS_OP_CREATE, 0, name) != HOSTFS_E_OK)
+            ok = 0;
+        else
+        {
+            int fh = (int)reply_a;
+            ok = rpc(HOSTFS_OP_WRITE, fh, 0, 0, name, (unsigned)strlen(name))
+                 == HOSTFS_E_OK
+              && rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK;
+        }
+    }
+    check(ok, "writing %d files into %s failed at %d", n, dir, i);
+}
+
+/* How many lines in the first UPTO bytes of the file LOG (all of it if
+ * UPTO is negative) contain WHAT; 0 if there is no such file. */
+static int log_count_upto(const char *log, const char *what, long upto)
+{
+    FILE *f = fopen(log, "rb");
+    char line[8192];
+    int n = 0;
+
+    if (!f)
+        return 0;
+    while ((upto < 0 || ftell(f) < upto) && fgets(line, sizeof(line), f))
+        if (strstr(line, what))
+            n++;
+    fclose(f);
+    return n;
+}
+
+static int log_count(const char *log, const char *what)
+{
+    return log_count_upto(log, what, -1);
+}
+
+/* Empty the file LOG, making it if need be: 1, or 0 if that failed. */
+static int log_clear(const char *log)
+{
+    FILE *f = fopen(log, "w");
+
+    if (!f)
+        return 0;
+    fclose(f);
+    return 1;
+}
+
+/* The size of the file LOG now: where it ends at a given moment. */
+static long log_size(const char *log)
+{
+    struct stat st;
+
+    return stat(log, &st) == 0 ? (long)st.st_size : 0;
+}
+
+/* Wait up to MS for LOG to contain WHAT, sending nothing meanwhile. */
+static int log_waits_for(const char *log, const char *what, int ms)
+{
+    double end = now_ms() + ms;
+
+    while (!log_has(log, what))
+    {
+        if (now_ms() > end)
+            return 0;
+        usleep(20000);
+    }
+    return 1;
+}
+
+/* The helper's resident memory, in kB. */
+static long rss_kb(pid_t pid)
+{
+    char path[64], line[256];
+    long kb = -1;
+    FILE *f;
+
+    snprintf(path, sizeof(path), "/proc/%d/status", (int)pid);
+    f = fopen(path, "r");
+    if (!f)
+        return -1;
+    while (fgets(line, sizeof(line), f))
+        if (!strncmp(line, "VmRSS:", 6))
+            kb = atol(line + 6);
+    fclose(f);
+    return kb;
+}
+
+static void shim_env(const char *ms, const char *fail, const char *log)
+{
+    if (ms) setenv("SLOWSYNC_MS", ms, 1); else unsetenv("SLOWSYNC_MS");
+    if (fail) setenv("SLOWSYNC_FAIL", fail, 1); else unsetenv("SLOWSYNC_FAIL");
+    if (log) setenv("SLOWSYNC_LOG", log, 1); else unsetenv("SLOWSYNC_LOG");
+    unsetenv("SLOWSYNC_FULL");
+    unsetenv("SLOWSYNC_QUOTA");
+    unsetenv("SLOWSYNC_ONCE");
+}
+
+/* Was the helper built with a sanitizer? Its allocator then takes
+ * malloc() from under nomem.so. */
+static int helper_sanitized(void)
+{
+    FILE *f = fopen("../../tools/hostfsd/shinogi-hostfsd", "rb");
+    static char buf[1 << 16];
+    size_t n, keep = 0;
+    int found = 0;
+
+    if (!f)
+        return 0;
+    while (!found && (n = fread(buf + keep, 1, sizeof(buf) - 1 - keep, f)) > 0)
+    {
+        size_t i, len = keep + n;
+
+        for (i = 0; i + 11 <= len && !found; i++)
+            found = !memcmp(buf + i, "__asan_init", 11)
+                 || !memcmp(buf + i, "__tsan_init", 11);
+        keep = len < 10 ? len : 10;     /* a name split across reads */
+        memmove(buf, buf + len - keep, keep);
+    }
+    fclose(f);
+    return found;
+}
+
+/* Wait for a helper of ours to exit; kill it if it will not. */
+static int helper_done(pid_t child, const char *what)
+{
+    int i;
+
+    t_disconnect();
+    for (i = 0; i < 3000; i++)
+    {
+        if (waitpid(child, NULL, WNOHANG) == child)
+            return 1;
+        usleep(10000);
+    }
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+    check(0, "%s did not exit, and was killed", what);
+    return 0;
+}
+
+/*
+ * The helper's --verbose log names each flush, and the slowsync.so shim
+ * (Linux) logs each fsync() and syncfs() the C library really made.
+ */
+static void test_sync(void)
+{
+    int saved = sock, fh;
+    char log[400], shimlog[400], p[512], q[512];
+    pid_t child;
+    char shim[PATH_MAX];
+    int have_shim = realpath("slowsync.so", shim) != NULL;
+
+    /* Offered, and refused when malformed -- with the channel in step. */
+    check(rpc(HOSTFS_OP_CAPS, 0, 0, 0, NULL, 0) == HOSTFS_E_OK
+          && (reply_a & HOSTFS_CAP_SYNC), "CAPS does not offer SYNC");
+    check(rpc(HOSTFS_OP_SYNC, 2, 0, 0, NULL, 0) == HOSTFS_EDRIVE,
+          "SYNC with a = 2 was accepted");
+    check(rpc(HOSTFS_OP_SYNC, 0xffffffffUL, 0, 0, NULL, 0) == HOSTFS_EDRIVE,
+          "SYNC with a = 0xffffffff was accepted");
+    check(rpc(HOSTFS_OP_SYNC, 0, 1, 0, NULL, 0) == HOSTFS_EDRIVE,
+          "SYNC with b = 1 was accepted");
+    check(rpc(HOSTFS_OP_SYNC, 1, 0, 1, NULL, 0) == HOSTFS_EDRIVE,
+          "SYNC with c = 1 was accepted");
+    check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, "x", 1) == HOSTFS_EDRIVE,
+          "SYNC with data was accepted");
+    check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+          "SYNC with a = 1 and nothing to flush");
+    check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+          "SYNC with a = 0 and nothing to flush");
+    check(rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") == HOSTFS_E_OK,
+          "the channel is out of step after refused SYNCs");
+    shim_env(NULL, NULL, NULL);
+
+    /* ---- With --sync-fs (syncfs() on Linux, file by file elsewhere):
+     * a = 1 after writes, the set filling up, and the end of the
+     * session. */
+    snprintf(log, sizeof(log), "%s/sync-fs.log", tmproot);
+    child = helper_extra("sock5", "--sync-fs", log, NULL);
+    check(child > 0, "a helper for the SYNC tests did not start");
+    if (child > 0)
+    {
+        t_patient();
+        check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+              == HOSTFS_E_OK, "HELLO (sync)");
+        put_file("s1.txt", "one", 0);
+        put_file("s2.txt", "two", 0);
+        fh = put_file("s3.txt", "three", 1);
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after writes");
+#ifdef __linux__
+        check(log_has(log, "sync: 2 listed and 1 open file(s) by syncfs, 0 failed"),
+              "SYNC a = 1 did not flush two closed files and an open one");
+#endif
+        /* A file written before the set filled and closed after it is
+         * flushed at its close, not lost track of (16384 listed). */
+        check(rpc(HOSTFS_OP_WRITE, fh, 5, 0, "more", 4) == HOSTFS_E_OK,
+              "WRITE s3.txt again");
+        many_files("over1", 16384);
+        check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "CLOSE s3.txt");
+        check(log_has(log, "hostfsd: sync: s3.txt, the list is full, flushed at close"),
+              "the close that found the set full did not flush its file");
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 with a full set");
+        put_file("s4.txt", "four", 0);
+        fh = put_file("s5.txt", "five", 1);
+        if (helper_done(child, "the SYNC helper"))
+#ifdef __linux__
+            check(log_has(log, "sync: 1 listed and 1 open file(s) by syncfs, 0 failed"),
+                  "the end of the session did not flush what was left");
+#else
+            ;
+#endif
+    }
+
+    /* ---- The default: file by file. The shim (no delay) logs what is
+     * really flushed. */
+    snprintf(log, sizeof(log), "%s/sync-per-file.log", tmproot);
+    snprintf(shimlog, sizeof(shimlog), "%s/sync-per-file.fsync", tmproot);
+    shim_env("0", NULL, shimlog);
+    child = helper_extra("sock6", NULL, log, have_shim ? shim : NULL);
+    check(child > 0, "a helper for the file-by-file tests did not start");
+    if (child > 0)
+    {
+        t_patient();
+        check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+              == HOSTFS_E_OK, "HELLO (per file)");
+
+        /* A rename, a folder rename and a delete before the SYNC. */
+        put_file("ren-a.txt", "renamed", 0);
+        check(rename_path("ren-a.txt", "ren-b.txt") == HOSTFS_E_OK, "RENAME file");
+        check(rpc_path(HOSTFS_OP_MKDIR, 0, "rdir") == HOSTFS_E_OK, "MKDIR rdir");
+        put_file("rdir/in.txt", "inside", 0);
+        check(rename_path("rdir", "rdir2") == HOSTFS_E_OK, "RENAME folder");
+        put_file("gone.txt", "deleted", 0);
+        check(rpc_path(HOSTFS_OP_DELETE, 0, "gone.txt") == HOSTFS_E_OK, "DELETE");
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after a rename and a delete");
+        check(log_has(log, "hostfsd: sync: ren-b.txt\n")
+              && !log_has(log, "hostfsd: sync: ren-a.txt"),
+              "the flush did not follow a renamed file");
+        check(log_has(log, "hostfsd: sync: rdir2/in.txt\n")
+              && !log_has(log, "hostfsd: sync: rdir/in.txt"),
+              "the flush did not follow a file in a renamed folder");
+        check(!log_has(log, "sync: gone.txt"),
+              "a deleted file was still in the set");
+        check(log_has(log, "sync: 2 listed and 0 open file(s) file by file, 0 failed"),
+              "the rename batch was not flushed cleanly");
+
+        /* Read-only: written then made read-only; created read-only; made
+         * read-only while open and written (as cp -p does with fchmod),
+         * then written again. Windows could not reopen any of these for
+         * writing, so there each is flushed while it still can be -- the
+         * Wine smoke run checks that. POSIX reopens a read-only file for
+         * a flush without trouble, so here none of them is flushed in
+         * place: SETATTR and CLOSE make no fsync, and the next a = 1
+         * flushes all three. */
+        put_file("ro-after.txt", "then read-only", 0);
+        check(rpc_path(HOSTFS_OP_SETATTR, HOSTFS_FA_RO, "ro-after.txt")
+              == HOSTFS_E_OK, "SETATTR read-only");
+        check(rpc_path(HOSTFS_OP_CREATE, HOSTFS_FA_RO, "ro-created.txt")
+              == HOSTFS_E_OK, "CREATE read-only");
+        fh = (int)reply_a;
+        check(rpc(HOSTFS_OP_WRITE, fh, 0, 0, "born read-only", 14) == HOSTFS_E_OK
+              && rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "WRITE and CLOSE a file created read-only");
+        fh = put_file("ro-open.txt", "open, then read-only", 1);
+        check(rpc_path(HOSTFS_OP_SETATTR, HOSTFS_FA_RO, "ro-open.txt")
+              == HOSTFS_E_OK, "SETATTR read-only on an open file");
+        check(rpc(HOSTFS_OP_WRITE, fh, 20, 0, " and more", 9) == HOSTFS_E_OK
+              && rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "WRITE and CLOSE the open read-only file");
+        check(!log_has(log, "before it is made read-only")
+              && !log_has(log, "read-only, flushed at close"),
+              "a read-only file was flushed in place on POSIX");
+        if (have_shim)
+            check(!log_has(shimlog, "/ro-"),
+                  "SETATTR or CLOSE of a read-only file made an fsync on POSIX");
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after the read-only files");
+        check(log_has(log, "hostfsd: sync: ro-after.txt\n")
+              && log_has(log, "hostfsd: sync: ro-created.txt\n")
+              && log_has(log, "hostfsd: sync: ro-open.txt\n"),
+              "SYNC a = 1 did not flush the read-only files");
+        if (have_shim)
+            check(log_has(shimlog, "/ro-after.txt\n")
+                  && log_has(shimlog, "/ro-created.txt\n")
+                  && log_has(shimlog, "/ro-open.txt\n"),
+                  "SYNC a = 1 made no fsync of the read-only files");
+
+        /* A failure is reported by every a = 1 until it is resolved, and
+         * retried by posted rounds -- but logged once, not every time. */
+        if (getuid() != 0)      /* root opens anything */
+        {
+            int i;
+
+            put_file("locked.txt", "cannot reopen", 0);
+            host_path(p, sizeof(p), "locked.txt");
+            if (chmod(p, 0) != 0)
+                die("chmod locked.txt");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO
+                  && reply_len == 12,
+                  "a file that could not be flushed did not give EIO, "
+                  "header only");
+            for (i = 0; i < 3; i++)
+            {
+                check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                      "SYNC a = 0 with a failing file listed");
+                usleep(200000);         /* idle: the posted round retries */
+            }
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "a failed file was reported once and then forgotten");
+            check(log_count(log, "hostfsd: could not flush locked.txt") == 1,
+                  "a file that kept failing was logged %d times, not once",
+                  log_count(log, "hostfsd: could not flush locked.txt"));
+            check(log_count(log, "hostfsd: sync: locked.txt still cannot be "
+                                 "flushed") == 4,
+                  "%d retries of the failing file were noted, not 3 posted "
+                  "and 1 waited", log_count(log, "hostfsd: sync: locked.txt "
+                                            "still cannot be flushed"));
+            chmod(p, 0644);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "a file that flushes on retry still failed");
+            check(log_has(log, "hostfsd: sync: locked.txt\n"),
+                  "the retried file was not flushed");
+        }
+
+        /* Renamed onto a listed name: the file it replaced is gone, and
+         * one entry is left, flushed once. */
+        put_file("dup-a.txt", "moves", 0);
+        put_file("dup-b.txt", "is replaced", 0);
+        check(rename_path("dup-a.txt", "dup-b.txt") == HOSTFS_E_OK,
+              "RENAME onto a listed name");
+        if (have_shim && !log_clear(shimlog))
+            die("empty the shim log");
+        {
+            static const char one[] = "hostfsd: sync: 1 listed and 0 open "
+                                      "file(s) file by file, 0 failed\n";
+            static const char two[] = "hostfsd: sync: 2 listed and 0 open "
+                                      "file(s) file by file";
+            int ones = log_count(log, one), twos = log_count(log, two);
+
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 1 after a rename onto a listed name");
+            check(log_count(log, one) == ones + 1 && log_count(log, two) == twos,
+                  "a rename onto a listed name left two entries");
+        }
+        if (have_shim)
+            check(log_count(shimlog, "/dup-b.txt") == 1
+                  && !log_has(shimlog, "/dup-a.txt"),
+                  "the file renamed onto a listed name was flushed %d times",
+                  log_count(shimlog, "/dup-b.txt"));
+
+        /* A file written before a thousand others and closed after them
+         * is flushed by the next a = 1. */
+        fh = put_file("early.txt", "written first", 1);
+        sleep(3);
+        many_files("over2", 1100);
+        check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "CLOSE early.txt");
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after 1100 closes");
+        check(log_has(log, "hostfsd: sync: early.txt\n"),
+              "a file written before 1100 others and closed after was not flushed");
+
+        /* A HELLO on a live connection closes the open files as CLOSE
+         * does: listed, not flushed; the next a = 1 flushes them. */
+        fh = put_file("hello-open.txt", "open at HELLO", 1);
+        check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+              == HOSTFS_E_OK, "HELLO with a written file open");
+        check(log_has(log, "hostfsd: hello: 1 written file(s) still open, "
+                           "closed as CLOSE does")
+              && !log_has(log, "hostfsd: sync: hello-open.txt"),
+              "HELLO did not close the open file as CLOSE does");
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after HELLO");
+        check(log_has(log, "hostfsd: sync: hello-open.txt\n"),
+              "a file left open at HELLO was not flushed by the next a = 1");
+
+        /* A listed name that is now a folder, a pipe or a link: dropped,
+         * without an error and without opening it. */
+        put_file("nowdir.txt", "replaced by a folder", 0);
+        host_path(p, sizeof(p), "nowdir.txt");
+        if (unlink(p) != 0 || mkdir(p, 0777) != 0)
+            die("nowdir.txt");
+        /* The host replaces listed files with a pipe, a link inside the
+         * folder and a link out of it. (A RENAME by the guest onto a
+         * listed name drops that entry: the file it named is gone.) */
+        put_file("x.txt", "replaced by a pipe", 0);
+        host_path(p, sizeof(p), "x.txt");
+        if (unlink(p) != 0 || mkfifo(p, 0666) != 0)
+            die("mkfifo x.txt");
+        put_file("y.txt", "replaced by a link", 0);
+        host_path(p, sizeof(p), "y.txt");
+        host_path(q, sizeof(q), "hello.txt");
+        if (unlink(p) != 0 || symlink(q, p) != 0)
+            die("symlink y.txt");
+        put_file("z.txt", "replaced by a link out", 0);
+        host_path(p, sizeof(p), "z.txt");
+        snprintf(q, sizeof(q), "%s/outside.txt", tmproot);
+        if (unlink(p) != 0 || symlink(q, p) != 0)
+            die("symlink z.txt");
+        {
+            struct timeval tv = { 10, 0 };      /* a hang must fail, not wait */
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        }
+        if (rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) != HOSTFS_E_OK)
+        {
+            /* Blocked opening the pipe, most likely: nothing more can be
+             * asked of this helper. */
+            check(0, "SYNC a = 1 over names that are no longer files");
+            kill(child, SIGKILL);
+            waitpid(child, NULL, 0);
+            child = -1;
+            sock = -1;
+            goto per_file_done;
+        }
+        check(log_has(log, "hostfsd: sync: nowdir.txt is no longer a file")
+              && log_has(log, "hostfsd: sync: x.txt is no longer a file")
+              && log_has(log, "hostfsd: sync: y.txt is no longer a file")
+              && log_has(log, "hostfsd: sync: z.txt is no longer a file"),
+              "a name that is no longer a file was not dropped");
+        t_patient();
+
+        fh = put_file("open-at-end.txt", "still open", 1);
+        if (helper_done(child, "the file-by-file helper"))
+            check(log_has(log, "sync: 0 listed and 1 open file(s) file by file, "
+                               "0 failed"),
+                  "the end of the session left an open file");
+    }
+per_file_done:
+
+#ifdef __linux__
+    if (!have_shim)
+        check(0, "slowsync.so is missing (make builds it)");
+    else
+    {
+        /* ---- Posted, with every flush a second long: a = 0 answers at
+         * once; nothing is flushed while requests keep coming; once the
+         * drive is idle the work drains, and a request that arrives then
+         * waits at most the one flush in progress. */
+        snprintf(log, sizeof(log), "%s/sync-posted.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-posted.fsync", tmproot);
+        shim_env("1000", NULL, shimlog);
+        child = helper_extra("sock7", NULL, log, shim);
+        check(child > 0, "a slow-flush helper did not start");
+        if (child > 0)
+        {
+            double t0, t1;
+
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (posted)");
+            put_file("p1.txt", "one", 0);
+            put_file("p2.txt", "two", 0);
+            put_file("p3.txt", "three", 0);
+            t0 = now_ms();
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK, "SYNC a = 0");
+            t1 = now_ms();
+            check(t1 - t0 < 1000, "SYNC a = 0 took %.0f ms to answer", t1 - t0);
+            check(rpc_path(HOSTFS_OP_CREATE, 0, "behind.txt") == HOSTFS_E_OK,
+                  "CREATE behind a posted SYNC");
+            check(now_ms() - t1 < 1000, "a CREATE right behind a posted SYNC "
+                  "waited %.0f ms: a flush started before the drive was idle",
+                  now_ms() - t1);
+            fh = (int)reply_a;
+            check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE behind.txt");
+            check(log_count(shimlog, "fsync ") == 0,
+                  "%d files were flushed while requests kept coming",
+                  log_count(shimlog, "fsync "));
+            /* Idle: the work drains; a request now waits for the one
+             * flush in progress at most. */
+            usleep(200000);
+            t1 = now_ms();
+            check(rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") == HOSTFS_E_OK,
+                  "STAT while the posted work drains");
+            check(now_ms() - t1 < 2000, "a STAT while three posted 1 s flushes "
+                  "drained waited %.0f ms -- more than the one in progress",
+                  now_ms() - t1);
+            check(log_count(shimlog, "fsync ") >= 1 && log_count(shimlog, "fsync ") <= 2,
+                  "%d files flushed when a request arrived during the drain",
+                  log_count(shimlog, "fsync "));
+            check(log_waits_for(shimlog, "/p3.txt", 15000),
+                  "the posted work was not finished while the guest was idle");
+
+            /* Renamed while it is being flushed (a save through a temporary
+             * file): no flush of a stale name. Nothing else is pending, so
+             * the posted work starts on save.tmp at once. */
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 1 before the save");
+            put_file("save.tmp", "atomic save", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK, "SYNC a = 0 (save)");
+            usleep(200000);                 /* idle: save.tmp's flush begins */
+            check(rename_path("save.tmp", "save.txt") == HOSTFS_E_OK,
+                  "RENAME during a posted flush");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 1 after the rename");
+            check(!log_has(log, "could not flush"), "a flush failed around a rename");
+
+            /* Open and written at a = 0, and closed while posted work ahead
+             * of it is still being flushed: still flushed, while idle, with
+             * no further SYNC. */
+            put_file("slow.txt", "ahead of it", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK, "SYNC a = 0 (slow)");
+            fh = put_file("xopen.txt", "open at the post", 1);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK, "SYNC a = 0 (x)");
+            check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE xopen.txt");
+            check(log_waits_for(shimlog, "/xopen.txt", 15000),
+                  "a file closed after a posted SYNC was not flushed by it");
+
+            /* Written between a = 0 and a = 1: covered by the a = 1. */
+            put_file("w1.txt", "before", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK, "SYNC a = 0 (w)");
+            put_file("w2.txt", "between", 0);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK, "SYNC a = 1 (w)");
+            /* w1 by the posted work or by the a = 1, w2 by the a = 1. */
+            check(log_has(shimlog, "/w1.txt") && log_has(shimlog, "/w2.txt"),
+                  "SYNC a = 1 did not cover writes before and after an a = 0");
+            helper_done(child, "the slow-flush helper");
+        }
+
+        /* ---- Traffic that never pauses: posted work flushes nothing for
+         * 5 s, then one file per 100 ms of traffic, and drains once the
+         * drive is idle. The rule rests on the client never pausing for
+         * 20 ms; if this one does (a loaded host), the exact counts are
+         * not checked, only progress. */
+        snprintf(log, sizeof(log), "%s/sync-busy.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-busy.fsync", tmproot);
+        shim_env("0", NULL, shimlog);
+        child = helper_extra("sock11", NULL, log, shim);
+        check(child > 0, "a helper for the busy test did not start");
+        if (child > 0)
+        {
+            double t0, last, gap = 0, now;
+            int early, forced, flushed;
+
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (busy)");
+            many_files("busy", 200);
+            t0 = last = now_ms();
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (busy)");
+            /* `gap`: the longest the helper could have seen no request --
+             * a whole round trip, plus the time between two of them. */
+            while ((now = now_ms()) - t0 < 4000)
+            {
+                if (rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") != HOSTFS_E_OK)
+                    break;
+                if (now_ms() - last > gap)
+                    gap = now_ms() - last;
+                last = now_ms();
+            }
+            early = log_count(shimlog, "fsync ");
+            while ((now = now_ms()) - t0 < 7000)
+            {
+                if (rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") != HOSTFS_E_OK)
+                    break;
+                if (now_ms() - last > gap)
+                    gap = now_ms() - last;
+                last = now_ms();
+            }
+            /* The flushes first, while the drive cannot yet have been idle
+             * for 20 ms: the idle drain starts soon after the traffic stops,
+             * and reading the long --verbose log takes a while. A starved
+             * step is logged before its flush, so the later count may be
+             * one ahead. */
+            flushed = log_count(shimlog, "fsync ");
+            forced = log_count(log, "hostfsd: sync: busy for 5000 ms, one file");
+            printf("busy test: longest round trip and pause %.1f ms; flushes "
+                   "%d in the first 4 s, %d by 7 s, %d of them for starvation\n",
+                   gap, early, flushed, forced);
+            if (gap < 15)
+            {
+                check(early == 0, "%d files were flushed in 4 s of unbroken "
+                      "traffic after a = 0", early);
+                check(forced >= 5 && forced <= 23, "%d starved flushes in the "
+                      "2 s past the 5 s bound: not one per 100 ms", forced);
+                check(flushed <= forced && forced <= flushed + 1,
+                      "%d flushes, but %d for starvation", flushed, forced);
+            }
+            else
+                check(forced >= 1 || flushed >= 1,
+                      "no progress on posted work in 7 s of traffic");
+            check(log_waits_for(shimlog, "/busy/f00199.txt", 15000),
+                  "the posted work did not drain once the drive was idle");
+            helper_done(child, "the busy helper");
+        }
+
+        /* ---- The same with slow flushes, 300 ms each, as on a USB stick
+         * or a network share: past the 5 s bound a request still waits at
+         * most for the one flush in progress, because 100 ms of traffic
+         * is served between two flushes however long each takes. */
+        snprintf(log, sizeof(log), "%s/sync-starve.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-starve.fsync", tmproot);
+        shim_env("300", NULL, shimlog);
+        child = helper_extra("sock12", NULL, log, shim);
+        check(child > 0, "a helper for the slow starvation test did not start");
+        if (child > 0)
+        {
+            double t0, t, last, worst = 0, at = 0, pause = 0;
+            int forced, idle, n = 0;
+            long end;
+
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (slow starvation)");
+            many_files("starve", 12);
+            t0 = last = now_ms();
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (slow starvation)");
+            while ((t = now_ms()) - t0 < 7500)
+            {
+                if (t - last > pause)
+                    pause = t - last;   /* the client's own pause */
+                if (rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") != HOSTFS_E_OK)
+                    break;
+                last = now_ms();
+                n++;
+                if (last - t > worst)
+                {
+                    worst = last - t;
+                    at = last - t0;
+                }
+            }
+            /* Where the log stood when the traffic stopped: the helper goes
+             * idle 20 ms later, and reading the log takes longer. */
+            end = log_size(log);
+            forced = log_count_upto(log, "hostfsd: sync: busy for 5000 ms, "
+                                    "one file", end);
+            idle = log_count_upto(log, "hostfsd: sync: idle, flushing", end);
+            printf("slow starvation test: %d requests, longest round trip "
+                   "%.0f ms at %.1f s, client pause up to %.1f ms, %d starved "
+                   "flushes of 300 ms, %d idle windows\n", n, worst, at / 1000,
+                   pause, forced, idle);
+            check(worst < 300 + 200, "a request waited %.0f ms behind 300 ms "
+                  "flushes: more than the one in progress", worst);
+            /* Three or more unless the helper saw the client pause for
+             * 20 ms (on a loaded host): an idle window restarts the 5 s
+             * clock. Some progress either way. */
+            if (!idle)
+                check(forced >= 3, "only %d starved flushes in the 2.5 s past "
+                      "the 5 s bound", forced);
+            else
+                check(log_count(shimlog, "fsync ") >= 1,
+                      "no progress on posted work in 7.5 s of traffic");
+            helper_done(child, "the slow starvation helper");
+        }
+
+        /* ---- A HELLO is not held up by a slow flush: with every flush a
+         * second long, it answers at once and flushes nothing; the file
+         * is flushed by the next a = 1, or else at the end of the
+         * session. */
+        snprintf(log, sizeof(log), "%s/sync-hello.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-hello.fsync", tmproot);
+        shim_env("1000", NULL, shimlog);
+        child = helper_extra("sock10", NULL, log, shim);
+        check(child > 0, "a slow-flush helper for HELLO did not start");
+        if (child > 0)
+        {
+            double t0;
+
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (slow)");
+            put_file("hello-a.txt", "open at the first HELLO", 1);
+            t0 = now_ms();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO with a written file open (slow)");
+            check(now_ms() - t0 < 1000, "a HELLO with a written file open took "
+                  "%.0f ms: it flushed", now_ms() - t0);
+            check(!log_has(shimlog, "/hello-a.txt"), "HELLO flushed hello-a.txt");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 1 after the slow HELLO");
+            check(log_has(shimlog, "/hello-a.txt"),
+                  "the next a = 1 did not flush the file left open at HELLO");
+            put_file("hello-b.txt", "open at the second HELLO", 1);
+            t0 = now_ms();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "a second HELLO with a written file open");
+            check(now_ms() - t0 < 1000, "the second HELLO took %.0f ms",
+                  now_ms() - t0);
+            check(!log_has(shimlog, "/hello-b.txt"), "HELLO flushed hello-b.txt");
+            if (helper_done(child, "the slow HELLO helper"))
+                check(log_has(shimlog, "/hello-b.txt"),
+                      "the end of the session did not flush the file left at HELLO");
+        }
+
+        /* ---- Failures: an open file left at a HELLO that will not flush
+         * is not forgotten; every a = 1 reports it until it is deleted.
+         * A full disk is reported as ENOSPC, anything else as EIO. */
+        snprintf(log, sizeof(log), "%s/sync-fail.log", tmproot);
+        shim_env("0", "/fail-", NULL);
+        setenv("SLOWSYNC_FULL", "/full-", 1);
+        setenv("SLOWSYNC_QUOTA", "/quota-", 1);
+        child = helper_extra("sock9", NULL, log, shim);
+        check(child > 0, "a failing-flush helper did not start");
+        if (child > 0)
+        {
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (fail)");
+            put_file("fail-open.txt", "will not flush", 1);
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO with an unflushable file open");
+            check(log_has(log, "hostfsd: hello: 1 written file(s) still open, "
+                               "closed as CLOSE does"),
+                  "HELLO did not list the open file");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "the file HELLO could not flush was forgotten");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "a failure was reported only once");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "fail-open.txt") == HOSTFS_E_OK,
+                  "DELETE the unflushable file");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "a deleted file still failed SYNC");
+
+            /* ENOSPC and EDQUOT are a full disk; with an I/O error
+             * pending as well, the full disk is what the guest hears. */
+            put_file("full-a.txt", "no room", 0);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_ENOSPC
+                  && reply_len == 12,
+                  "a flush that found the disk full did not give ENOSPC, "
+                  "header only");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "full-a.txt") == HOSTFS_E_OK,
+                  "DELETE full-a.txt");
+            fh = put_file("quota-a.txt", "over quota", 1);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_ENOSPC,
+                  "a flush over quota did not give ENOSPC");
+            check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && rpc_path(HOSTFS_OP_DELETE, 0, "quota-a.txt") == HOSTFS_E_OK,
+                  "CLOSE and DELETE quota-a.txt");
+            put_file("fail-b.txt", "I/O error", 0);
+            put_file("full-b.txt", "no room", 0);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_ENOSPC,
+                  "with a full disk and an I/O error, SYNC did not give ENOSPC");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "full-b.txt") == HOSTFS_E_OK,
+                  "DELETE full-b.txt");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "the I/O error left alone did not give EIO");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "fail-b.txt") == HOSTFS_E_OK
+                  && rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC after the failing files were deleted");
+            helper_done(child, "the failing-flush helper");
+        }
+
+        /* ---- A failure met before the a = 1 is reported by it. The shim
+         * fails the first fsync of each once-* file and lets every later
+         * one pass, as Linux does with a failed writeback: the retry by
+         * a = 1 succeeds with nothing written, so only a count of the
+         * earlier failure can tell the guest. */
+        snprintf(log, sizeof(log), "%s/sync-once.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-once.fsync", tmproot);
+        shim_env("0", NULL, shimlog);
+        setenv("SLOWSYNC_ONCE", "/once-", 1);
+        child = helper_extra("sock13", NULL, log, shim);
+        check(child > 0, "a helper for failures before a = 1 did not start");
+        if (child > 0)
+        {
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (once)");
+            /* Listed, and failed by posted work. */
+            put_file("once-closed.txt", "fails in posted work", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, closed)");
+            check(log_waits_for(log, "could not flush once-closed.txt", 5000),
+                  "posted work did not try once-closed.txt while idle");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO
+                  && reply_len == 12,
+                  "a listed file that failed in posted work was not reported "
+                  "by the next a = 1");
+            check(log_has(log, ", failed 0, and 1 failure(s) since the last "
+                               "a=1\n"),
+                  "the a = 1 did not log the earlier failure");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "an earlier failure was reported twice");
+            /* Open, and failed by posted work. */
+            fh = put_file("once-open.txt", "fails while open", 1);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, open)");
+            check(log_waits_for(log, "could not flush once-open.txt", 5000),
+                  "posted work did not try once-open.txt while idle");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "an open file that failed in posted work was not reported "
+                  "by the next a = 1");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "an earlier failure of an open file was reported twice");
+            check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "CLOSE once-open.txt");
+            /* The control: a failure that a = 1 meets itself. */
+            put_file("once-wait.txt", "fails in a = 1", 0);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "a failure a = 1 met itself was not reported");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "a = 1 after its own failure was retried");
+            /* A HELLO is a new boot: a failure the last boot's a = 1 never
+             * reported is dropped, with a log line, and the new boot's
+             * first a = 1 answers for its own session only. */
+            put_file("once-hello.txt", "fails, then the guest reboots", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, hello)");
+            check(log_waits_for(log, "could not flush once-hello.txt", 5000),
+                  "posted work did not try once-hello.txt while idle");
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO after an unreported failure");
+            check(log_has(log, "hostfsd: dropping 1 flush failure(s) no SYNC "
+                               "a=1 reported: the guest started over\n"),
+                  "HELLO did not drop the unreported failure, with a line");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "the first a = 1 after HELLO answered for the last boot's "
+                  "failure");
+            /* The same at the end of the connection. */
+            put_file("once-end.txt", "fails, then the guest goes away", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, end)");
+            check(log_waits_for(log, "could not flush once-end.txt", 5000),
+                  "posted work did not try once-end.txt while idle");
+            if (helper_done(child, "the helper for failures before a = 1"))
+                check(log_has(log, "hostfsd: dropping 1 flush failure(s) no "
+                                   "SYNC a=1 reported: the guest went away\n"),
+                      "the end of the connection did not drop the unreported "
+                      "failure, with a line");
+        }
+
+        /* ---- The same for --fsync-on-close: its failed flush is reported
+         * by the next a = 1, and the file is listed for it. */
+        snprintf(log, sizeof(log), "%s/sync-once-close.log", tmproot);
+        shim_env("0", NULL, shimlog);
+        setenv("SLOWSYNC_ONCE", "/once-", 1);
+        child = helper_extra("sock14", "--fsync-on-close", log, shim);
+        check(child > 0, "a --fsync-on-close helper for failures did not start");
+        if (child > 0)
+        {
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (once, fsync on close)");
+            put_file("once-close.txt", "fails at its close", 0);
+            check(log_has(log, "hostfsd: fsync on close\n")
+                  && log_has(log, "could not flush once-close.txt"),
+                  "the close's flush did not fail as the shim says");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "a failed flush at CLOSE was not reported by the next a = 1");
+            check(log_has(log, "hostfsd: sync: once-close.txt\n"),
+                  "a file whose flush at CLOSE failed was not listed");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "a failed flush at CLOSE was reported twice");
+            helper_done(child, "the --fsync-on-close helper for failures");
+        }
+        shim_env(NULL, NULL, NULL);
+
+        /* ---- An open file renamed when there is no memory for its new
+         * name: its CLOSE lists the old name, which is gone, so nothing
+         * flushes it -- and the next a = 1 says so. nomem.so fails only
+         * the allocation of that one name, picked by its length. */
+        if (helper_sanitized())
+            printf("the out-of-memory rename check is skipped: the helper "
+                   "was built with a sanitizer, whose allocator nomem.so "
+                   "cannot reach\n");
+        else
+        {
+            char nomem[PATH_MAX], served[PATH_MAX], size[32];
+            char longname[256];
+
+            memset(longname, 'n', 230);
+            strcpy(longname + 230, ".txt");
+            if (!realpath("nomem.so", nomem) || !realpath(servedir, served))
+                die("realpath nomem.so");
+            snprintf(size, sizeof(size), "%lu",
+                     (unsigned long)(strlen(served) + 1 + strlen(longname) + 1));
+            setenv("NOMEM_SIZE", size, 1);
+            snprintf(log, sizeof(log), "%s/sync-nomem.log", tmproot);
+            child = helper_extra("sock15", NULL, log, nomem);
+            unsetenv("NOMEM_SIZE");
+            check(child > 0, "a helper with nomem.so did not start");
+            if (child > 0)
+            {
+                t_patient();
+                check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                      == HOSTFS_E_OK, "HELLO (nomem)");
+                fh = put_file("m4.txt", "renamed while open", 1);
+                check(rename_path("m4.txt", longname) == HOSTFS_E_OK,
+                      "RENAME an open file (nomem)");
+                check(log_has(log, "hostfsd: out of memory following m4.txt"),
+                      "a rename that could not follow an open file was not "
+                      "logged");
+                check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                      "CLOSE the renamed file (nomem)");
+                check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                      "an open file the rename could not follow was not "
+                      "reported by the next a = 1");
+                check(log_has(log, "hostfsd: sync: m4.txt is gone"),
+                      "the file was listed under a name it no longer has");
+                check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                      "the lost rename was reported twice");
+                helper_done(child, "the nomem helper");
+            }
+        }
+
+        /* ---- Names. a = 1 also flushes each folder whose entries
+         * changed -- a CREATE, a DELETE, both sides of a RENAME, a MKDIR,
+         * an RMDIR -- so that a rename, an empty file or a deletion is on
+         * the disk too, not just the data. A renamed folder's entry
+         * follows it. Past the list's 1024 folders, a = 1 makes one
+         * syncfs() as well. */
+        snprintf(log, sizeof(log), "%s/sync-names.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-names.fsync", tmproot);
+        shim_env("0", NULL, shimlog);
+        child = helper_extra("sock16", NULL, log, shim);
+        check(child > 0, "a helper for the folder flushes did not start");
+        if (child > 0)
+        {
+            char served[PATH_MAX], top[PATH_MAX + 16], d1[PATH_MAX + 16];
+            char d2[PATH_MAX + 16], d4[PATH_MAX + 16], f[PATH_MAX + 32];
+            int i, ok = 1;
+
+#define NAMES_SYNC(what) \
+            (log_clear(shimlog) \
+             && rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK) \
+            || (check(0, "SYNC a = 1 after %s", what), 0)
+
+            if (!realpath(servedir, served))
+                die("realpath served");
+            snprintf(top, sizeof(top), "fsync %s\n", served);
+            snprintf(d1, sizeof(d1), "fsync %s/nm1\n", served);
+            snprintf(d2, sizeof(d2), "fsync %s/nm2\n", served);
+            snprintf(d4, sizeof(d4), "fsync %s/nm4\n", served);
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (names)");
+            check(rpc_path(HOSTFS_OP_MKDIR, 0, "nm1") == HOSTFS_E_OK
+                  && rpc_path(HOSTFS_OP_MKDIR, 0, "nm2") == HOSTFS_E_OK,
+                  "MKDIR nm1, nm2");
+            put_file("nm1/f.txt", "moves later", 0);
+            if (NAMES_SYNC("MKDIR and CREATE"))
+            {
+                snprintf(f, sizeof(f), "fsync %s/nm1/f.txt\n", served);
+                check(log_has(shimlog, f) && log_has(shimlog, d1)
+                      && log_has(shimlog, top),
+                      "a = 1 did not flush the new file, its folder and the "
+                      "folder holding the new folders");
+            }
+            /* A rename of a file already flushed: only names changed. */
+            check(rename_path("nm1/f.txt", "nm2/g.txt") == HOSTFS_E_OK,
+                  "RENAME nm1/f.txt to nm2/g.txt");
+            if (NAMES_SYNC("a rename across folders"))
+                check(log_has(shimlog, d1) && log_has(shimlog, d2)
+                      && log_count(shimlog, "fsync ") == 2,
+                      "a = 1 after a rename did not flush both folders, and "
+                      "only them");
+            check(rpc_path(HOSTFS_OP_CREATE, 0, "nm2/empty.txt") == HOSTFS_E_OK
+                  && rpc(HOSTFS_OP_CLOSE, reply_a, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "CREATE an empty file");
+            if (NAMES_SYNC("an empty CREATE"))
+                check(log_has(shimlog, d2) && log_count(shimlog, "fsync ") == 1,
+                      "a = 1 after an empty CREATE did not flush its folder");
+            check(rpc_path(HOSTFS_OP_DELETE, 0, "nm2/g.txt") == HOSTFS_E_OK,
+                  "DELETE nm2/g.txt");
+            if (NAMES_SYNC("a DELETE"))
+                check(log_has(shimlog, d2) && log_count(shimlog, "fsync ") == 1,
+                      "a = 1 after a DELETE did not flush its folder");
+            check(rpc_path(HOSTFS_OP_RMDIR, 0, "nm1") == HOSTFS_E_OK,
+                  "RMDIR nm1");
+            if (NAMES_SYNC("an RMDIR"))
+                check(log_has(shimlog, top) && log_count(shimlog, "fsync ") == 1,
+                      "a = 1 after an RMDIR did not flush the folder above");
+            /* A listed folder renamed before the a = 1: flushed under its
+             * new name, never the old one. */
+            put_file("nm2/h.txt", "in a folder about to move", 0);
+            check(rename_path("nm2", "nm4") == HOSTFS_E_OK, "RENAME nm2 to nm4");
+            if (NAMES_SYNC("a folder rename"))
+                check(log_has(shimlog, d4) && log_has(shimlog, top)
+                      && !log_has(shimlog, d2)
+                      && log_has(log, "hostfsd: sync: folder nm4\n")
+                      && !log_has(log, "hostfsd: sync: folder nm2 is gone"),
+                      "a listed folder did not follow its rename");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && log_has(log, "hostfsd: SYNC a=1: nothing to do\n"),
+                  "a = 1 with every folder flushed still had work");
+            /* More folders than the list holds. */
+            check(rpc_path(HOSTFS_OP_MKDIR, 0, "ov") == HOSTFS_E_OK, "MKDIR ov");
+            for (i = 0; i < 1100 && ok; i++)
+            {
+                snprintf(f, sizeof(f), "ov/d%04d", i);
+                ok = rpc_path(HOSTFS_OP_MKDIR, 0, f) == HOSTFS_E_OK;
+                snprintf(f, sizeof(f), "ov/d%04d/e", i);
+                ok = ok && rpc_path(HOSTFS_OP_CREATE, 0, f) == HOSTFS_E_OK
+                        && rpc(HOSTFS_OP_CLOSE, reply_a, 0, 0, NULL, 0)
+                           == HOSTFS_E_OK;
+            }
+            check(ok, "1100 folders with a file each failed at %d", i);
+            if (NAMES_SYNC("1100 folders changed"))
+                check(log_count(shimlog, "syncfs ") == 1
+                      && log_count(shimlog, "fsync ") == 1024
+                      && log_has(log, "hostfsd: sync: more than 1024 folders "
+                                      "changed: syncfs\n"),
+                      "1100 changed folders did not give 1024 folder flushes "
+                      "and one syncfs (%d and %d)",
+                      log_count(shimlog, "fsync "), log_count(shimlog, "syncfs "));
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && log_count(log, "hostfsd: SYNC a=1: nothing to do\n") == 2,
+                  "the fallback was not done with");
+#undef NAMES_SYNC
+            helper_done(child, "the helper for the folder flushes");
+        }
+
+        /* ---- a = 1 runs out of time: it starts no flush past its
+         * deadline (240 s; 1 s here), answers EIO, and leaves the rest
+         * posted, for idle time to finish. Every flush takes 300 ms. */
+        snprintf(log, sizeof(log), "%s/sync-deadline.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-deadline.fsync", tmproot);
+        shim_env("300", NULL, shimlog);
+        setenv("HOSTFSD_TEST_SYNC_DEADLINE_MS", "1000", 1);
+        child = helper_extra("sock17", NULL, log, shim);
+        unsetenv("HOSTFSD_TEST_SYNC_DEADLINE_MS");
+        check(child > 0, "a helper for the a = 1 deadline did not start");
+        if (child > 0)
+        {
+            double t0, took;
+            int st;
+
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (deadline)");
+            many_files("dl", 10);       /* 10 files and 2 folders to flush */
+            t0 = now_ms();
+            st = rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0);
+            took = now_ms() - t0;
+            printf("deadline test: a = 1 answered %d after %.0f ms, with a "
+                   "1000 ms deadline and 300 ms flushes\n", st, took);
+            check(st == HOSTFS_EIO && reply_len == 12,
+                  "a = 1 out of time answered %d, not EIO", st);
+            check(took >= 1000 && took < 1000 + 300 + 300,
+                  "a = 1 with a 1000 ms deadline answered after %.0f ms", took);
+            check(log_has(log, "hostfsd: SYNC a=1: out of time after ")
+                  && log_has(log, " of 12 flush(es) in "),
+                  "a = 1 running out of time was not logged");
+            check(log_count(shimlog, "fsync ") >= 3
+                  && log_count(shimlog, "fsync ") <= 5,
+                  "%d flushes before a 1000 ms deadline, at 300 ms each",
+                  log_count(shimlog, "fsync "));
+            t0 = now_ms();
+            check(rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") == HOSTFS_E_OK
+                  && now_ms() - t0 < 300 + 200,
+                  "a request right after a = 1 ran out of time waited %.0f ms",
+                  now_ms() - t0);
+            check(log_waits_for(log, "hostfsd: sync: posted work done", 15000),
+                  "what a = 1 left was not finished while the guest was idle");
+            check(log_count(shimlog, "fsync ") == 12
+                  && log_has(shimlog, "/dl/f00009.txt\n"),
+                  "%d of 12 files and folders flushed in all",
+                  log_count(shimlog, "fsync "));
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && log_has(log, "hostfsd: SYNC a=1: nothing to do\n"),
+                  "a = 1 after the posted rest was done");
+            check(!log_has(log, "HOSTFSD_TEST_SYNC_DEADLINE_MS"),
+                  "a deadline of 1000 ms was not taken as given");
+            helper_done(child, "the deadline helper");
+        }
+        shim_env(NULL, NULL, NULL);
+
+        /* The variable can only shorten the deadline: 1..240000 ms, and
+         * anything else is ignored with a line under --verbose. */
+        {
+            static const char *const values[] = {
+                "240000", "240001", "0", "-5", "5x", "", "99999999999999999999"
+            };
+            unsigned v;
+
+            for (v = 0; v < sizeof(values) / sizeof(values[0]); v++)
+            {
+                char name[32];
+                int ignored;
+
+                snprintf(name, sizeof(name), "sock%u", 18 + v);
+                snprintf(log, sizeof(log), "%s/sync-deadline-%u.log", tmproot, v);
+                setenv("HOSTFSD_TEST_SYNC_DEADLINE_MS", values[v], 1);
+                child = helper_extra(name, NULL, log, NULL);
+                unsetenv("HOSTFSD_TEST_SYNC_DEADLINE_MS");
+                check(child > 0, "a helper with the deadline \"%s\" did not "
+                      "start", values[v]);
+                if (child <= 0)
+                    continue;
+                ignored = log_has(log, "ignored: not 1 to 240000\n");
+                check(ignored == (v != 0), "the deadline \"%s\" was %s",
+                      values[v], ignored ? "ignored" : "taken");
+                /* One request, or --once would not let the helper go. */
+                check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                      == HOSTFS_E_OK, "HELLO (deadline \"%s\")", values[v]);
+                helper_done(child, "a helper with a test deadline");
+            }
+        }
+        shim_env(NULL, NULL, NULL);
+    }
+
+    /* ---- Posting in a loop costs nothing beyond the flushes. */
+    snprintf(log, sizeof(log), "%s/sync-flood.log", tmproot);
+    child = helper_extra("sock8", NULL, log, NULL);
+    check(child > 0, "a flood helper did not start");
+    if (child > 0)
+    {
+        long before, after;
+        double t0;
+        int i, ok = 1;
+
+        t_patient();
+        check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+              == HOSTFS_E_OK, "HELLO (flood)");
+        /* Every SYNC gets one line in the --verbose log, whatever it
+         * does: these three, the 20000 below, the a = 1 after them and
+         * a refused one -- 20005 in all. */
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
+              && rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC with nothing to do (flood)");
+        fh = put_file("flood.txt", "one write, then only SYNCs", 1);
+        check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 0 (flood)");
+        before = rss_kb(child);
+        for (i = 0; i < 20000 && ok; i++)
+            ok = rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK;
+        after = rss_kb(child);
+        check(ok, "SYNC a = 0 number %d failed", i);
+        check(after - before < 4096, "20000 posted SYNCs grew the helper by %ld kB",
+              after - before);
+        t0 = now_ms();
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after 20000 posted");
+        check(now_ms() - t0 < 2000, "SYNC a = 1 after 20000 posted took %.0f ms",
+              now_ms() - t0);
+        check(rpc(HOSTFS_OP_SYNC, 2, 0, 0, NULL, 0) == HOSTFS_EDRIVE,
+              "SYNC a = 2 (flood)");
+        check(log_count(log, "hostfsd: SYNC a=") == 20005,
+              "20005 SYNC requests, %d SYNC lines in the log",
+              log_count(log, "hostfsd: SYNC a="));
+        check(log_has(log, "hostfsd: SYNC a=1: nothing to do\n"
+                           "hostfsd: op 19 -> status 0 len 12\n"
+                           "hostfsd: SYNC a=0: nothing to do\n")
+              && log_has(log, "hostfsd: SYNC a=0: posted\n")
+              && log_has(log, "hostfsd: SYNC a=2 b=0 c=0 data=0: refused\n"),
+              "a SYNC's outcome is missing from the log");
+        check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK, "CLOSE flood.txt");
+        helper_done(child, "the flood helper");
+    }
+#endif
+    (void)have_shim;
+    sock = saved;
+}
+
+/* ------------------------------------------------------------------ */
 
 /*
  * The other end of the transport. QEMU's chardev with server=on is the
@@ -1608,7 +3167,12 @@ static void on_alarm(int sig)
 
 int main(void)
 {
+    /* Line by line, so the FAIL lines before a timeout are not lost. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
     signal(SIGALRM, on_alarm);
+    /* A helper that drops a session while a request is still being sent
+     * must show up as a failed check, not kill the run with SIGPIPE. */
+    signal(SIGPIPE, SIG_IGN);
     alarm(240);
 
     scratch_make();
@@ -1628,6 +3192,9 @@ int main(void)
     test_containment();
     test_still_usable();
     test_malformed();
+    test_frames();
+    test_fsync_option();
+    test_sync();
     test_connect_mode();
 
     check(helper_alive(), "the helper is not answering at the end of the run");
@@ -1635,7 +3202,10 @@ int main(void)
     t_disconnect();
     kill(helper, SIGTERM);
     waitpid(helper, NULL, 0);
-    scratch_remove();
+    if (getenv("HOSTFSD_TEST_KEEP"))    /* the helpers' logs, for a failure */
+        printf("scratch folder kept: %s\n", tmproot);
+    else
+        scratch_remove();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -270,7 +270,14 @@ static void scratch_make(void)
 {
     char p[512], link[512];
 
-    strcpy(tmproot, "/tmp/hostfsd-test-XXXXXX");
+    /* $TMPDIR if set, as mktemp(1) does: a machine where /tmp is small
+     * or shared can point the run elsewhere. */
+    {
+        const char *t = getenv("TMPDIR");
+
+        snprintf(tmproot, sizeof(tmproot), "%s/hostfsd-test-XXXXXX",
+                 t && *t ? t : "/tmp");
+    }
     if (!mkdtemp(tmproot))
         die("mkdtemp");
 
@@ -1609,6 +1616,9 @@ static void on_alarm(int sig)
 int main(void)
 {
     signal(SIGALRM, on_alarm);
+    /* A helper that drops a session while a request is still being sent
+     * must show up as a failed check, not kill the run with SIGPIPE. */
+    signal(SIGPIPE, SIG_IGN);
     alarm(240);
 
     scratch_make();

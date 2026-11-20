@@ -2114,9 +2114,12 @@ static void test_sync(void)
 #endif
     }
 
-    /* ---- The default: file by file. */
+    /* ---- The default: file by file. The shim (no delay) logs what is
+     * really flushed. */
     snprintf(log, sizeof(log), "%s/sync-per-file.log", tmproot);
-    child = helper_extra("sock6", NULL, log, NULL);
+    snprintf(shimlog, sizeof(shimlog), "%s/sync-per-file.fsync", tmproot);
+    shim_env("0", NULL, shimlog);
+    child = helper_extra("sock6", NULL, log, have_shim ? shim : NULL);
     check(child > 0, "a helper for the file-by-file tests did not start");
     if (child > 0)
     {
@@ -2148,41 +2151,43 @@ static void test_sync(void)
         /* Read-only: written then made read-only; created read-only; made
          * read-only while open and written (as cp -p does with fchmod),
          * then written again. Windows could not reopen any of these for
-         * writing, so each is flushed while it still can be. */
+         * writing, so there each is flushed while it still can be -- the
+         * Wine smoke run checks that. POSIX reopens a read-only file for
+         * a flush without trouble, so here none of them is flushed in
+         * place: SETATTR and CLOSE make no fsync, and the next a = 1
+         * flushes all three. */
         put_file("ro-after.txt", "then read-only", 0);
         check(rpc_path(HOSTFS_OP_SETATTR, HOSTFS_FA_RO, "ro-after.txt")
               == HOSTFS_E_OK, "SETATTR read-only");
-        check(log_has(log, "hostfsd: sync: ro-after.txt, before it is made "
-                           "read-only\nhostfsd: sync: ro-after.txt\n"),
-              "a file made read-only was not flushed before the change");
         check(rpc_path(HOSTFS_OP_CREATE, HOSTFS_FA_RO, "ro-created.txt")
               == HOSTFS_E_OK, "CREATE read-only");
         fh = (int)reply_a;
         check(rpc(HOSTFS_OP_WRITE, fh, 0, 0, "born read-only", 14) == HOSTFS_E_OK
               && rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
               "WRITE and CLOSE a file created read-only");
-        check(log_has(log, "hostfsd: sync: ro-created.txt, read-only, flushed "
-                           "at close"),
-              "a file created read-only was not flushed at its close");
         fh = put_file("ro-open.txt", "open, then read-only", 1);
         check(rpc_path(HOSTFS_OP_SETATTR, HOSTFS_FA_RO, "ro-open.txt")
               == HOSTFS_E_OK, "SETATTR read-only on an open file");
-        check(log_has(log, "hostfsd: sync: ro-open.txt, open, before it is "
-                           "made read-only\nhostfsd: sync: ro-open.txt (open)\n"),
-              "an open file made read-only was not flushed through its handle");
         check(rpc(HOSTFS_OP_WRITE, fh, 20, 0, " and more", 9) == HOSTFS_E_OK
               && rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
               "WRITE and CLOSE the open read-only file");
-        check(log_has(log, "hostfsd: sync: ro-open.txt, read-only, flushed at close"),
-              "an open file made read-only was not flushed at its close");
-        {
-            int before = log_count(log, "hostfsd: SYNC a=1: nothing to do");
-
-            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
-                  "SYNC a = 1 after the read-only files");
-            check(log_count(log, "hostfsd: SYNC a=1: nothing to do") == before + 1,
-                  "a read-only file was left for SYNC to reopen");
-        }
+        check(!log_has(log, "before it is made read-only")
+              && !log_has(log, "read-only, flushed at close"),
+              "a read-only file was flushed in place on POSIX");
+        if (have_shim)
+            check(!log_has(shimlog, "/ro-"),
+                  "SETATTR or CLOSE of a read-only file made an fsync on POSIX");
+        check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "SYNC a = 1 after the read-only files");
+        check(log_has(log, "hostfsd: sync: ro-after.txt\n")
+              && log_has(log, "hostfsd: sync: ro-created.txt\n")
+              && log_has(log, "hostfsd: sync: ro-open.txt\n"),
+              "SYNC a = 1 did not flush the read-only files");
+        if (have_shim)
+            check(log_has(shimlog, "/ro-after.txt\n")
+                  && log_has(shimlog, "/ro-created.txt\n")
+                  && log_has(shimlog, "/ro-open.txt\n"),
+                  "SYNC a = 1 made no fsync of the read-only files");
 
         /* A failure is reported by every a = 1 until it is resolved. */
         if (getuid() != 0)      /* root opens anything */

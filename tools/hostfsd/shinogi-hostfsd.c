@@ -1083,20 +1083,21 @@ static void dir_release(dirhandle *d)
  * once only: there is no entry left to keep it in.
  *
  * Windows needs write access to flush (FlushFileBuffers), which a
- * read-only file refuses. So, where SYNC flushes file by file, a file is
- * flushed before the guest makes it read-only: a listed one at SETATTR,
- * an open one through its handle at SETATTR and again at its CLOSE, and
- * one created read-only at its CLOSE.
+ * read-only file refuses. So, on Windows, a file is flushed before the
+ * guest makes it read-only: a listed one at SETATTR, an open one through
+ * its handle at SETATTR and again at its CLOSE, and one created read-only
+ * at its CLOSE. POSIX flushes through a read-only descriptor and needs
+ * none of this: there a read-only file waits for SYNC like any other.
  *
  * Who waits: posted work runs only when the drive has been idle for
  * IDLE_MS, so a request waits at most for the one flush that idle
  * started -- a flush already in progress cannot be interrupted, so its
  * length is the wait that remains -- and, under traffic that never
  * pauses, for one file every STARVE_EVERY_MS once the work has waited
- * STARVE_MS. Beyond that, a = 1, the end of a session, a SETATTR making
- * a written file read-only, and the CLOSE of a read-only file or of one
- * that finds the set full flush in place; so does a HELLO, for the same
- * files as CLOSE and no others.
+ * STARVE_MS. Beyond that, a = 1, the end of a session, the CLOSE of one
+ * that finds the set full and, on Windows only, a SETATTR making a
+ * written file read-only and the CLOSE of a read-only file flush in
+ * place; so does a HELLO, for the same files as CLOSE and no others.
  */
 
 #define IDLE_MS          20     /* no request for this long: idle */
@@ -1136,6 +1137,14 @@ static int sync_fs;                     /* --sync-fs (Linux) */
 #ifdef __linux__
 static int root_fd = -1;
 static dev_t root_dev;
+#endif
+
+/* Can a file only be flushed through a handle that may write? On Windows
+ * (FlushFileBuffers): see above. */
+#ifdef _WIN32
+#define FLUSH_NEEDS_WRITE 1
+#else
+#define FLUSH_NEEDS_WRITE 0
 #endif
 
 /* Does a = 1 flush file by file? Everywhere but with --sync-fs on Linux. */
@@ -1421,14 +1430,14 @@ static void sync_forget(const char *path)
         dirty_remove((unsigned)i);
 }
 
-/* SETATTR is about to make PATH read-only: flush it while Windows can
- * still open it for writing (see above). */
+/* SETATTR is about to make PATH read-only: on Windows, flush it while it
+ * can still be opened for writing (see above). */
 static void sync_before_readonly(const char *path)
 {
     long i;
     int k;
 
-    if (!sync_file_by_file())
+    if (!FLUSH_NEEDS_WRITE)
         return;
     for (k = 0; k < MAX_FILES; k++)
         if (files[k].used && path_same(files[k].path, path))
@@ -1721,7 +1730,7 @@ static void file_close(filehandle *f)
         if (plat_fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
             dbg("hostfsd: fsync failed on close: %s\n", strerror(errno));
     }
-    else if (f->dirty && f->readonly && sync_file_by_file())
+    else if (FLUSH_NEEDS_WRITE && f->dirty && f->readonly)
     {
         /* A read-only file could not be reopened for a flush on
          * Windows: flush it now, through its own handle. */

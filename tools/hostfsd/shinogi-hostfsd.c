@@ -1043,7 +1043,11 @@ static void dir_release(dirhandle *d)
  *
  *   a = 1    flushes all of it before the reply: every dirty open file
  *            through its handle, every listed path and, on POSIX, every
- *            folder whose entries changed (see dsync). With --sync-fs,
+ *            folder whose entries changed (see dsync) -- unless it runs
+ *            out of time: no flush starts once SYNC_DEADLINE_MS (240 s)
+ *            have passed since the request arrived, inside the guest's
+ *            300 s for the reply. The rest is then posted, as by a = 0,
+ *            and the reply says EIO. With --sync-fs,
  *            Linux instead makes one syncfs() per filesystem involved --
  *            normally just the folder's -- which covers open and closed
  *            files alike, but also everything else being written to that
@@ -1110,15 +1114,22 @@ static void dir_release(dirhandle *d)
  * IDLE_MS, or for one file at a time with STARVE_EVERY_MS of traffic
  * between two once it has waited STARVE_MS. Either way a request waits
  * at most for the one flush in progress -- a flush cannot be
- * interrupted, so its length is the wait that remains. Beyond that, a = 1, the end of a session, the CLOSE of one
- * that finds the set full and, on Windows only, a SETATTR making a
- * written file read-only and the CLOSE of a read-only file flush in
- * place; so does a HELLO, for the same files as CLOSE and no others.
+ * interrupted, so its length is the wait that remains. Beyond that,
+ * these flush in place: a = 1, for up to SYNC_DEADLINE_MS plus the one
+ * flush in progress then; the end of a session, with no deadline; the
+ * CLOSE of a file that finds the set full; on Windows only, a SETATTR
+ * making a written file read-only and the CLOSE of a read-only file;
+ * and a HELLO, for the same files as CLOSE and no others.
  */
 
 #define IDLE_MS          20     /* no request for this long: idle */
 #define STARVE_MS        5000   /* posted work waits at most this long ... */
 #define STARVE_EVERY_MS  100    /* ... then gets one file per this much traffic */
+
+/* a = 1 starts no new flush this long after the request arrived; the
+ * guest gives the reply 300 s. HOSTFSD_TEST_SYNC_DEADLINE_MS shortens it
+ * for the test suite. */
+#define SYNC_DEADLINE_MS 240000UL
 
 #define MAX_DIRTY   16384
 #define DIRTY_HASH  32768               /* buckets; a power of two */
@@ -1151,6 +1162,7 @@ static unsigned sync_cursor;            /* this round has tried dirty[0..cursor)
 static sync_tally sync_unreported;      /* failures met outside a = 1:
                                            the next a = 1 reports them */
 static int sync_fs;                     /* --sync-fs (Linux) */
+static unsigned long sync_deadline_ms = SYNC_DEADLINE_MS;
 #ifdef __linux__
 static int root_fd = -1;
 static dev_t root_dev;
@@ -1890,9 +1902,30 @@ static void sync_when_idle(conn_t c)
     }
 }
 
+/* The deadline of an a = 1: when it began, and whether it has run out. */
+typedef struct
+{
+    int timed;                          /* 0: none (the end of a session) */
+    unsigned long long since;
+    int late;
+    unsigned started;                   /* flushes begun */
+} sync_clock;
+
+/* May the flush about to begin still begin? Counts it if so. */
+static int sync_may_start(sync_clock *c)
+{
+    if (c->timed && !c->late
+     && plat_now_ms() - c->since >= (unsigned long long)sync_deadline_ms)
+        c->late = 1;
+    if (c->late)
+        return 0;
+    c->started++;
+    return 1;
+}
+
 #ifdef __linux__
 /* a = 1 by syncfs(): once per filesystem that holds something to flush. */
-static void sync_all_syncfs(sync_tally *failed)
+static void sync_all_syncfs(sync_tally *failed, sync_clock *clock)
 {
     dev_t devs[16];
     unsigned ndev = 0, i, j;
@@ -1914,6 +1947,8 @@ static void sync_all_syncfs(sync_tally *failed)
         {
             if (ndev == sizeof(devs) / sizeof(devs[0]))
             {
+                if (!sync_may_start(clock))
+                    return;
                 sync();                 /* too many to name: all of them */
                 while (ndirty)
                     dirty_remove(ndirty - 1);
@@ -1924,7 +1959,7 @@ static void sync_all_syncfs(sync_tally *failed)
             devs[ndev++] = dev;
         }
     }
-    for (j = 0; j < ndev; j++)
+    for (j = 0; j < ndev && sync_may_start(clock); j++)
     {
         int fd = -1, own = 0;
 
@@ -1986,35 +2021,48 @@ static void sync_all_syncfs(sync_tally *failed)
 }
 #endif
 
-/* a = 1, and the end of a session: everything, before returning. FAILED
- * gets the failures; what failed stays to be tried again. */
-static void sync_all(sync_tally *failed)
+/*
+ * a = 1, and the end of a session: everything, before returning. FAILED
+ * gets the failures; what failed stays to be tried again. TIMED (a = 1)
+ * starts no flush once sync_deadline_ms have passed SINCE the request
+ * arrived: what is left is posted instead, for idle time to finish, and
+ * counted as a failure.
+ */
+static void sync_all(sync_tally *failed, int timed, unsigned long long since)
 {
-    unsigned listed = ndirty, open = 0, folders = 0, i;
+    unsigned listed = ndirty, open = 0, folders = 0, owed = sync_work(), i;
+    sync_clock clock;
     int k;
 
     failed->n = 0;
     failed->full = 0;
+    clock.timed = timed;
+    clock.since = since;
+    clock.late = 0;
+    clock.started = 0;
     for (k = 0; k < MAX_FILES; k++)
         if (files[k].used && files[k].dirty)
             open++;
     sync_cursor = 0;
 #ifdef __linux__
     if (sync_fs)
-        sync_all_syncfs(failed);
+        sync_all_syncfs(failed, &clock);
     else
 #endif
     {
         for (k = 0; k < MAX_FILES; k++)
             if (files[k].used && files[k].dirty)
             {
-                int r = flush_handle(&files[k]);
+                int r;
 
+                if (!sync_may_start(&clock))
+                    break;
+                r = flush_handle(&files[k]);
                 if (r == 0)
                     files[k].dirty = 0;
                 tally_add(failed, r);
             }
-        for (i = 0; i < ndirty; )
+        for (i = 0; i < ndirty && sync_may_start(&clock); )
         {
             int r = flush_path(dirty[i].path, &dirty[i].ferr);
 
@@ -2031,7 +2079,7 @@ static void sync_all(sync_tally *failed)
     /* Then the names: the fallback first, after which the listed folders
      * have nothing left to write on that filesystem. */
     folders = ndsync;
-    if (dsync_over)
+    if (dsync_over && sync_may_start(&clock))
     {
         int r = dsync_fallback();
 
@@ -2039,7 +2087,7 @@ static void sync_all(sync_tally *failed)
             dsync_over = 0;
         tally_add(failed, r);
     }
-    for (i = 0; i < ndsync; )
+    for (i = 0; i < ndsync && sync_may_start(&clock); )
     {
         int r = flush_dir(dsync[i].path, &dsync[i].ferr);
 
@@ -2058,13 +2106,35 @@ static void sync_all(sync_tally *failed)
     dbg("hostfsd: sync: %u listed and %u open file(s) %s, %u failed\n",
         listed, open, sync_file_by_file() ? "file by file" : "by syncfs",
         failed->n);
+    if (clock.late)
+    {
+        /* Out of time: the guest gets its answer while it still waits for
+         * one, and the rest is finished as posted work. */
+        fprintf(stderr, "hostfsd: SYNC a=1: out of time after %u of %u "
+                        "flush(es) in %lu ms; the rest is posted\n",
+                clock.started, owed, (unsigned long)(plat_now_ms() - since));
+        tally_add(failed, FLUSH_FAILED);
+        sync_post();
+    }
 }
 
 static void sync_init(void)
 {
+    const char *test_deadline = getenv("HOSTFSD_TEST_SYNC_DEADLINE_MS");
 #ifndef _WIN32
     struct stat st;
+#endif
 
+    /* The test suite's way to reach the deadline of a = 1 in seconds. */
+    if (test_deadline && *test_deadline)
+    {
+        char *end;
+        unsigned long ms = strtoul(test_deadline, &end, 10);
+
+        if (!*end && ms)
+            sync_deadline_ms = ms;
+    }
+#ifndef _WIN32
     if (stat(root, &st) == 0)
         dsync_root_dev = st.st_dev;
 #endif
@@ -2162,7 +2232,7 @@ static void handles_reset(int end)
     {
         sync_tally failed;
 
-        sync_all(&failed);
+        sync_all(&failed, 0, 0);
         if (failed.n)
         {
             fprintf(stderr, "hostfsd: some of what the guest wrote could not "
@@ -2800,6 +2870,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         }
         else
         {
+            unsigned long long since = plat_now_ms();
             unsigned owed = sync_work();
             sync_tally failed, earlier = sync_unreported;
 
@@ -2808,7 +2879,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
              * Linux a writeback error is told to the first fsync() that
              * looks, and the retry below would succeed with nothing
              * written. */
-            sync_all(&failed);
+            sync_all(&failed, 1, since);
             dbg("hostfsd: SYNC a=1: flushed %u, failed %u",
                 owed >= failed.n ? owed - failed.n : 0, failed.n);
             if (earlier.n)

@@ -2929,6 +2929,58 @@ per_file_done:
 #undef NAMES_SYNC
             helper_done(child, "the helper for the folder flushes");
         }
+
+        /* ---- a = 1 runs out of time: it starts no flush past its
+         * deadline (240 s; 1 s here), answers EIO, and leaves the rest
+         * posted, for idle time to finish. Every flush takes 300 ms. */
+        snprintf(log, sizeof(log), "%s/sync-deadline.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-deadline.fsync", tmproot);
+        shim_env("300", NULL, shimlog);
+        setenv("HOSTFSD_TEST_SYNC_DEADLINE_MS", "1000", 1);
+        child = helper_extra("sock17", NULL, log, shim);
+        unsetenv("HOSTFSD_TEST_SYNC_DEADLINE_MS");
+        check(child > 0, "a helper for the a = 1 deadline did not start");
+        if (child > 0)
+        {
+            double t0, took;
+            int st;
+
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (deadline)");
+            many_files("dl", 10);       /* 10 files and 2 folders to flush */
+            t0 = now_ms();
+            st = rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0);
+            took = now_ms() - t0;
+            printf("deadline test: a = 1 answered %d after %.0f ms, with a "
+                   "1000 ms deadline and 300 ms flushes\n", st, took);
+            check(st == HOSTFS_EIO && reply_len == 12,
+                  "a = 1 out of time answered %d, not EIO", st);
+            check(took >= 1000 && took < 1000 + 300 + 300,
+                  "a = 1 with a 1000 ms deadline answered after %.0f ms", took);
+            check(log_has(log, "hostfsd: SYNC a=1: out of time after ")
+                  && log_has(log, " of 12 flush(es) in "),
+                  "a = 1 running out of time was not logged");
+            check(log_count(shimlog, "fsync ") >= 3
+                  && log_count(shimlog, "fsync ") <= 5,
+                  "%d flushes before a 1000 ms deadline, at 300 ms each",
+                  log_count(shimlog, "fsync "));
+            t0 = now_ms();
+            check(rpc_path(HOSTFS_OP_STAT, 0, "hello.txt") == HOSTFS_E_OK
+                  && now_ms() - t0 < 300 + 200,
+                  "a request right after a = 1 ran out of time waited %.0f ms",
+                  now_ms() - t0);
+            check(log_waits_for(log, "hostfsd: sync: posted work done", 15000),
+                  "what a = 1 left was not finished while the guest was idle");
+            check(log_count(shimlog, "fsync ") == 12
+                  && log_has(shimlog, "/dl/f00009.txt\n"),
+                  "%d of 12 files and folders flushed in all",
+                  log_count(shimlog, "fsync "));
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK
+                  && log_has(log, "hostfsd: SYNC a=1: nothing to do\n"),
+                  "a = 1 after the posted rest was done");
+            helper_done(child, "the deadline helper");
+        }
         shim_env(NULL, NULL, NULL);
         shim_env(NULL, NULL, NULL);
     }

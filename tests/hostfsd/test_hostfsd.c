@@ -2033,6 +2033,32 @@ static void shim_env(const char *ms, const char *fail, const char *log)
     if (log) setenv("SLOWSYNC_LOG", log, 1); else unsetenv("SLOWSYNC_LOG");
     unsetenv("SLOWSYNC_FULL");
     unsetenv("SLOWSYNC_QUOTA");
+    unsetenv("SLOWSYNC_ONCE");
+}
+
+/* Was the helper built with a sanitizer? Its allocator then takes
+ * malloc() from under nomem.so. */
+static int helper_sanitized(void)
+{
+    FILE *f = fopen("../../tools/hostfsd/shinogi-hostfsd", "rb");
+    static char buf[1 << 16];
+    size_t n, keep = 0;
+    int found = 0;
+
+    if (!f)
+        return 0;
+    while (!found && (n = fread(buf + keep, 1, sizeof(buf) - 1 - keep, f)) > 0)
+    {
+        size_t i, len = keep + n;
+
+        for (i = 0; i + 11 <= len && !found; i++)
+            found = !memcmp(buf + i, "__asan_init", 11)
+                 || !memcmp(buf + i, "__tsan_init", 11);
+        keep = len < 10 ? len : 10;     /* a name split across reads */
+        memmove(buf, buf + len - keep, keep);
+    }
+    fclose(f);
+    return found;
 }
 
 /* Wait for a helper of ours to exit; kill it if it will not. */
@@ -2649,6 +2675,133 @@ per_file_done:
                   && rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
                   "SYNC after the failing files were deleted");
             helper_done(child, "the failing-flush helper");
+        }
+
+        /* ---- A failure met before the a = 1 is reported by it. The shim
+         * fails the first fsync of each once-* file and lets every later
+         * one pass, as Linux does with a failed writeback: the retry by
+         * a = 1 succeeds with nothing written, so only a count of the
+         * earlier failure can tell the guest. */
+        snprintf(log, sizeof(log), "%s/sync-once.log", tmproot);
+        snprintf(shimlog, sizeof(shimlog), "%s/sync-once.fsync", tmproot);
+        shim_env("0", NULL, shimlog);
+        setenv("SLOWSYNC_ONCE", "/once-", 1);
+        child = helper_extra("sock13", NULL, log, shim);
+        check(child > 0, "a helper for failures before a = 1 did not start");
+        if (child > 0)
+        {
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (once)");
+            /* Listed, and failed by posted work. */
+            put_file("once-closed.txt", "fails in posted work", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, closed)");
+            check(log_waits_for(log, "could not flush once-closed.txt", 5000),
+                  "posted work did not try once-closed.txt while idle");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO
+                  && reply_len == 12,
+                  "a listed file that failed in posted work was not reported "
+                  "by the next a = 1");
+            check(log_has(log, "hostfsd: SYNC a=1: flushed 1, failed 0, and 1 "
+                               "failure(s) since the last a=1\n"),
+                  "the a = 1 did not log the earlier failure");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "an earlier failure was reported twice");
+            /* Open, and failed by posted work. */
+            fh = put_file("once-open.txt", "fails while open", 1);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, open)");
+            check(log_waits_for(log, "could not flush once-open.txt", 5000),
+                  "posted work did not try once-open.txt while idle");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "an open file that failed in posted work was not reported "
+                  "by the next a = 1");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "an earlier failure of an open file was reported twice");
+            check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "CLOSE once-open.txt");
+            /* The control: a failure that a = 1 meets itself. */
+            put_file("once-wait.txt", "fails in a = 1", 0);
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "a failure a = 1 met itself was not reported");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "a = 1 after its own failure was retried");
+            helper_done(child, "the helper for failures before a = 1");
+        }
+
+        /* ---- The same for --fsync-on-close: its failed flush is reported
+         * by the next a = 1, and the file is listed for it. */
+        snprintf(log, sizeof(log), "%s/sync-once-close.log", tmproot);
+        shim_env("0", NULL, shimlog);
+        setenv("SLOWSYNC_ONCE", "/once-", 1);
+        child = helper_extra("sock14", "--fsync-on-close", log, shim);
+        check(child > 0, "a --fsync-on-close helper for failures did not start");
+        if (child > 0)
+        {
+            t_patient();
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO (once, fsync on close)");
+            put_file("once-close.txt", "fails at its close", 0);
+            check(log_has(log, "hostfsd: fsync on close\n")
+                  && log_has(log, "could not flush once-close.txt"),
+                  "the close's flush did not fail as the shim says");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                  "a failed flush at CLOSE was not reported by the next a = 1");
+            check(log_has(log, "hostfsd: sync: once-close.txt\n"),
+                  "a file whose flush at CLOSE failed was not listed");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "a failed flush at CLOSE was reported twice");
+            helper_done(child, "the --fsync-on-close helper for failures");
+        }
+        shim_env(NULL, NULL, NULL);
+
+        /* ---- An open file renamed when there is no memory for its new
+         * name: its CLOSE lists the old name, which is gone, so nothing
+         * flushes it -- and the next a = 1 says so. nomem.so fails only
+         * the allocation of that one name, picked by its length. */
+        if (helper_sanitized())
+            printf("the out-of-memory rename check is skipped: the helper "
+                   "was built with a sanitizer, whose allocator nomem.so "
+                   "cannot reach\n");
+        else
+        {
+            char nomem[PATH_MAX], served[PATH_MAX], size[32];
+            char longname[256];
+
+            memset(longname, 'n', 230);
+            strcpy(longname + 230, ".txt");
+            if (!realpath("nomem.so", nomem) || !realpath(servedir, served))
+                die("realpath nomem.so");
+            snprintf(size, sizeof(size), "%lu",
+                     (unsigned long)(strlen(served) + 1 + strlen(longname) + 1));
+            setenv("NOMEM_SIZE", size, 1);
+            snprintf(log, sizeof(log), "%s/sync-nomem.log", tmproot);
+            child = helper_extra("sock15", NULL, log, nomem);
+            unsetenv("NOMEM_SIZE");
+            check(child > 0, "a helper with nomem.so did not start");
+            if (child > 0)
+            {
+                t_patient();
+                check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                      == HOSTFS_E_OK, "HELLO (nomem)");
+                fh = put_file("m4.txt", "renamed while open", 1);
+                check(rename_path("m4.txt", longname) == HOSTFS_E_OK,
+                      "RENAME an open file (nomem)");
+                check(log_has(log, "hostfsd: out of memory following m4.txt"),
+                      "a rename that could not follow an open file was not "
+                      "logged");
+                check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                      "CLOSE the renamed file (nomem)");
+                check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_EIO,
+                      "an open file the rename could not follow was not "
+                      "reported by the next a = 1");
+                check(log_has(log, "hostfsd: sync: m4.txt is gone"),
+                      "the file was listed under a name it no longer has");
+                check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                      "the lost rename was reported twice");
+                helper_done(child, "the nomem helper");
+            }
         }
         shim_env(NULL, NULL, NULL);
     }

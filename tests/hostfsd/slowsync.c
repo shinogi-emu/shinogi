@@ -6,6 +6,12 @@
  * (ENOSPC) or $SLOWSYNC_QUOTA (EDQUOT). A test can then see which files
  * really were flushed, in what order, when a flush is slow, and what a
  * failing one does.
+ *
+ * $SLOWSYNC_ONCE models how Linux reports a failed writeback: the FIRST
+ * fsync() of a file whose path contains it fails with EIO, and every
+ * later one succeeds, through the same descriptor or a new one -- the
+ * pages were marked clean, so there is nothing left to write and
+ * nothing left to report.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -14,8 +20,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+/* The files $SLOWSYNC_ONCE has already failed once. */
+static struct { dev_t dev; ino_t ino; } failed_once[256];
+static int nfailed_once;
+
+/* Is this the first flush of FD's file? Remembers it either way. */
+static int first_flush(int fd)
+{
+    struct stat st;
+    int i;
+
+    if (fstat(fd, &st) != 0)
+        return 0;
+    for (i = 0; i < nfailed_once; i++)
+        if (failed_once[i].dev == st.st_dev && failed_once[i].ino == st.st_ino)
+            return 0;
+    if (nfailed_once == 256)
+        return 0;
+    failed_once[nfailed_once].dev = st.st_dev;
+    failed_once[nfailed_once].ino = st.st_ino;
+    nfailed_once++;
+    return 1;
+}
 
 /* Does PATH contain the text in the variable NAME? */
 static int names(const char *path, const char *name)
@@ -58,6 +88,8 @@ static int shim(const char *what, int fd)
         return ENOSPC;
     if (names(target, "SLOWSYNC_QUOTA"))
         return EDQUOT;
+    if (names(target, "SLOWSYNC_ONCE") && first_flush(fd))
+        return EIO;
     return names(target, "SLOWSYNC_FAIL") ? EIO : 0;
 }
 

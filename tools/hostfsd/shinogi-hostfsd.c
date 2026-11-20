@@ -1075,7 +1075,15 @@ static void dir_release(dirhandle *d)
  * stays in the set, and every later a = 1 tries it again and reports it
  * until it flushes, is deleted, or is renamed to a name that flushes.
  * Posted rounds try it again too, but its failure is logged once, and
- * again only if it changes. RENAME and DELETE keep the set in step
+ * again only if it changes.
+ *
+ * A failure met outside a = 1 -- by posted work, or by a flush made in
+ * place (at CLOSE, at SETATTR, after a rename that ran out of memory) --
+ * is also counted, and the next a = 1 reports it and clears the count.
+ * Linux reports a writeback error to the first fsync() that looks and
+ * never again, so without the count the retry would pass with nothing
+ * written. The count, like the set, outlives a HELLO and the
+ * connection: it is cleared only by an a = 1 that reports it. RENAME and DELETE keep the set in step
  * with the folder: a rename rewrites the path itself and anything under a
  * renamed folder. Only regular files are flushed; a listed name that has
  * become a folder, a pipe or a link is dropped without being opened.
@@ -1083,7 +1091,7 @@ static void dir_release(dirhandle *d)
  * The set holds MAX_DIRTY files. The CLOSE that finds it full flushes
  * that one file there and then instead of listing it, so nothing written
  * is ever lost track of. If that flush fails, the next a = 1 reports it,
- * once only: there is no entry left to keep it in.
+ * once, as above: there is no entry left to keep it in.
  *
  * Windows needs write access to flush (FlushFileBuffers), which a
  * read-only file refuses. So, on Windows, a file is flushed before the
@@ -1139,8 +1147,8 @@ static unsigned long long sync_waiting_since;   /* posted, or last idle */
 static unsigned long long sync_last_forced;     /* the last starved step */
 static unsigned long sync_round;        /* posted rounds, for `tried` */
 static unsigned sync_cursor;            /* this round has tried dirty[0..cursor) */
-static sync_tally sync_lost;            /* failures no entry could keep:
-                                           the next a = 1 reports them once */
+static sync_tally sync_unreported;      /* failures met outside a = 1:
+                                           the next a = 1 reports them */
 static int sync_fs;                     /* --sync-fs (Linux) */
 #ifdef __linux__
 static int root_fd = -1;
@@ -1395,21 +1403,23 @@ static int flush_handle(filehandle *f)
     return 0;
 }
 
-/* *P under FROM becomes the same under TO. */
-static void rewrite_path(char **p, const char *from, const char *to)
+/* *P under FROM becomes the same under TO: 0, or -1 when there was no
+ * memory for the new name and *P is left as it was. */
+static int rewrite_path(char **p, const char *from, const char *to)
 {
     size_t n = path_under(*p, from);
     char *q;
 
     if (!n)
-        return;
+        return 0;
     q = (char *)malloc(strlen(to) + strlen(*p + n) + 1);
     if (!q)
-        return;                 /* the caller checks for this */
+        return -1;
     strcpy(q, to);
     strcat(q, *p + n);
     free(*p);
     *p = q;
+    return 0;
 }
 
 /* A successful RENAME of FROM to TO: the set and the open files follow. */
@@ -1436,7 +1446,6 @@ static void sync_renamed(const char *from, const char *to)
     for (i = 0; i < ndirty; )
     {
         size_t n = path_under(dirty[i].path, from);
-        char *before = dirty[i].path;
 
         if (!n)
         {
@@ -1444,14 +1453,13 @@ static void sync_renamed(const char *from, const char *to)
             continue;
         }
         dirty_unlink(i);
-        rewrite_path(&dirty[i].path, from, to);
-        if (dirty[i].path == before)
+        if (rewrite_path(&dirty[i].path, from, to) < 0)
         {
             /* No memory for the new name: flush it under that name now
              * rather than keep a name that no longer exists. */
             snprintf(moved, sizeof(moved), "%s%s", to, dirty[i].path + n);
             dirty_link(i);
-            tally_add(&sync_lost, flush_path(moved, &dirty[i].ferr));
+            tally_add(&sync_unreported, flush_path(moved, &dirty[i].ferr));
             dirty_remove(i);
             continue;
         }
@@ -1460,8 +1468,17 @@ static void sync_renamed(const char *from, const char *to)
         i++;
     }
     for (k = 0; k < MAX_FILES; k++)
-        if (files[k].used && files[k].path)
-            rewrite_path(&files[k].path, from, to);
+        if (files[k].used && files[k].path
+         && rewrite_path(&files[k].path, from, to) < 0)
+        {
+            /* No memory for the new name: its CLOSE would list a name that
+             * no longer exists, and nothing would flush the file. The next
+             * a = 1 reports that as a failure. */
+            fprintf(stderr, "hostfsd: out of memory following %s to its new "
+                            "name; SYNC will not flush it\n",
+                    rel_of(files[k].path));
+            tally_add(&sync_unreported, FLUSH_FAILED);
+        }
 }
 
 /* A successful DELETE of PATH. */
@@ -1488,26 +1505,34 @@ static void sync_before_readonly(const char *path)
             files[k].readonly = 1;          /* and flush at its CLOSE */
             if (files[k].dirty)
             {
+                int r;
+
                 dbg("hostfsd: sync: %s, open, before it is made read-only\n",
                     rel_of(path));
-                if (flush_handle(&files[k]) == 0)
+                r = flush_handle(&files[k]);
+                if (r == 0)
                     files[k].dirty = 0;
+                tally_add(&sync_unreported, r);
             }
         }
     while ((i = dirty_find(path)) >= 0)
     {
+        int r;
+
         dbg("hostfsd: sync: %s, before it is made read-only\n", rel_of(path));
-        if (flush_path(path, &dirty[i].ferr) < 0)
+        r = flush_path(path, &dirty[i].ferr);
+        tally_add(&sync_unreported, r);
+        if (r < 0)
             break;                          /* stays listed: a = 1 says so */
         dirty_remove((unsigned)i);
     }
 }
 
-/* How many files a SYNC would flush now, counting a lost failure as one:
- * 0 means there is nothing to do. */
-static unsigned sync_owed(void)
+/* How many files a SYNC would flush now: 0 means there is nothing to
+ * flush. */
+static unsigned sync_work(void)
 {
-    unsigned n = ndirty + (sync_lost.n ? 1 : 0);
+    unsigned n = ndirty;
     int k;
 
     for (k = 0; k < MAX_FILES; k++)
@@ -1528,25 +1553,29 @@ static void sync_post(void)
 }
 
 /* One file of the posted work, or the news that there is none left. A
- * file that fails is passed over until a = 1 reports it. */
+ * file that fails is passed over, and the next a = 1 reports it. */
 static void sync_step(void)
 {
-    int k;
+    int k, r;
 
     for (k = 0; k < MAX_FILES; k++)
         if (files[k].used && files[k].dirty && files[k].tried != sync_round)
         {
             files[k].tried = sync_round;
-            if (flush_handle(&files[k]) == 0)
+            r = flush_handle(&files[k]);
+            if (r == 0)
                 files[k].dirty = 0;
+            tally_add(&sync_unreported, r);
             return;
         }
     if (sync_cursor < ndirty)
     {
-        if (flush_path(dirty[sync_cursor].path, &dirty[sync_cursor].ferr) >= 0)
+        r = flush_path(dirty[sync_cursor].path, &dirty[sync_cursor].ferr);
+        if (r >= 0)
             dirty_remove(sync_cursor);
         else
             sync_cursor++;
+        tally_add(&sync_unreported, r);
         return;
     }
     sync_pending = 0;
@@ -1732,12 +1761,6 @@ static void sync_all(sync_tally *failed)
             }
         }
     }
-    if (sync_lost.n)
-    {
-        tally_merge(failed, &sync_lost);
-        sync_lost.n = 0;
-        sync_lost.full = 0;
-    }
     sync_pending = 0;
     dbg("hostfsd: sync: %u listed and %u open file(s) %s, %u failed\n",
         listed, open, sync_file_by_file() ? "file by file" : "by syncfs",
@@ -1779,28 +1802,38 @@ static void file_close(filehandle *f)
      * small files paid it hundreds of times. --fsync-on-close
      * restores the commit; removable and network folders want it.
      */
+    /* A failure of any flush here is the next a = 1's to report. */
     if (f->dirty && fsync_on_close)
     {
+        int r;
+
         dbg("hostfsd: fsync on close\n");
-        if (plat_fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
-            dbg("hostfsd: fsync failed on close: %s\n", strerror(errno));
+        r = flush_handle(f);
+        if (r == 0)
+            f->dirty = 0;
+        tally_add(&sync_unreported, r);
     }
     else if (FLUSH_NEEDS_WRITE && f->dirty && f->readonly)
     {
+        int r;
+
         /* A read-only file could not be reopened for a flush on
          * Windows: flush it now, through its own handle. */
         dbg("hostfsd: sync: %s, read-only, flushed at close\n",
             rel_of(f->path));
-        if (flush_handle(f) == 0)
+        r = flush_handle(f);
+        if (r == 0)
             f->dirty = 0;
+        tally_add(&sync_unreported, r);
     }
-    /* What is not flushed goes in the set for the next SYNC; if the
-     * set is full, it is flushed now instead. */
-    if (f->dirty && !fsync_on_close && !dirty_add(f->path, f->dev, f->ferr))
+    /* What is not flushed goes in the set for the next SYNC -- including
+     * a file whose flush just failed, so that a = 1 tries it again; if
+     * the set is full, it is flushed now instead. */
+    if (f->dirty && !dirty_add(f->path, f->dev, f->ferr))
     {
         dbg("hostfsd: sync: %s, the list is full, flushed at close\n",
             rel_of(f->path));
-        tally_add(&sync_lost, flush_handle(f));
+        tally_add(&sync_unreported, flush_handle(f));
     }
     close(f->fd);
     free(f->path);
@@ -2444,7 +2477,7 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
                 a, b, c, datalen);
             status = HOSTFS_EDRIVE;
         }
-        else if (!sync_owed())
+        else if (!sync_work() && (a == 0 || !sync_unreported.n))
             dbg("hostfsd: SYNC a=%lu: nothing to do\n", a);
         else if (a == 0)
         {
@@ -2454,12 +2487,23 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
         }
         else
         {
-            unsigned owed = sync_owed();
-            sync_tally failed;
+            unsigned owed = sync_work();
+            sync_tally failed, earlier = sync_unreported;
 
+            /* What failed before this request -- in posted work, or in a
+             * flush made in place -- is reported now, and only now: on
+             * Linux a writeback error is told to the first fsync() that
+             * looks, and the retry below would succeed with nothing
+             * written. */
             sync_all(&failed);
-            dbg("hostfsd: SYNC a=1: flushed %u, failed %u\n",
+            dbg("hostfsd: SYNC a=1: flushed %u, failed %u",
                 owed >= failed.n ? owed - failed.n : 0, failed.n);
+            if (earlier.n)
+                dbg(", and %u failure(s) since the last a=1", earlier.n);
+            dbg("\n");
+            tally_merge(&failed, &earlier);
+            sync_unreported.n = 0;
+            sync_unreported.full = 0;
             status = tally_status(&failed);
         }
         break;

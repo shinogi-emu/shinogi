@@ -1547,6 +1547,131 @@ static void test_malformed(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Durability option                                                   */
+
+/*
+ * A second helper of our own on socket NAME, serving the same folder with
+ * EXTRA (or nothing), --verbose and --once, its log in LOG. Returns its
+ * pid with `sock` connected to it, or -1 -- and then the child is gone,
+ * not left running.
+ */
+static pid_t helper_extra(const char *name, const char *extra, const char *log)
+{
+    char path[400], ready[400];
+    pid_t child;
+    int tries;
+
+    snprintf(path, sizeof(path), "%s/%s", tmproot, name);
+    snprintf(ready, sizeof(ready), "%s/%s.ready", tmproot, name);
+    child = fork();
+    if (child < 0)
+        die("fork");
+    if (child == 0)
+    {
+        int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd >= 0)
+            dup2(fd, 2);
+        execl("../../tools/hostfsd/shinogi-hostfsd", "shinogi-hostfsd",
+              "--root", servedir, "--listen", path, "--ready-file", ready,
+              "--once", "--verbose", extra, (char *)NULL);
+        _exit(127);
+    }
+    for (tries = 0; tries < 400 && !host_exists(ready); tries++)
+        usleep(5000);
+    if (host_exists(ready))
+    {
+        struct sockaddr_un sa;
+
+        memset(&sa, 0, sizeof(sa));
+        sa.sun_family = AF_UNIX;
+        strcpy(sa.sun_path, path);
+        sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock >= 0 && connect(sock, (struct sockaddr *)&sa, sizeof(sa)) == 0)
+        {
+            t_deadline(sock);
+            return child;
+        }
+        if (sock >= 0)
+            close(sock);
+        sock = -1;
+    }
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+    return -1;
+}
+
+/* Does the file LOG contain WHAT? A --verbose log runs to megabytes. */
+static int log_has(const char *log, const char *what)
+{
+    FILE *f = fopen(log, "rb");
+    char *buf = NULL;
+    long n = 0;
+    int found = 0;
+
+    if (f && fseek(f, 0, SEEK_END) == 0 && (n = ftell(f)) >= 0
+     && fseek(f, 0, SEEK_SET) == 0 && (buf = (char *)malloc((size_t)n + 1)))
+    {
+        n = (long)fread(buf, 1, (size_t)n, f);
+        buf[n] = '\0';
+        found = strstr(buf, what) != NULL;
+    }
+    if (f)
+        fclose(f);
+    free(buf);
+    return found;
+}
+
+/*
+ * --fsync-on-close puts the flush back on every close of a written file,
+ * and only then. The helper's --verbose log says when it flushes, so a
+ * run with the option must log it and a run without must not.
+ */
+static void test_fsync_option(void)
+{
+    static const char *const modes[2] = { "--fsync-on-close", NULL };
+    int saved = sock, m;
+
+    for (m = 0; m < 2; m++)
+    {
+        char log[400], path[400], back[16];
+        pid_t child;
+        int fh;
+        FILE *f;
+
+        snprintf(log, sizeof(log), "%s/fsync-%d.log", tmproot, m);
+        child = helper_extra(m ? "sock4" : "sock3", modes[m], log);
+        check(child > 0, "a helper %s did not start",
+              modes[m] ? modes[m] : "without --fsync-on-close");
+        if (child <= 0)
+            continue;
+        check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+              == HOSTFS_E_OK, "HELLO (fsync option %d)", m);
+        check(rpc_path(HOSTFS_OP_CREATE, 0, "synced.txt") == HOSTFS_E_OK,
+              "CREATE (fsync option %d)", m);
+        fh = (int)reply_a;
+        check(rpc(HOSTFS_OP_WRITE, fh, 0, 0, "flushed", 7) == HOSTFS_E_OK
+              && reply_a == 7, "WRITE (fsync option %d)", m);
+        check(rpc(HOSTFS_OP_CLOSE, fh, 0, 0, NULL, 0) == HOSTFS_E_OK,
+              "CLOSE (fsync option %d)", m);
+        /* The CLOSE reply follows the log line, so it is there now. */
+        check(log_has(log, "fsync on close") == !m,
+              m ? "a close was flushed without --fsync-on-close"
+                : "--fsync-on-close did not flush the close");
+        host_path(path, sizeof(path), "synced.txt");
+        f = fopen(path, "rb");
+        check(f && fread(back, 1, sizeof(back), f) == 7
+              && !memcmp(back, "flushed", 7),
+              "a file closed with fsync option %d is not intact", m);
+        if (f)
+            fclose(f);
+        t_disconnect();
+        check(waitpid(child, NULL, 0) == child,
+              "the helper with fsync option %d did not exit with --once", m);
+    }
+    sock = saved;
+}
+
+/* ------------------------------------------------------------------ */
 
 /*
  * The other end of the transport. QEMU's chardev with server=on is the
@@ -1638,6 +1763,7 @@ int main(void)
     test_containment();
     test_still_usable();
     test_malformed();
+    test_fsync_option();
     test_connect_mode();
 
     check(helper_alive(), "the helper is not answering at the end of the run");
@@ -1645,7 +1771,10 @@ int main(void)
     t_disconnect();
     kill(helper, SIGTERM);
     waitpid(helper, NULL, 0);
-    scratch_remove();
+    if (getenv("HOSTFSD_TEST_KEEP"))    /* the helpers' logs, for a failure */
+        printf("scratch folder kept: %s\n", tmproot);
+    else
+        scratch_remove();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -491,6 +491,7 @@ static char label[16];                  /* folder basename, for HELLO */
 static filehandle files[MAX_FILES];
 static dirhandle dirs[MAX_DIRS];
 static int verbose;
+static int fsync_on_close;              /* --fsync-on-close: the old commit */
 
 static void dbg(const char *fmt, ...)
 {
@@ -891,7 +892,10 @@ static void handles_reset(void)
              * These are the handles the guest still had open when it
              * went away - a reboot, a halt, or the emulator being
              * killed. They are the ones most likely to be mid-write,
-             * so commit them rather than just dropping them.
+             * so commit them rather than just dropping them. This is
+             * the end-of-session flush; files the guest closed during
+             * the session are left to the host's own write-back (see
+             * CLOSE).
              */
             if (files[i].dirty)
                 (void) plat_fsync(files[i].fd);
@@ -1187,19 +1191,26 @@ static unsigned serve(const unsigned char *req, unsigned reqlen,
             break;
         }
         /*
-         * Push the file out before letting go of it.  Writes reach the
-         * host's page cache as the guest makes them, so they already
-         * survive the emulator being killed - but not the host losing
-         * power.  A file the guest has finished with is exactly the
-         * point where that is worth paying for, and it costs nothing
-         * for the files nobody wrote to.
+         * No flush here, by default. Every WRITE has already reached the
+         * host's page cache -- nothing is buffered in this process -- so
+         * a closed file survives the guest, QEMU or this helper being
+         * killed. What can lose the last writes is the host's cache never
+         * reaching the medium: the host crashing or losing power, a
+         * removable folder (a USB stick) pulled out, or a network share
+         * dropping, before the host's own write-back. That is the rule
+         * drive C follows: fast writes, flushed when the guest asks.
+         * Committing every file on close cost a disk flush per file -- on
+         * Windows a FlushFileBuffers each -- and copying a folder of
+         * small files paid it hundreds of times. --fsync-on-close
+         * restores the commit; removable and network folders want it.
          */
-        if (f->dirty)
+        if (f->dirty && fsync_on_close)
         {
+            dbg("hostfsd: fsync on close\n");
             if (plat_fsync(f->fd) < 0 && errno != EINVAL && errno != EROFS)
                 dbg("hostfsd: fsync failed on close: %s\n", strerror(errno));
-            f->dirty = 0;
         }
+        f->dirty = 0;
         close(f->fd);
         f->used = 0;
         break;
@@ -1598,6 +1609,7 @@ static void usage(void)
         "                       [--listen-tcp PORT]\n"
 #endif
         "                       [--read-only] [--once] [--verbose]\n"
+        "                       [--fsync-on-close] [--ready-file P]\n"
         "\n"
         "  --root DIR      the folder served as an Atari drive\n"
         "  --listen PATH   listen on a Unix socket and serve each client\n"
@@ -1609,6 +1621,13 @@ static void usage(void)
         "                  server=on is the listener in that arrangement\n"
         "  --read-only     refuse writes and leave host attributes unchanged\n"
         "  --once          exit after the first client disconnects\n"
+        "  --fsync-on-close  flush each written file to the disk when the\n"
+        "                  guest closes it. Off by default: closed files\n"
+        "                  are in the host's cache and survive QEMU being\n"
+        "                  killed; a host crash or power cut, or a removable\n"
+        "                  or network folder going away, can lose the last\n"
+        "                  writes. Use it for such folders. Files still open\n"
+        "                  when the guest goes away are flushed either way\n"
         "  --ready-file P  create P once the channel is up, and only\n"
         "                  then -- the launcher waits for it rather than\n"
         "                  sleeping, so QEMU never starts before the\n"
@@ -1844,6 +1863,8 @@ int main(int argc, char **argv)
             read_only = 1;
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
+        else if (!strcmp(argv[i], "--fsync-on-close"))
+            fsync_on_close = 1;
         else
         {
             usage();

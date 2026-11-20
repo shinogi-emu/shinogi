@@ -148,8 +148,10 @@ ensure_drive_c() {
 start_hostfsd() {
     [ -x "$BIN/shinogi-hostfsd" ] || die "bundle is incomplete: no $BIN/shinogi-hostfsd"
     rm -f "$HOSTFS_SOCK" "$HOSTFS_READY"
+    # --fsync-on-close: EmuTOS's GEMDOS never asks for its data on the
+    # disk (no SYNC), so each file it wrote is flushed when it is closed.
     "$BIN/shinogi-hostfsd" --root "$DRIVE_C" --listen "$HOSTFS_SOCK" \
-        --ready-file "$HOSTFS_READY" >"$HOSTFS_LOG" 2>&1 &
+        --ready-file "$HOSTFS_READY" --fsync-on-close >"$HOSTFS_LOG" 2>&1 &
     echo $! > "$HOSTFS_PID"
     i=0
     while [ $i -lt 100 ]; do

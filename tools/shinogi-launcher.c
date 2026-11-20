@@ -410,6 +410,10 @@ int main(int argc, char *argv[])
                /* It ends itself when the emulator disconnects, so
                 * nothing has to survive QEMU in order to reap it. */
                "--once",
+               /* EmuTOS's GEMDOS never asks for its data on the disk
+                * (no SYNC), so each file it wrote is flushed when it
+                * is closed. */
+               "--fsync-on-close",
                (char *)NULL);
         note("shinogi: could not start %s\n", hostfsd);
         _exit(127);

@@ -1092,8 +1092,11 @@ static void dir_release(dirhandle *d)
  * is also counted, and the next a = 1 reports it and clears the count.
  * Linux reports a writeback error to the first fsync() that looks and
  * never again, so without the count the retry would pass with nothing
- * written. The count, like the set, outlives a HELLO and the
- * connection: it is cleared only by an a = 1 that reports it.
+ * written. The count belongs to one boot of the guest: a HELLO (a new
+ * boot) and the end of the connection drop it, saying how many, so that
+ * a new boot's first a = 1 does not answer for the last one's failures.
+ * Each was logged when it happened. The set is kept, and a file in it
+ * that still fails is reported anew.
  *
  * The set holds MAX_DIRTY files. The CLOSE that finds it full flushes
  * that one file there and then instead of listing it, so nothing written
@@ -1162,7 +1165,8 @@ static unsigned long long sync_last_forced;     /* the last starved step */
 static unsigned long sync_round;        /* posted rounds, for `tried` */
 static unsigned sync_cursor;            /* this round has tried dirty[0..cursor) */
 static sync_tally sync_unreported;      /* failures met outside a = 1:
-                                           the next a = 1 reports them */
+                                           the next a = 1 of the same boot
+                                           reports them */
 static int sync_fs;                     /* --sync-fs (Linux) */
 static unsigned long sync_deadline_ms = SYNC_DEADLINE_MS;
 #ifdef __linux__
@@ -2258,6 +2262,19 @@ static void handles_reset(int end)
     if (listed && !end)
         dbg("hostfsd: hello: %u written file(s) still open, closed as CLOSE "
             "does\n", listed);
+
+    /* Failures no a = 1 has reported belong to the boot that is over,
+     * including any met just now closing its files: the next guest's
+     * a = 1 answers for its own session only. */
+    if (sync_unreported.n)
+    {
+        fprintf(stderr, "hostfsd: dropping %u flush failure(s) no SYNC a=1 "
+                        "reported: the guest %s\n", sync_unreported.n,
+                end ? "went away" : "started over");
+        fflush(stderr);
+        sync_unreported.n = 0;
+        sync_unreported.full = 0;
+    }
 
     for (i = 0; i < MAX_DIRS; i++)
         if (dirs[i].used)

@@ -141,12 +141,13 @@
  *          and reported again, by every later a = 1 until it flushes, is
  *          deleted or is renamed to something that flushes. A failure
  *          the helper met before the a = 1 -- in posted work, or in a
- *          flush it made in place -- is reported by the next a = 1,
- *          once: on Linux a failed writeback is reported to the first
- *          flush only, so a retry would pass with nothing written. The
- *          helper starts no new flush 240 s after the request arrived,
- *          inside the guest's 300 s for the reply: it then answers EIO
- *          and leaves the rest to be flushed as if posted.
+ *          flush it made in place -- is reported by the next a = 1 of
+ *          the same session, once: on Linux a failed writeback is
+ *          reported to the first flush only, so a retry would pass with
+ *          nothing written. A HELLO starts a new session. The helper
+ *          starts no new flush 240 s after the request arrived, inside
+ *          the guest's 300 s for the reply: it then answers EIO and
+ *          leaves the rest to be flushed as if posted.
  *
  * b, c and the data must be empty; anything else is refused (EDRIVE).
  * A guest checks this bit first: older helpers answer SYNC with EDRIVE.

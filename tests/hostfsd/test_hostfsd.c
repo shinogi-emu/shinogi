@@ -2746,7 +2746,33 @@ per_file_done:
                   "a failure a = 1 met itself was not reported");
             check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
                   "a = 1 after its own failure was retried");
-            helper_done(child, "the helper for failures before a = 1");
+            /* A HELLO is a new boot: a failure the last boot's a = 1 never
+             * reported is dropped, with a log line, and the new boot's
+             * first a = 1 answers for its own session only. */
+            put_file("once-hello.txt", "fails, then the guest reboots", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, hello)");
+            check(log_waits_for(log, "could not flush once-hello.txt", 5000),
+                  "posted work did not try once-hello.txt while idle");
+            check(rpc(HOSTFS_OP_HELLO, HOSTFS_PROTO_VERSION, 0, 0, NULL, 0)
+                  == HOSTFS_E_OK, "HELLO after an unreported failure");
+            check(log_has(log, "hostfsd: dropping 1 flush failure(s) no SYNC "
+                               "a=1 reported: the guest started over\n"),
+                  "HELLO did not drop the unreported failure, with a line");
+            check(rpc(HOSTFS_OP_SYNC, 1, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "the first a = 1 after HELLO answered for the last boot's "
+                  "failure");
+            /* The same at the end of the connection. */
+            put_file("once-end.txt", "fails, then the guest goes away", 0);
+            check(rpc(HOSTFS_OP_SYNC, 0, 0, 0, NULL, 0) == HOSTFS_E_OK,
+                  "SYNC a = 0 (once, end)");
+            check(log_waits_for(log, "could not flush once-end.txt", 5000),
+                  "posted work did not try once-end.txt while idle");
+            if (helper_done(child, "the helper for failures before a = 1"))
+                check(log_has(log, "hostfsd: dropping 1 flush failure(s) no "
+                                   "SYNC a=1 reported: the guest went away\n"),
+                      "the end of the connection did not drop the unreported "
+                      "failure, with a line");
         }
 
         /* ---- The same for --fsync-on-close: its failed flush is reported

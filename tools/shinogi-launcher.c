@@ -280,10 +280,11 @@ int main(int argc, char *argv[])
      * the compromise.
      *
      * Read from SHINOGI.INI in the drive C folder, so the guest can change
-     * it: nothing inside the emulator can resize a virtio-gpu scanout that
-     * is already up, but the guest can write a file and ask to be shut
-     * down, and we read it on the way back in.  SHINOGI_RES overrides it
-     * for testing.
+     * it: this is the size the guest starts at, and we read the file again
+     * on the way back in.  A guest can also change the size while it runs,
+     * by giving the scanout a new resource of the new size (virtio-gpu
+     * RESOURCE_CREATE_2D, then SET_SCANOUT); QEMU's SDL, GTK and Cocoa
+     * windows follow it.  SHINOGI_RES overrides the file for testing.
      *
      * Always passed: QEMU's own virtio-gpu default is 1280x800 and would
      * apply otherwise. The guest asks the host for this size at boot and

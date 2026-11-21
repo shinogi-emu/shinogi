@@ -13,8 +13,11 @@ size of EmuTOS's font stack; check-config compares FreeType's images under
 EmuTOS's FreeType settings with those under FreeType's own. EMUTOS= names
 the tree (default ../../emutos, the submodule); SANS=, SECOND= and MONO= name
 the fonts (default Liberation Sans, DejaVu Sans and DejaVu Sans Mono under
-/usr/share/fonts/truetype), CFF= a CFF OpenType font (default Nimbus Sans
-from the URW base 35 fonts) and CONFIG_FONTS= more fonts for check-config.
+/usr/share/fonts/truetype), CLASSIC= a font that also carries the Atari
+codes at U+F000 + code (default EmuTOS Classic Regular from the drive C
+recipe, docs/tt68070-coordination/freemint-amp-20261112), CFF= a CFF
+OpenType font (default Nimbus Sans from the URW base 35 fonts) and
+CONFIG_FONTS= more fonts for check-config.
 Requires gcc with 32-bit multilib and the 32-bit ASan/UBSan runtimes.
 Temporary files go to a fresh folder under $TMPDIR (or /tmp) and are
 removed afterwards.

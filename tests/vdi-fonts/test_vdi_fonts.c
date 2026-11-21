@@ -41,7 +41,7 @@ static int checks, failures;
         } \
     } while (0)
 
-static const char *sans_path, *second_path, *mono_path;
+static const char *sans_path, *second_path, *mono_path, *classic_path;
 static char tmpdir[512];
 
 
@@ -793,6 +793,75 @@ static void check_atari_map(void)
 }
 
 
+/*
+ * A font with each Atari code also at U+F000 + code (EmuTOS Classic):
+ * every Atari code draws that glyph, where the NVDI table finds no
+ * character in it for 61 codes, among them the check mark XaAES draws for
+ * CHECKED, and the missing-glyph box was drawn.
+ */
+static void check_atari_coded_font(void)
+{
+    VdiOutlineFont *face, *f;
+    long ch, bad_image = 0, no_glyph = 0;
+    FT_UInt gi;
+    WORD xy[2 * 256];
+    BYTE flags[256];
+
+    printf("Atari codes in a font that carries them at U+F000\n");
+    ref_close();
+    if (!ref_open(classic_path))
+    {
+        CHECK(0, "cannot open %s", classic_path);
+        CHECK(ref_open(sans_path), "cannot reopen %s", sans_path);
+        return;
+    }
+    face = start(classic_path);
+    f = face ? vdi_ft_size(face, PT, PX, 0) : NULL;
+    CHECK(f != NULL, "no font");
+    if (f)
+    {
+        for (ch = 1; ch < 256; ch++)
+        {
+            gi = ref_index(0xf000 + ch);
+            if (!gi)
+                no_glyph++;
+            else if (!same_as_reference(f, ch, VDI_FT_MAP_ATARI, gi, "atari-coded"))
+                bad_image++;
+        }
+        CHECK(no_glyph == 0, "%ld Atari codes not in the font", no_glyph);
+        CHECK(bad_image == 0, "%ld Atari codes draw other glyphs", bad_image);
+
+        /* the check mark, which the NVDI table makes U+00A4, not in the font */
+        CHECK(ref_index(0xf008) && ref_index(0xf008) == ref_index(0x2713),
+              "0x08 is not the font's check mark");
+        CHECK(ref_index(0x00a4) == 0, "the font has U+00A4");
+        CHECK(same_as_reference(f, 0x08, VDI_FT_MAP_ATARI, ref_index(0x2713), "check mark"),
+              "0x08 is not drawn as the check mark");
+
+        /* codes the table gives keep their Unicode answer; the others answer
+         * with their place among the font's Atari codes, which draws the
+         * same glyph, and that place converts back */
+        CHECK(vdi_ft_char_index(f, 'A', VDI_FT_MAP_ATARI, VDI_FT_MAP_UNICODE) == 'A', "'A'");
+        CHECK(vdi_ft_char_index(f, 0x81, VDI_FT_MAP_ATARI, VDI_FT_MAP_UNICODE) == 0x00fc, "0x81");
+        CHECK(vdi_ft_char_index(f, 0x08, VDI_FT_MAP_ATARI, VDI_FT_MAP_UNICODE) == 0xf008,
+              "0x08 to Unicode");
+        CHECK(vdi_ft_char_index(f, 0xf008, VDI_FT_MAP_UNICODE, VDI_FT_MAP_ATARI) == 0x08,
+              "U+F008 to Atari");
+        CHECK(vdi_ft_char_index(f, 0x08, VDI_FT_MAP_ATARI, VDI_FT_MAP_ATARI) == 0x08,
+              "0x08 to Atari");
+
+        /* the outline of a code is the glyph text draws for it */
+        CHECK(vdi_ft_get_outline(f, 0x08, VDI_FT_MAP_ATARI, xy, flags, 256) > 0,
+              "no outline for 0x08");
+        CHECK(vdi_ft_get_outline(f, 0x12, VDI_FT_MAP_ATARI, xy, flags, 256) ==
+              vdi_ft_get_outline(f, 0xf012, VDI_FT_MAP_UNICODE, xy, flags, 256),
+              "0x12's outline is not the font's LCD two");
+    }
+    stop();
+    ref_close();
+    CHECK(ref_open(sans_path), "cannot reopen %s", sans_path);
+}
+
 static void check_spdchar_map(void)
 {
     char path[600], shortpath[600];
@@ -1436,14 +1505,15 @@ static void check_many_sizes(void)
 
 int main(int argc, char **argv)
 {
-    if (argc != 4)
+    if (argc != 5)
     {
-        fprintf(stderr, "usage: %s <sans.ttf> <second.ttf> <mono.ttf>\n", argv[0]);
+        fprintf(stderr, "usage: %s <sans.ttf> <second.ttf> <mono.ttf> <classic.ttf>\n", argv[0]);
         return 2;
     }
     sans_path = argv[1];
     second_path = argv[2];
     mono_path = argv[3];
+    classic_path = argv[4];
 
     if (!ref_open(sans_path))
     {
@@ -1459,6 +1529,7 @@ int main(int argc, char **argv)
     check_every_failure_point();
     check_refused_sizes();
     check_atari_map();
+    check_atari_coded_font();
     check_spdchar_map();
     check_effects_and_width();
     check_outline();

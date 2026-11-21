@@ -11,6 +11,8 @@ FONTS  ?= /usr/share/fonts/truetype
 SANS   ?= $(FONTS)/liberation/LiberationSans-Regular.ttf
 SECOND ?= $(FONTS)/dejavu/DejaVuSans.ttf
 MONO   ?= $(FONTS)/dejavu/DejaVuSansMono.ttf
+# a font that also carries the Atari codes at U+F000 + code
+CLASSIC ?= ../../docs/tt68070-coordination/freemint-amp-20261112/recipe/desktop/fonts/CLASSIC/REGULAR.TTF
 CFF    ?= /usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf
 # more fonts for the comparison of FreeType's settings (check-config)
 CONFIG_FONTS ?=
@@ -61,8 +63,8 @@ STACK_FONTS = $(OBJ)/SEAC.OTF $(OBJ)/CHAIN60.TTF $(OBJ)/CHAIN1200.TTF $(OBJ)/CHA
 check: $(OBJ)/test_ftmem $(OBJ)/test_vdi_fonts $(OBJ)/test_vdi_fonts_ftmem \
        $(OBJ)/test_stack $(OBJ)/test_stack_ftmem $(STACK_FONTS) check-config
 	$(OBJ)/test_ftmem
-	$(OBJ)/test_vdi_fonts $(SANS) $(SECOND) $(MONO)
-	$(OBJ)/test_vdi_fonts_ftmem $(SANS) $(SECOND) $(MONO)
+	$(OBJ)/test_vdi_fonts $(SANS) $(SECOND) $(MONO) $(CLASSIC)
+	$(OBJ)/test_vdi_fonts_ftmem $(SANS) $(SECOND) $(MONO) $(CLASSIC)
 	$(OBJ)/test_stack $(CFF) $(STACK_FONTS)
 	$(OBJ)/test_stack_ftmem $(CFF) $(STACK_FONTS)
 

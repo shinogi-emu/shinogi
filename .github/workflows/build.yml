@@ -15,6 +15,7 @@ on:
   workflow_dispatch:
 
 env:
+  QEMU_REVISION: d78a5ddcc16132989f3c5209fcd1162942e8d129
   # Prebuilt m68k-atari-mintelf toolchain, the same source FreeMiNT's own
   # CI uses. Note this publishes GCC 7.5.0: EmuTOS's ELF build passes
   # --param=min-pagesize=0, which does not exist before GCC 11 and is a
@@ -118,7 +119,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: shinogi-emu/qemu-m68k
-          ref: shinogi-060
+          ref: ${{ env.QEMU_REVISION }}
           path: qemu-src
 
       - name: Record the source revision
@@ -394,7 +395,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: shinogi-emu/qemu-m68k
-          ref: shinogi-060
+          ref: ${{ env.QEMU_REVISION }}
           path: qemu-src
 
       - name: Record the source revision
@@ -658,12 +659,12 @@ jobs:
   # shipped the project build; the .app was the odd one out.
   qemu-macos:
     name: qemu (macos)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
         with:
           repository: shinogi-emu/qemu-m68k
-          ref: shinogi-060
+          ref: ${{ env.QEMU_REVISION }}
           path: qemu-src
 
       - name: Record the source revision
@@ -675,7 +676,7 @@ jobs:
         id: cache
         with:
           path: qemu-macos-install
-          key: qemu-macos-${{ steps.rev.outputs.sha }}-v1
+          key: qemu-macos-15-${{ steps.rev.outputs.sha }}-v1
 
       - name: Build it
         if: steps.cache.outputs.cache-hit != 'true'
@@ -725,7 +726,7 @@ jobs:
   macos:
     name: macos package (${{ matrix.edition }})
     needs: [ guest, test, freemint, qemu-macos ]
-    runs-on: macos-14          # Apple Silicon
+    runs-on: macos-15          # Apple Silicon
     strategy:
       fail-fast: false
       matrix:
@@ -1041,7 +1042,7 @@ jobs:
           ./shinogi run. Each edition keeps its files in ~/Shinogi-040 or
           ~/Shinogi-060. The emulator, libraries and guest system are included.
 
-          Built from $GITHUB_SHA.
+          Built from $GITHUB_SHA with QEMU $QEMU_REVISION.
           NOTES
           [ "$TAG" = "$VERSION" ] || { echo "tag/version mismatch" >&2; exit 1; }
           set --

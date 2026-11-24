@@ -655,7 +655,7 @@ jobs:
   # shipped the project build; the .app was the odd one out.
   qemu-macos:
     name: qemu (macos)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -672,7 +672,7 @@ jobs:
         id: cache
         with:
           path: qemu-macos-install
-          key: qemu-macos-${{ steps.rev.outputs.sha }}-v1
+          key: qemu-macos-15-${{ steps.rev.outputs.sha }}-v1
 
       - name: Build it
         if: steps.cache.outputs.cache-hit != 'true'
@@ -722,7 +722,7 @@ jobs:
   macos:
     name: macos package (${{ matrix.edition }})
     needs: [ guest, test, freemint, qemu-macos ]
-    runs-on: macos-14          # Apple Silicon
+    runs-on: macos-15          # Apple Silicon
     strategy:
       fail-fast: false
       matrix:

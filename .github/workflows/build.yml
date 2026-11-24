@@ -68,6 +68,11 @@ jobs:
             curl -fsSL "$TOOLCHAIN_URL/$pkg/$pkg-mintelf-current.tar.bz2" \
               | sudo tar xjf - -C /
           done
+          # The guest's FreeType build uses the target C limits from MiNTLib.
+          SYSROOT=$(m68k-atari-mintelf-gcc -print-sysroot)
+          sudo mkdir -p "$SYSROOT"
+          curl -fsSL "$TOOLCHAIN_URL/mintlib/mintlib-mintelf-latest.tar.bz2" \
+            | sudo tar xjf - -C "$SYSROOT" usr/include
           m68k-atari-mintelf-gcc --version
 
       - name: Build
